@@ -143,17 +143,21 @@ object DmRepository {
      * يضمن وجود وثيقة المحادثة قبل أوّل رسالة (تحتاجها القواعد للتحقّق من
      * العضويّة، ويحتاجها بثّ القائمة لإظهار المحادثة فوراً).
      */
-    suspend fun ensureThread(otherUid: String): String {
+    fun ensureThread(otherUid: String): String {
         val id = DmPaths.threadId(uid, otherUid)
         val members = listOf(uid, otherUid).sorted()
+        // ⚠️ بلا await: مهمّة Firestore لا تكتمل إلا بتأكيد الخادم، وانتظارها
+        // كان يُجمّد فتح المحادثة كلّياً على شبكة ضعيفة. المعرّف حتميّ
+        // (مشتقّ من المعرّفين) فلا حاجة لانتظار شيء، والكتابة تُطبَّق محليّاً
+        // فوراً وتُرسَل تلقائياً عند توفّر الشبكة.
         thread(id).set(
             mapOf("members" to members, "createdAt" to FieldValue.serverTimestamp()),
             SetOptions.merge(),
-        ).await()
+        )
         return id
     }
 
-    private suspend fun touchThread(
+    private fun touchThread(
         threadId: String,
         otherUid: String,
         lastText: String,
@@ -172,7 +176,7 @@ object DmRepository {
                 "readAtMs" to mapOf(uid to now),
             ),
             SetOptions.merge(),
-        ).await()
+        )
     }
 
     suspend fun sendText(
@@ -199,7 +203,7 @@ object DmRepository {
                 "hiddenFor" to emptyList<String>(),
                 "reactions" to emptyMap<String, String>(),
             ),
-        ).await()
+        )
         touchThread(threadId, otherUid, t, ChatMessageType.Text)
     }
 
@@ -244,7 +248,7 @@ object DmRepository {
                 "hiddenFor" to emptyList<String>(),
                 "reactions" to emptyMap<String, String>(),
             ),
-        ).await()
+        )
         touchThread(
             threadId,
             otherUid,
@@ -268,7 +272,7 @@ object DmRepository {
                 "hiddenFor" to emptyList<String>(),
                 "reactions" to emptyMap<String, String>(),
             ),
-        ).await()
+        )
         touchThread(
             threadId,
             otherUid,
@@ -277,9 +281,8 @@ object DmRepository {
         )
     }
 
-    suspend fun deleteForMe(threadId: String, messageId: String) {
-        msgs(threadId).document(messageId)
-            .update("hiddenFor", FieldValue.arrayUnion(uid)).await()
+    fun deleteForMe(threadId: String, messageId: String) {
+        msgs(threadId).document(messageId).update("hiddenFor", FieldValue.arrayUnion(uid))
     }
 
     /**
@@ -319,37 +322,37 @@ object DmRepository {
                 "text" to "",
                 "att" to null,
             ),
-        ).await()
+        )
         val path = msg.attachment?.path.orEmpty()
         if (path.isNotEmpty()) {
             runCatching { FirebaseStorage.getInstance().reference.child(path).delete().await() }
         }
     }
 
-    suspend fun setReaction(threadId: String, messageId: String, emoji: String?) {
+    fun setReaction(threadId: String, messageId: String, emoji: String?) {
         msgs(threadId).document(messageId).update(
             "reactions.$uid",
             if (emoji.isNullOrEmpty()) FieldValue.delete() else emoji,
-        ).await()
+        )
     }
 
-    suspend fun markRead(threadId: String) {
+    fun markRead(threadId: String) {
         if (uid.isEmpty()) return
         runCatching {
             thread(threadId).set(
                 mapOf("readAtMs" to mapOf(uid to System.currentTimeMillis())),
                 SetOptions.merge(),
-            ).await()
+            )
         }
     }
 
-    suspend fun typingTick(threadId: String) {
+    fun typingTick(threadId: String) {
         if (uid.isEmpty()) return
         runCatching {
             thread(threadId).set(
                 mapOf("typingAtMs" to mapOf(uid to System.currentTimeMillis())),
                 SetOptions.merge(),
-            ).await()
+            )
         }
     }
 

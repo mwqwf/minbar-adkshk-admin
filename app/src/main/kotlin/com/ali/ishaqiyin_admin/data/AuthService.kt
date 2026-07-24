@@ -17,6 +17,7 @@ import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Source
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -128,8 +129,20 @@ object AuthService {
         }
 
         try {
-            val doc = FirebaseFirestore.getInstance()
-                .collection("dashboard_admins").document(email).get().await()
+            val ref = FirebaseFirestore.getInstance()
+                .collection("dashboard_admins").document(email)
+            // مسار سريع للشبكات الضعيفة: إن كانت صلاحيتي محفوظة في الكاش
+            // ادخل فوراً وحدِّث من الخادم لاحقاً — بلا هذا ينتظر المشرف ردّ
+            // الخادم بينما يمرّ المالك بفحص رمز محض فيدخل فوراً.
+            val cached = runCatching { ref.get(Source.CACHE).await() }.getOrNull()
+            val cachedData = cached?.takeIf { it.exists() }?.dataMap()
+            if (cachedData != null && cachedData["blocked"] != true &&
+                str(cachedData["role"]) == "supervisor"
+            ) {
+                runCatching { AdminRepository.touchLastSignedIn(email) }
+                return AccessState.Supervisor
+            }
+            val doc = ref.get().await()
             if (!doc.exists()) return AccessState.NeedsOwnerCode
             val data = doc.dataMap()
             if (data["blocked"] == true) return AccessState.Blocked

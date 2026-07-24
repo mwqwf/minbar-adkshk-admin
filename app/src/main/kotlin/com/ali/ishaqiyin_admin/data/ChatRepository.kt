@@ -421,7 +421,12 @@ object ChatRepository {
         )
     }
 
-    suspend fun sendText(text: String, replyTo: ChatReplyRef? = null) {
+    /**
+     * إرسال نصّ — **بلا انتظار تأكيد الخادم**: Firestore يطبّق الكتابة
+     * محليّاً فتظهر الرسالة فوراً بعلامة الانتظار، ويعيد إرسالها تلقائياً
+     * عند عودة الشبكة. انتظار التأكيد كان يجمّد زرّ الإرسال على شبكة ضعيفة.
+     */
+    fun sendText(text: String, replyTo: ChatReplyRef? = null) {
         val t = text.trim()
         if (t.isEmpty()) return
         messages.add(
@@ -437,7 +442,7 @@ object ChatRepository {
                 "hiddenFor" to emptyList<String>(),
                 "reactions" to emptyMap<String, String>(),
             ),
-        ).await()
+        )
     }
 
     /** رفع ملفّ ثم إرسال رسالة تشير إليه. */
@@ -480,7 +485,7 @@ object ChatRepository {
                 "hiddenFor" to emptyList<String>(),
                 "reactions" to emptyMap<String, String>(),
             ),
-        ).await()
+        )
     }
 
     /**
@@ -501,13 +506,12 @@ object ChatRepository {
                 "hiddenFor" to emptyList<String>(),
                 "reactions" to emptyMap<String, String>(),
             ),
-        ).await()
+        )
     }
 
     /** حذف عندي فقط — تبقى الرسالة ظاهرة للبقيّة (مطابق لواتساب). */
-    suspend fun deleteForMe(messageId: String) {
-        messages.document(messageId)
-            .update("hiddenFor", FieldValue.arrayUnion(uid)).await()
+    fun deleteForMe(messageId: String) {
+        messages.document(messageId).update("hiddenFor", FieldValue.arrayUnion(uid))
     }
 
     /**
@@ -523,7 +527,7 @@ object ChatRepository {
                 "text" to "",
                 "att" to null,
             ),
-        ).await()
+        )
         val path = msg.attachment?.path.orEmpty()
         if (path.isNotEmpty()) {
             // أفضل جهد — الوثيقة حُذفت منطقيّاً على أيّ حال.
@@ -563,11 +567,11 @@ object ChatRepository {
     // ─── التفاعلات (إيموجي مثل واتساب) ───────────────────────
 
     /** ضبط تفاعلي على رسالة: emoji جديد يستبدل السابق، و null يزيله. */
-    suspend fun setReaction(messageId: String, emoji: String?) {
+    fun setReaction(messageId: String, emoji: String?) {
         messages.document(messageId).update(
             "reactions.$uid",
             if (emoji.isNullOrEmpty()) FieldValue.delete() else emoji,
-        ).await()
+        )
     }
 
     // ─── هويّة المجموعة ──────────────────────────────────────
@@ -589,8 +593,8 @@ object ChatRepository {
         )
     }
 
-    suspend fun setGroupName(name: String) {
-        meta.set(mapOf("name" to name.trim()) + editorFields(), SetOptions.merge()).await()
+    fun setGroupName(name: String) {
+        meta.set(mapOf("name" to name.trim()) + editorFields(), SetOptions.merge())
     }
 
     /** رفع صورة المجموعة وتحديث الهويّة (متاح لكلّ المشرفين). */
@@ -608,26 +612,23 @@ object ChatRepository {
     }
 
     /** إزالة صورة المجموعة (العودة للأيقونة الافتراضيّة). */
-    suspend fun clearGroupPhoto() {
-        meta.set(
-            mapOf("photoUrl" to "", "photoPath" to "") + editorFields(),
-            SetOptions.merge(),
-        ).await()
+    fun clearGroupPhoto() {
+        meta.set(mapOf("photoUrl" to "", "photoPath" to "") + editorFields(), SetOptions.merge())
     }
 
-    suspend fun setLocked(locked: Boolean) {
+    fun setLocked(locked: Boolean) {
         meta.set(
             mapOf("locked" to locked, "updatedAt" to FieldValue.serverTimestamp()),
             SetOptions.merge(),
-        ).await()
+        )
     }
 
     /** تثبيت رسالة (null لإلغاء التثبيت) — للمالك 👑 ومشرف المجموعة ⭐. */
-    suspend fun setPinned(ref: ChatReplyRef?) {
+    fun setPinned(ref: ChatReplyRef?) {
         meta.set(
             mapOf("pinned" to ref?.toMap(), "updatedAt" to FieldValue.serverTimestamp()),
             SetOptions.merge(),
-        ).await()
+        )
     }
 
     // ─── الأعضاء والحضور ─────────────────────────────────────
@@ -651,19 +652,17 @@ object ChatRepository {
                 put("lastSeenAt", FieldValue.serverTimestamp())
                 put("lastActiveAtMs", System.currentTimeMillis())
             }
-            members.document(u.uid).set(data, SetOptions.merge()).await()
-            val doc = members.document(u.uid).get().await()
-            if (!doc.dataMap().containsKey("joinedAt")) {
-                members.document(u.uid).set(
-                    mapOf("joinedAt" to FieldValue.serverTimestamp()),
-                    SetOptions.merge(),
-                ).await()
-            }
+            // بلا await: الانضمام يجب ألّا يؤخّر فتح اللوحة أو الدردشة.
+            members.document(u.uid).set(data, SetOptions.merge())
+            members.document(u.uid).set(
+                mapOf("joinedAt" to FieldValue.serverTimestamp()),
+                SetOptions.merge(),
+            )
         }
     }
 
     /** نبضة حضور دوريّة — تجعل العضو «متصلاً الآن» لبقيّة المجموعة. */
-    suspend fun presenceTick() {
+    fun presenceTick() {
         if (uid.isEmpty()) return
         runCatching {
             members.document(uid).set(
@@ -672,29 +671,29 @@ object ChatRepository {
                     "lastSeenAt" to FieldValue.serverTimestamp(),
                 ),
                 SetOptions.merge(),
-            ).await()
+            )
         }
     }
 
     /** تحديث مؤشّر القراءة — كلّ رسالة أقدم من هذا الطابع تُعتبر مقروءة منّي. */
-    suspend fun markRead() {
+    fun markRead() {
         if (uid.isEmpty()) return
         runCatching {
             members.document(uid).set(
                 mapOf("lastReadAtMs" to System.currentTimeMillis()),
                 SetOptions.merge(),
-            ).await()
+            )
         }
     }
 
     /** إشارة «يكتب الآن…» (تُستدعى مقنَّنة أثناء الكتابة). */
-    suspend fun typingTick() {
+    fun typingTick() {
         if (uid.isEmpty()) return
         runCatching {
             members.document(uid).set(
                 mapOf("typingAtMs" to System.currentTimeMillis()),
                 SetOptions.merge(),
-            ).await()
+            )
         }
     }
 
@@ -709,28 +708,33 @@ object ChatRepository {
         members.document(uid).set(
             mapOf("customPhoto" to up.url, "customPhotoPath" to up.path),
             SetOptions.merge(),
-        ).await()
+        )
     }
 
     /** إزالة صورتي المخصّصة (يعود لصورة Google). */
-    suspend fun clearMyPhoto() {
+    fun clearMyPhoto() {
         members.document(uid).set(
             mapOf("customPhoto" to "", "customPhotoPath" to ""),
             SetOptions.merge(),
-        ).await()
+        )
     }
 
     /** تغيير اسمي المعروض في المجموعة (ويُعلِّم اكتمال إعداد الملفّ الشخصي). */
-    suspend fun setMyName(name: String) {
+    fun setMyName(name: String) {
         members.document(uid).set(
             mapOf("customName" to name.trim(), "profileSet" to true),
             SetOptions.merge(),
-        ).await()
+        )
     }
 
     /** جلب وثيقتي (لملء حوار الملفّ الشخصي وفحص أوّل مرّة). */
     suspend fun fetchSelf(): ChatMember? {
         if (uid.isEmpty()) return null
+        // الكاش أوّلاً: فتح اللوحة يجب ألّا ينتظر ردّ الخادم على شبكة ضعيفة.
+        val cached = runCatching {
+            members.document(uid).get(com.google.firebase.firestore.Source.CACHE).await()
+        }.getOrNull()
+        if (cached != null && cached.exists()) return ChatMember.fromDoc(cached)
         return runCatching {
             val doc = members.document(uid).get().await()
             if (doc.exists()) ChatMember.fromDoc(doc) else null
@@ -738,11 +742,11 @@ object ChatRepository {
     }
 
     /** تعيين/إزالة مشرف مجموعة ⭐ (صلاحيّات داخل الدردشة فقط) — للمالك. */
-    suspend fun setChatRole(memberUid: String, role: String?) {
+    fun setChatRole(memberUid: String, role: String?) {
         members.document(memberUid).set(
             mapOf("chatRole" to (if (role.isNullOrEmpty()) FieldValue.delete() else role)),
             SetOptions.merge(),
-        ).await()
+        )
     }
 
     /**
