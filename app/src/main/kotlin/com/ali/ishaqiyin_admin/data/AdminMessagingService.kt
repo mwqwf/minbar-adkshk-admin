@@ -1,9 +1,13 @@
 package com.ali.ishaqiyin_admin.data
 
+import android.Manifest
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import com.ali.ishaqiyin_admin.MainActivity
 import com.ali.ishaqiyin_admin.R
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -54,6 +58,14 @@ class AdminMessagingService : FirebaseMessagingService() {
     private fun show(title: String, body: String, id: Int) {
         val manager = NotificationManagerCompat.from(this)
         if (!manager.areNotificationsEnabled()) return
+        // أندرويد 13+: بلا إذن POST_NOTIFICATIONS يُرمى SecurityException.
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
