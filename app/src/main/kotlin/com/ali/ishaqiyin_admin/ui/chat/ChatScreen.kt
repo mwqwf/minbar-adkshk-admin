@@ -191,6 +191,16 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
         .collectAsState(initial = emptyList())
     val dmUnread by DmRepository.unreadThreadsStream().collectAsState(initial = 0)
 
+    // أوّل دفعة رسائل لم تصل بعد (كاش أو خادم) — للتمييز عن محادثة فارغة.
+    var loadingFirstBatch by remember { mutableStateOf(true) }
+    LaunchedEffect(allMessages) {
+        if (allMessages.isNotEmpty()) loadingFirstBatch = false
+    }
+    LaunchedEffect(Unit) {
+        delay(6000)
+        loadingFirstBatch = false
+    }
+
     val canModerate = isOwner || members[myUid]?.isChatModerator == true
 
     DisposableEffect(Unit) {
@@ -592,14 +602,31 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
             Box(Modifier.weight(1f)) {
                 if (messages.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            if (query.isEmpty()) {
-                                "لا رسائل بعد — ابدأ النقاش!"
-                            } else {
-                                "لا نتائج لـ «$searchQuery» ضمن المحمَّل."
-                            },
-                            color = ChatColors.textMuted,
-                        )
+                        // على شبكة ضعيفة قد تتأخّر أوّل دفعة: نُظهر انتظاراً
+                        // صريحاً بدل «لا رسائل» المُضلِّلة.
+                        if (loadingFirstBatch && query.isEmpty()) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(
+                                    color = ChatColors.accent,
+                                    modifier = Modifier.size(28.dp),
+                                )
+                                Spacer(Modifier.height(10.dp))
+                                Text(
+                                    "جارٍ تحميل الرسائل…",
+                                    color = ChatColors.textMuted,
+                                    fontSize = 12.5.sp,
+                                )
+                            }
+                        } else {
+                            Text(
+                                if (query.isEmpty()) {
+                                    "لا رسائل بعد — ابدأ النقاش!"
+                                } else {
+                                    "لا نتائج لـ «$searchQuery» ضمن المحمَّل."
+                                },
+                                color = ChatColors.textMuted,
+                            )
+                        }
                     }
                 } else {
                     LazyColumn(

@@ -36,6 +36,7 @@ import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -147,6 +148,15 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
     val otherTyping by remember(threadId, otherUid) {
         DmRepository.otherTypingStream(threadId, otherUid)
     }.collectAsState(initial = false)
+
+    var loadingFirstBatch by remember { mutableStateOf(true) }
+    LaunchedEffect(messages) {
+        if (messages.isNotEmpty()) loadingFirstBatch = false
+    }
+    LaunchedEffect(Unit) {
+        delay(6000)
+        loadingFirstBatch = false
+    }
 
     // نهاية التمرير (أقدم الرسائل) → وسّع النافذة المحمَّلة.
     LaunchedEffect(listState, messages.size) {
@@ -544,7 +554,22 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
 
             // ── الرسائل ──
             Box(Modifier.weight(1f)) {
-                if (messages.isEmpty()) {
+                if (messages.isEmpty() && loadingFirstBatch) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(
+                                color = ChatColors.accent,
+                                modifier = Modifier.size(28.dp),
+                            )
+                            Spacer(Modifier.size(10.dp))
+                            Text(
+                                "جارٍ تحميل الرسائل…",
+                                color = ChatColors.textMuted,
+                                fontSize = 12.5.sp,
+                            )
+                        }
+                    }
+                } else if (messages.isEmpty()) {
                     Box(
                         Modifier.fillMaxSize().padding(28.dp),
                         contentAlignment = Alignment.Center,
