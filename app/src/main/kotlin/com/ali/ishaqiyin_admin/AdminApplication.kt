@@ -7,16 +7,51 @@ import android.os.Build
 import com.ali.ishaqiyin_admin.core.FirebaseConfig
 import com.ali.ishaqiyin_admin.data.AdminChannels
 import com.ali.ishaqiyin_admin.data.AppPrefs
+import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.appcheck.FirebaseAppCheck
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreSettings
+import com.google.firebase.firestore.PersistentCacheSettings
+import com.google.firebase.storage.FirebaseStorage
 
 class AdminApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         AppPrefs.init(this)
+        NetworkMonitor.start(this)
         createNotificationChannels()
         initializeFirebase()
+        tuneForWeakNetworks()
+    }
+
+    /**
+     * 📶 صلابة على الشبكات الضعيفة جدّاً:
+     * • Firestore: كاش دائم بلا حدّ — اللوحة والدردشة تفتحان من الذاكرة
+     *   فوراً بلا انتظار الشبكة، والرسائل المُرسَلة تُحفظ وتُبعث تلقائياً
+     *   عند عودة الاتصال.
+     * • Storage: توسيع نوافذ إعادة المحاولة بدل الفشل عند أوّل انقطاع
+     *   (الافتراضي قصير جدّاً لشبكة متقطّعة).
+     */
+    private fun tuneForWeakNetworks() {
+        runCatching {
+            FirebaseFirestore.getInstance().firestoreSettings =
+                FirebaseFirestoreSettings.Builder()
+                    .setLocalCacheSettings(
+                        PersistentCacheSettings.newBuilder()
+                            .setSizeBytes(FirebaseFirestoreSettings.CACHE_SIZE_UNLIMITED)
+                            .build(),
+                    )
+                    .build()
+        }
+        runCatching {
+            FirebaseStorage.getInstance().apply {
+                maxDownloadRetryTimeMillis = 10 * 60 * 1000L
+                maxUploadRetryTimeMillis = 10 * 60 * 1000L
+                maxOperationRetryTimeMillis = 3 * 60 * 1000L
+            }
+        }
     }
 
     /**

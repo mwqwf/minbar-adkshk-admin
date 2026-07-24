@@ -13,6 +13,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -29,6 +32,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
@@ -48,6 +52,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material3.CircularProgressIndicator
@@ -95,7 +100,9 @@ import com.ali.ishaqiyin_admin.data.ChatMessageType
 import com.ali.ishaqiyin_admin.data.ChatNotifications
 import com.ali.ishaqiyin_admin.data.ChatReplyRef
 import com.ali.ishaqiyin_admin.data.ChatRepository
+import com.ali.ishaqiyin_admin.data.ChatMediaStore
 import com.ali.ishaqiyin_admin.data.DmRepository
+import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.ali.ishaqiyin_admin.data.QUICK_REACTIONS
 import com.ali.ishaqiyin_admin.data.chatTypeForMime
 import com.ali.ishaqiyin_admin.data.chatTypeLabel
@@ -107,6 +114,7 @@ import com.ali.ishaqiyin_admin.ui.RemoteImage
 import com.ali.ishaqiyin_admin.ui.Routes
 import com.ali.ishaqiyin_admin.ui.adminFieldColors
 import com.ali.ishaqiyin_admin.util.AudioRecorderController
+import com.ali.ishaqiyin_admin.util.ImageCompressor
 import com.ali.ishaqiyin_admin.util.PickedFile
 import com.ali.ishaqiyin_admin.util.openExternalUri
 import com.ali.ishaqiyin_admin.util.pickedFileFrom
@@ -173,6 +181,7 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
     var showAttachMenu by remember { mutableStateOf(false) }
     var confirmDeleteAll by remember { mutableStateOf<ChatMessage?>(null) }
     var pendingUpload by remember { mutableStateOf<PickedFile?>(null) }
+    var forwarding by remember { mutableStateOf<ChatMessage?>(null) }
 
     val listState = rememberLazyListState()
     val meta by ChatRepository.metaStream().collectAsState(initial = ChatGroupMeta.fallback)
@@ -227,6 +236,28 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
         }
     }
 
+    // انتهت رسالة صوتيّة؟ شغّل التالية تلقائياً (نمط واتساب).
+    DisposableEffect(allMessages) {
+        SharedAudioPlayer.onCompleted = { finishedKey ->
+            val index = allMessages.indexOfFirst {
+                it.attachment?.let(ChatMediaStore::keyOf) == finishedKey
+            }
+            val next = if (index > 0) allMessages.getOrNull(index - 1) else null
+            val att = next?.attachment
+            if (
+                att != null &&
+                (next.type == ChatMessageType.Voice || next.type == ChatMessageType.Audio)
+            ) {
+                scope.launch {
+                    ChatMediaStore.download(att)?.let { file ->
+                        SharedAudioPlayer.playFile(context, ChatMediaStore.keyOf(att), file)
+                    }
+                }
+            }
+        }
+        onDispose { SharedAudioPlayer.onCompleted = null }
+    }
+
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent(),
     ) { uri ->
@@ -248,10 +279,15 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
         uploadName = file.name
         uploadAborted = false
         scope.launch {
+            var temp: java.io.File? = null
             try {
+                // ضغط الصور قبل الرفع: أهمّ توفير للبيانات على شبكة ضعيفة.
+                val prepared = ImageCompressor.prepare(context, file, contentType)
+                temp = prepared.temp
+                val payload = prepared.file
                 ChatRepository.sendAttachment(
-                    uri = file.uri,
-                    filename = file.name,
+                    uri = payload.uri,
+                    filename = payload.name,
                     contentType = contentType,
                     type = type,
                     caption = caption,
@@ -265,6 +301,7 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                 if (!uploadAborted) snack("فشل رفع \"${file.name}\": ${e.message ?: e}")
             } finally {
                 runCatching { deleteAfter?.delete() }
+                runCatching { temp?.delete() }
                 uploading = false
             }
         }
@@ -375,6 +412,7 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                         }
                     }
 
+                    action == "forward" -> forwarding = msg
                     action == "copy" -> {
                         copyText(context, msg.text)
                         snack("نُسخ النصّ.")
@@ -397,6 +435,27 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                     }
 
                     action == "delete_all" -> confirmDeleteAll = msg
+                }
+            },
+        )
+    }
+
+    forwarding?.let { msg ->
+        ForwardPickerSheet(
+            members = membersList,
+            myUid = myUid,
+            includeGroup = false,
+            onDismiss = { forwarding = null },
+            onPickGroup = {},
+            onPickMember = { member ->
+                forwarding = null
+                scope.launch {
+                    runCatching {
+                        val threadId = DmRepository.ensureThread(member.uid)
+                        DmRepository.forward(threadId, member.uid, msg)
+                    }
+                        .onSuccess { snack("أُعيد توجيه الرسالة إلى ${member.displayName}.") }
+                        .onFailure { snack("تعذّرت إعادة التوجيه: ${it.message ?: it}") }
                 }
             },
         )
@@ -462,7 +521,16 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
 
     // ── الواجهة ────────────────────────────────────────────
     Surface(color = ChatColors.bg, modifier = Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize().padding(top = 24.dp)) {
+        // edge-to-edge إجباريّ على targetSdk 36: بلا هذه الحشوات يقع شريط
+        // الإدخال والميكروفون خلف شريط التنقّل فتُبتلع اللمسات، ويختفي جزء
+        // من الترويسة خلف شريط الحالة.
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding(),
+        ) {
             GroupHeader(
                 meta = meta,
                 members = membersList,
@@ -609,6 +677,8 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                     }
                 }
             }
+            val online by NetworkMonitor.online.collectAsState()
+            if (!online) OfflineBanner()
             if (uploading) {
                 UploadBanner(
                     name = uploadName,
@@ -860,6 +930,34 @@ private fun PinnedBar(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * بانر «دون اتصال» — على شبكة ضعيفة/مقطوعة تُحفظ الرسائل النصّية محليّاً
+ * (كاش Firestore الدائم) وتُرسَل تلقائياً عند العودة، والتنزيلات تُستأنف
+ * من حيث توقّفت.
+ */
+@Composable
+fun OfflineBanner() {
+    Surface(color = ChatColors.amber.copy(alpha = 0.14f)) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.CloudOff,
+                contentDescription = null,
+                tint = ChatColors.amber,
+                modifier = Modifier.size(15.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "دون اتصال — ما تكتبه يُحفظ ويُرسَل تلقائياً، والتنزيلات تُستأنف.",
+                fontSize = 11.5.sp,
+                color = ChatColors.amber,
+            )
         }
     }
 }
@@ -1188,6 +1286,9 @@ private fun MessageActionsSheet(
                             (members[msg.senderId]?.displayName ?: msg.senderName),
                     ) { onAction("reply_private") }
                 }
+                SheetItem(Icons.Filled.Share, "إعادة توجيه", ChatColors.accent) {
+                    onAction("forward")
+                }
                 if (msg.text.isNotBlank()) {
                     SheetItem(Icons.Filled.ContentCopy, "نسخ النصّ", ChatColors.textMuted) {
                         onAction("copy")
@@ -1429,6 +1530,82 @@ private fun ReaderTile(member: ChatMember) {
         if (member.isOwner) {
             Spacer(Modifier.width(4.dp))
             Text("👑", fontSize = 11.sp)
+        }
+    }
+}
+
+/**
+ * ورقة اختيار وجهة «إعادة التوجيه»: المجموعة أو أحد المشرفين. المرفق
+ * يُعاد استعماله كما هو (بلا رفع جديد) فلا يكلّف شيئاً على شبكة ضعيفة.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ForwardPickerSheet(
+    members: List<ChatMember>,
+    myUid: String,
+    includeGroup: Boolean,
+    onDismiss: () -> Unit,
+    onPickGroup: () -> Unit,
+    onPickMember: (ChatMember) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = ChatColors.surface,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+            Text(
+                "إعادة التوجيه إلى…",
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(14.dp),
+            )
+            HorizontalDivider()
+            if (includeGroup) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onPickGroup)
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .size(40.dp)
+                            .background(ChatColors.accentDark, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.Groups,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Text("مجموعة الإدارة")
+                }
+                HorizontalDivider()
+            }
+            members.filter { it.uid != myUid }.forEach { member ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { onPickMember(member) }
+                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    MemberAvatar(
+                        uid = member.uid,
+                        name = member.displayName,
+                        photo = member.displayPhoto,
+                        radius = 18,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(member.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
     }
 }

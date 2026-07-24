@@ -92,6 +92,13 @@ object SharedAudioPlayer {
     private val _speed = MutableStateFlow(1f)
     val speed: StateFlow<Float> = _speed
 
+    /**
+     * يُستدعى بمفتاح المقطع فور انتهائه — تستعمله شاشة الدردشة لتشغيل
+     * الرسالة الصوتيّة التالية تلقائياً (نمط واتساب).
+     */
+    @Volatile
+    var onCompleted: ((String) -> Unit)? = null
+
     private fun ensure(context: Context): ExoPlayer {
         player?.let { return it }
         val created = ExoPlayer.Builder(context.applicationContext).build()
@@ -105,7 +112,11 @@ object SharedAudioPlayer {
                     if (state == Player.STATE_READY) {
                         _durationMs.value = created.duration.coerceAtLeast(0L)
                     }
-                    if (state == Player.STATE_ENDED) stop()
+                    if (state == Player.STATE_ENDED) {
+                        val finished = _activeKey.value
+                        stop()
+                        if (finished != null) onCompleted?.invoke(finished)
+                    }
                 }
             },
         )
@@ -199,6 +210,10 @@ fun AudioBubblePlayer(attachment: ChatAttachment, isVoice: Boolean) {
                     scope.launch {
                         when {
                             status.state == MediaState.Downloading -> Unit
+                            status.state == MediaState.Failed -> {
+                                val f = ChatMediaStore.retry(attachment)
+                                if (f != null) SharedAudioPlayer.playFile(context, key, f)
+                            }
                             !status.isReady -> {
                                 val f = ChatMediaStore.download(attachment)
                                 if (f != null) SharedAudioPlayer.playFile(context, key, f)
@@ -294,6 +309,8 @@ private fun statusLine(
     total: Long,
     attachment: ChatAttachment,
 ): String = when {
+    status.waitingForNetwork && status.state != MediaState.Downloaded ->
+        "بانتظار الشبكة… ${status.progress.toInt()}% (سيُستأنف تلقائياً)"
     status.state == MediaState.Downloading -> "جارٍ التنزيل… ${status.progress.toInt()}%"
     status.state == MediaState.Failed -> status.error ?: "تعذّر التنزيل"
     !status.isReady -> if (attachment.size > 0) {
@@ -335,7 +352,13 @@ fun MediaDownloadOverlay(
                 RoundedCornerShape(if (compact) 10.dp else 12.dp),
             )
             .clickable(enabled = !downloading) {
-                scope.launch { ChatMediaStore.download(attachment) }
+                scope.launch {
+                    if (failed) {
+                        ChatMediaStore.retry(attachment)
+                    } else {
+                        ChatMediaStore.download(attachment)
+                    }
+                }
             },
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,

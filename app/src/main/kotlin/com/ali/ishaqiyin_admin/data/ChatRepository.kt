@@ -483,6 +483,27 @@ object ChatRepository {
         ).await()
     }
 
+    /**
+     * إعادة توجيه رسالة إلى المجموعة **بلا إعادة رفع المرفق**: نكتب وثيقة
+     * جديدة تشير إلى نفس ملفّ Storage. توفير كبير على الشبكات الضعيفة.
+     */
+    suspend fun forward(msg: ChatMessage) {
+        messages.add(
+            senderFields() + mapOf(
+                "type" to chatTypeToString(msg.type),
+                "text" to msg.text,
+                "att" to msg.attachment?.toMap(),
+                "replyTo" to null,
+                "sentAtMs" to System.currentTimeMillis(),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "deleted" to false,
+                "deletedBy" to "",
+                "hiddenFor" to emptyList<String>(),
+                "reactions" to emptyMap<String, String>(),
+            ),
+        ).await()
+    }
+
     /** حذف عندي فقط — تبقى الرسالة ظاهرة للبقيّة (مطابق لواتساب). */
     suspend fun deleteForMe(messageId: String) {
         messages.document(messageId)
@@ -507,6 +528,35 @@ object ChatRepository {
         if (path.isNotEmpty()) {
             // أفضل جهد — الوثيقة حُذفت منطقيّاً على أيّ حال.
             runCatching { FirebaseStorage.getInstance().reference.child(path).delete().await() }
+        }
+    }
+
+    /**
+     * 🧹 «مسح المحادثة عندي» (نمط واتساب): يُخفي كلّ الرسائل عنّي وحدي عبر
+     * إضافة معرّفي إلى `hiddenFor` — لا تتأثّر نسخة بقيّة الأعضاء إطلاقاً
+     * ولا تُحذف أيّ رسالة من الخادم. يعمل على دفعات كي لا يفشل على
+     * المحادثات الطويلة أو الشبكات الضعيفة، ويعيد عدد ما مُسح.
+     */
+    suspend fun clearForMe(): Int {
+        val me = uid
+        if (me.isEmpty()) return 0
+        var cleared = 0
+        while (true) {
+            val snapshot = messages
+                .orderBy("sentAtMs", Query.Direction.DESCENDING)
+                .limit(300)
+                .get()
+                .await()
+            val targets = snapshot.documents.filter { doc ->
+                val hidden = doc.get("hiddenFor") as? List<*> ?: emptyList<Any>()
+                !hidden.contains(me)
+            }
+            if (targets.isEmpty()) return cleared
+            val batch = db.batch()
+            targets.forEach { batch.update(it.reference, "hiddenFor", FieldValue.arrayUnion(me)) }
+            batch.commit().await()
+            cleared += targets.size
+            if (snapshot.size() < 300) return cleared
         }
     }
 

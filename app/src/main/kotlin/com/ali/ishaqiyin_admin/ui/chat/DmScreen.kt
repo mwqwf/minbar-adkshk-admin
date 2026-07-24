@@ -11,6 +11,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,14 +25,23 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.KeyboardDoubleArrowDown
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -59,12 +71,16 @@ import com.ali.ishaqiyin_admin.data.ChatNotifications
 import com.ali.ishaqiyin_admin.data.ChatReplyRef
 import com.ali.ishaqiyin_admin.data.ChatRepository
 import com.ali.ishaqiyin_admin.data.DmRepository
+import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.ali.ishaqiyin_admin.data.QUICK_REACTIONS
 import com.ali.ishaqiyin_admin.data.chatTypeForMime
 import com.ali.ishaqiyin_admin.data.chatTypeLabel
 import com.ali.ishaqiyin_admin.data.guessContentType
+import com.ali.ishaqiyin_admin.ui.ConfirmDialog
 import com.ali.ishaqiyin_admin.ui.LocalSnack
+import com.ali.ishaqiyin_admin.ui.adminFieldColors
 import com.ali.ishaqiyin_admin.util.AudioRecorderController
+import com.ali.ishaqiyin_admin.util.ImageCompressor
 import com.ali.ishaqiyin_admin.util.PickedFile
 import com.ali.ishaqiyin_admin.util.pickedFileFrom
 import com.google.firebase.auth.FirebaseAuth
@@ -113,6 +129,11 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
     var actionsFor by remember { mutableStateOf<ChatMessage?>(null) }
     var showAttachMenu by remember { mutableStateOf(false) }
     var pendingUpload by remember { mutableStateOf<PickedFile?>(null) }
+    var forwarding by remember { mutableStateOf<ChatMessage?>(null) }
+    var searching by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var menuOpen by remember { mutableStateOf(false) }
+    var confirmClearChat by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
     val membersList by ChatRepository.membersStream().collectAsState(initial = emptyList())
@@ -190,12 +211,17 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         uploadName = file.name
         uploadAborted = false
         scope.launch {
+            var temp: java.io.File? = null
             try {
+                // ضغط الصور قبل الرفع (توفير كبير على الشبكات الضعيفة).
+                val prepared = ImageCompressor.prepare(context, file, contentType)
+                temp = prepared.temp
+                val payload = prepared.file
                 DmRepository.sendAttachment(
                     threadId = threadId,
                     otherUid = otherUid,
-                    uri = file.uri,
-                    filename = file.name,
+                    uri = payload.uri,
+                    filename = payload.name,
                     contentType = contentType,
                     type = type,
                     durationMs = durationMs,
@@ -207,6 +233,7 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                 if (!uploadAborted) snack("فشل رفع \"${file.name}\": ${e.message ?: e}")
             } finally {
                 runCatching { deleteAfter?.delete() }
+                runCatching { temp?.delete() }
                 uploading = false
             }
         }
@@ -274,6 +301,10 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                         actionsFor = null
                         replyTo = msg.asRef()
                     }
+                    DmSheetItem(Icons.Filled.Share, "إعادة توجيه", ChatColors.accent) {
+                        actionsFor = null
+                        forwarding = msg
+                    }
                     if (msg.text.isNotBlank()) {
                         DmSheetItem(
                             Icons.Filled.ContentCopy,
@@ -307,8 +338,64 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         }
     }
 
+    if (confirmClearChat) {
+        ConfirmDialog(
+            title = "مسح المحادثة عندي",
+            body = "ستختفي كلّ رسائل هذه المحادثة من جهازك أنت فقط — يبقى كلّ " +
+                "شيء كما هو عند الطرف الآخر. متابعة؟",
+            confirmLabel = "مسح عندي",
+            confirmColor = ChatColors.rose,
+            onDismiss = { confirmClearChat = false },
+            onConfirm = {
+                confirmClearChat = false
+                scope.launch {
+                    runCatching { DmRepository.clearForMe(threadId) }
+                        .onSuccess { snack("مُسحت المحادثة عندك ($it رسالة).") }
+                        .onFailure { snack("تعذّر المسح: ${it.message ?: it}") }
+                }
+            },
+        )
+    }
+
+    forwarding?.let { msg ->
+        ForwardPickerSheet(
+            members = membersList,
+            myUid = myUid,
+            includeGroup = true,
+            onDismiss = { forwarding = null },
+            onPickGroup = {
+                forwarding = null
+                scope.launch {
+                    runCatching { ChatRepository.forward(msg) }
+                        .onSuccess { snack("أُعيد توجيه الرسالة إلى المجموعة.") }
+                        .onFailure { snack("تعذّرت إعادة التوجيه: ${it.message ?: it}") }
+                }
+            },
+            onPickMember = { member ->
+                forwarding = null
+                scope.launch {
+                    runCatching {
+                        val target = DmRepository.ensureThread(member.uid)
+                        DmRepository.forward(target, member.uid, msg)
+                    }
+                        .onSuccess { snack("أُعيد توجيه الرسالة إلى ${member.displayName}.") }
+                        .onFailure { snack("تعذّرت إعادة التوجيه: ${it.message ?: it}") }
+                }
+            },
+        )
+    }
+
     Surface(color = ChatColors.bg, modifier = Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize().padding(top = 24.dp)) {
+        // edge-to-edge إجباريّ على targetSdk 36: بلا هذه الحشوات يقع شريط
+        // الإدخال والميكروفون خلف شريط التنقّل فتُبتلع اللمسات، ويختفي جزء
+        // من الترويسة خلف شريط الحالة.
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding(),
+        ) {
             // ── الترويسة ──
             Surface(color = ChatColors.surface) {
                 Row(
@@ -366,12 +453,92 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                             },
                         )
                     }
+                    IconButton(
+                        onClick = {
+                            searching = !searching
+                            if (!searching) searchQuery = ""
+                        },
+                    ) {
+                        Icon(
+                            Icons.Filled.Search,
+                            contentDescription = "بحث في الرسائل",
+                            tint = ChatColors.textMuted,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    Box {
+                        IconButton(onClick = { menuOpen = true }) {
+                            Icon(
+                                Icons.Filled.MoreVert,
+                                contentDescription = "خيارات",
+                                tint = ChatColors.textMuted,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false },
+                        ) {
+                            DropdownMenuItem(
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.CleaningServices,
+                                        contentDescription = null,
+                                        tint = ChatColors.rose,
+                                    )
+                                },
+                                text = { Text("مسح المحادثة عندي") },
+                                onClick = {
+                                    menuOpen = false
+                                    confirmClearChat = true
+                                },
+                            )
+                        }
+                    }
                     Icon(
                         Icons.Filled.Lock,
                         contentDescription = null,
                         tint = ChatColors.textMuted,
                         modifier = Modifier.size(15.dp),
                     )
+                }
+            }
+            if (searching) {
+                Surface(color = ChatColors.surface) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(start = 14.dp, end = 6.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.Search,
+                            contentDescription = null,
+                            tint = ChatColors.textMuted,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("ابحث في الرسائل…") },
+                            singleLine = true,
+                            colors = adminFieldColors(),
+                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                        )
+                        IconButton(
+                            onClick = {
+                                searching = false
+                                searchQuery = ""
+                            },
+                        ) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = null,
+                                tint = ChatColors.textMuted,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
                 }
             }
 
@@ -404,6 +571,23 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                     }
                 } else {
                     val otherRead = thread?.readAtMs?.get(otherUid) ?: 0L
+                    val query = searchQuery.trim().lowercase()
+                    val shown = if (query.isEmpty()) {
+                        messages
+                    } else {
+                        messages.filter {
+                            it.text.lowercase().contains(query) ||
+                                it.attachment?.name?.lowercase()?.contains(query) == true
+                        }
+                    }
+                    if (shown.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                "لا نتائج لـ «$searchQuery» ضمن المحمَّل.",
+                                color = ChatColors.textMuted,
+                            )
+                        }
+                    }
                     LazyColumn(
                         state = listState,
                         reverseLayout = true,
@@ -412,9 +596,9 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                         ),
                         modifier = Modifier.fillMaxSize(),
                     ) {
-                        items(messages.size) { i ->
-                            val msg = messages[i]
-                            val older = messages.getOrNull(i + 1)
+                        items(shown.size) { i ->
+                            val msg = shown[i]
+                            val older = shown.getOrNull(i + 1)
                             val showDateChip = older == null ||
                                 !sameDay(older.createdAtMs, msg.createdAtMs)
                             Column {
@@ -432,9 +616,32 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                             }
                         }
                     }
+                    val showJump by remember {
+                        androidx.compose.runtime.derivedStateOf {
+                            listState.firstVisibleItemIndex > 3
+                        }
+                    }
+                    if (showJump) {
+                        FloatingActionButton(
+                            onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                            containerColor = ChatColors.surfaceAlt,
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(12.dp)
+                                .size(40.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.KeyboardDoubleArrowDown,
+                                contentDescription = null,
+                                tint = ChatColors.accent,
+                            )
+                        }
+                    }
                 }
             }
 
+            val online by NetworkMonitor.online.collectAsState()
+            if (!online) OfflineBanner()
             if (uploading) {
                 UploadBanner(uploadName, uploadPct) { uploadAborted = true }
             }

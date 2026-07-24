@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.SdStorage
+import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -109,6 +110,7 @@ fun GroupInfoScreen(isOwner: Boolean, nav: NavHostController, onBack: () -> Unit
     var showProfile by remember { mutableStateOf(false) }
     var editingName by remember { mutableStateOf(false) }
     var confirmClearMedia by remember { mutableStateOf(false) }
+    var confirmClearChat by remember { mutableStateOf(false) }
 
     LaunchedEffect(mediaRefresh) { mediaBytes = ChatMediaStore.totalBytes() }
 
@@ -156,6 +158,27 @@ fun GroupInfoScreen(isOwner: Boolean, nav: NavHostController, onBack: () -> Unit
                             .onSuccess { snack("تم تحديث اسم المجموعة.") }
                             .onFailure { snack("فشل: ${it.message ?: it}") }
                     }
+                }
+            },
+        )
+    }
+
+    if (confirmClearChat) {
+        ConfirmDialog(
+            title = "مسح المحادثة عندي",
+            body = "ستختفي كلّ رسائل المجموعة من جهازك أنت فقط — يبقى كلّ شيء " +
+                "كما هو عند بقيّة الأعضاء، ولا يُحذف أيّ ملفّ من الخادم. متابعة؟",
+            confirmLabel = "مسح عندي",
+            confirmColor = ChatColors.rose,
+            onDismiss = { confirmClearChat = false },
+            onConfirm = {
+                confirmClearChat = false
+                busy = true
+                scope.launch {
+                    runCatching { ChatRepository.clearForMe() }
+                        .onSuccess { snack("مُسحت المحادثة عندك ($it رسالة).") }
+                        .onFailure { snack("تعذّر المسح: ${it.message ?: it}") }
+                    busy = false
                 }
             },
         )
@@ -353,6 +376,13 @@ fun GroupInfoScreen(isOwner: Boolean, nav: NavHostController, onBack: () -> Unit
                         autoDownload = value
                         AppPrefs.autoDownloadMedia = value
                     }
+                    InfoTile(
+                        Icons.Filled.CleaningServices,
+                        "مسح المحادثة عندي",
+                        "تختفي الرسائل من جهازك وحدك — لا تتأثّر نسخة الآخرين",
+                        tint = ChatColors.rose,
+                        enabled = !busy,
+                    ) { confirmClearChat = true }
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,

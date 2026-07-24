@@ -253,9 +253,60 @@ object DmRepository {
         )
     }
 
+    /** إعادة توجيه رسالة إلى محادثة خاصّة (بنفس المرفق، بلا إعادة رفع). */
+    suspend fun forward(threadId: String, otherUid: String, msg: ChatMessage) {
+        msgs(threadId).add(
+            senderFields() + mapOf(
+                "type" to chatTypeToString(msg.type),
+                "text" to msg.text,
+                "att" to msg.attachment?.toMap(),
+                "replyTo" to null,
+                "sentAtMs" to System.currentTimeMillis(),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "deleted" to false,
+                "deletedBy" to "",
+                "hiddenFor" to emptyList<String>(),
+                "reactions" to emptyMap<String, String>(),
+            ),
+        ).await()
+        touchThread(
+            threadId,
+            otherUid,
+            msg.text.ifEmpty { chatTypeLabel(msg.type) },
+            msg.type,
+        )
+    }
+
     suspend fun deleteForMe(threadId: String, messageId: String) {
         msgs(threadId).document(messageId)
             .update("hiddenFor", FieldValue.arrayUnion(uid)).await()
+    }
+
+    /**
+     * 🧹 «مسح المحادثة عندي» في محادثة خاصّة — يُخفي كلّ رسائلها عنّي وحدي
+     * (hiddenFor) دون أن يفقد الطرف الآخر شيئاً، ودون حذف من الخادم.
+     */
+    suspend fun clearForMe(threadId: String): Int {
+        val me = uid
+        if (me.isEmpty()) return 0
+        var cleared = 0
+        while (true) {
+            val snapshot = msgs(threadId)
+                .orderBy("sentAtMs", Query.Direction.DESCENDING)
+                .limit(300)
+                .get()
+                .await()
+            val targets = snapshot.documents.filter { doc ->
+                val hidden = doc.get("hiddenFor") as? List<*> ?: emptyList<Any>()
+                !hidden.contains(me)
+            }
+            if (targets.isEmpty()) return cleared
+            val batch = db.batch()
+            targets.forEach { batch.update(it.reference, "hiddenFor", FieldValue.arrayUnion(me)) }
+            batch.commit().await()
+            cleared += targets.size
+            if (snapshot.size() < 300) return cleared
+        }
     }
 
     /** حذف عند الطرفين — للمرسِل نفسه فقط (لا إشراف في المحادثات الخاصّة). */
