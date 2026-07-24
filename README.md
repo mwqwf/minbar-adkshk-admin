@@ -1,0 +1,55 @@
+# إدارة منبر ادكصهك — Android أصلي بـ Kotlin
+
+لوحة إدارة تطبيق «منبر ادكصهك»، مكتوبة بـ Kotlin وJetpack Compose، منقولة
+نقلاً أميناً عن نسخة Flutter (`ishaqiyin_admin`) بكامل شاشاتها ومزاياها.
+
+## الثوابت التي لا تتغيّر
+
+- `applicationId`: `com.ali.ishaqiyin_admin` — **لا تُغيَّر**، لأن عميل Google
+  OAuth وبصمة SHA-1 مربوطان بها في مشروع Firebase `mxqp-8d1e8`.
+- مشروع Firebase نفسه (`mxqp-8d1e8`) ونفس المجموعات والدوال ومسارات Storage.
+- `minSdk` 23، و`targetSdk`/`compileSdk` 36.
+- لا `google-services.json`: التهيئة في الكود (`core/Config.kt`) تماماً كما
+  كانت في `firebase_options.dart`.
+- `versionCode = 2002` لأن نسخة Flutter المثبَّتة تحمل 2001، والتثبيت فوقها
+  يتطلّب رقماً أعلى (وإلا فُقدت جلسة الدخول بإلغاء التثبيت).
+
+## ما نُقل
+
+| المجال | التفاصيل |
+|---|---|
+| المصادقة | Google حصراً عبر Credential Manager (بديل `google_sign_in`)، Owner Bypass للمالك، رمز اعتماد للمشرف الجديد عبر «طلب بوثيقة» في Firestore |
+| المحتوى | إضافة درس (رفع متعدّد + دمج MP3 خالص Kotlin + تسجيل مباشر)، إدارة الأقسام، بحث/تعديل/حذف، تمييز وجدولة نشر |
+| المراجعة | طلبات النشر (موافقة/تعديل ثم نشر/رفض بسبب)، الدروس المشبوهة (للمالك) |
+| التحليلات | الاستماع، الأكثر استماعاً، أنشط الأقسام، لوحة شرف المشرفين، تفاعل المستمعين |
+| الحسابات | الحساب والصلاحية، رموز الاعتماد الحيّة، إدارة المشرفين (حظر مؤقّت/نهائي/حذف) |
+| الدردشة | مجموعة الإدارة كاملة (ردود، تفاعلات، تثبيت، قفل، حضور، «يكتب…»، ✓✓، بحث، حذف عندي/عند الجميع) + المحادثات الفرديّة + «ردّ بشكل خاص» |
+| الوسائط | تُنزَّل أولاً إلى الجهاز ثم تُشغَّل محليّاً (نمط واتساب) — صوت/صورة/فيديو/ملفّات |
+| الإشعارات | تسجيل جهاز المشرف، قناتا `admin_alerts` و`admin_urgent_alerts`، كتم المجموعة |
+| المشاركة | استقبال صوتيات من تطبيقات أخرى (`ACTION_SEND`) وفتح نموذج الإضافة معبّأً |
+
+## بدائل حزم Flutter
+
+| Flutter | Kotlin |
+|---|---|
+| `google_sign_in` | `androidx.credentials` + `googleid` |
+| `file_picker` | `ActivityResultContracts.GetContent` / `GetMultipleContents` |
+| `record` | `MediaRecorder` (AAC/m4a) |
+| `just_audio` | `media3-exoplayer` |
+| `video_player` | `media3-ui` + ExoPlayer |
+| `cached_network_image` | `coil3` |
+| `open_filex` | `FileProvider` + `ACTION_VIEW` |
+| `url_launcher` | `Intent.ACTION_VIEW` |
+| `shared_preferences` | `SharedPreferences` |
+| `flutter_local_notifications` | `NotificationCompat` |
+
+## البناء
+
+```bash
+./gradlew assembleDebug
+```
+
+المتطلبات: JDK 17 (يكفي `jbr` المرفق مع Android Studio)، وAndroid SDK 36.
+
+نسخة الإصدار تحتاج إعداد توقيع عبر `signing.properties` أو متغيّرات البيئة
+`MINBAR_ADMIN_SIGNING_*`؛ لا تُنسخ المفاتيح داخل المشروع أبداً.

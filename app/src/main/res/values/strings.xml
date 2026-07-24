@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">إدارة منبر ادكصهك</string>
+    <string name="admin_alerts_channel_name">تنبيهات الإدارة</string>
+    <string name="admin_alerts_channel_desc">مساهمات المستمعين ورموز الاعتماد ورسائل مجموعة الإدارة</string>
+    <string name="admin_urgent_channel_name">تنبيهات الإدارة العاجلة</string>
+    <string name="admin_urgent_channel_desc">طلبات النشر والدروس المشبوهة والتنبيهات الإدارية</string>
+</resources>

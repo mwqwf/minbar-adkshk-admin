@@ -1,0 +1,331 @@
+package com.ali.ishaqiyin_admin.data
+
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
+import com.google.firebase.functions.FirebaseFunctions
+import com.google.firebase.functions.FirebaseFunctionsException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.tasks.await
+
+/**
+ * كل عمليات القراءة/الكتابة على Firestore لإدارة محتوى منبر.
+ * المجموعات: categories, subcategories, lessons,
+ * dashboard_admins, dashboard_owner_codes.
+ */
+object AdminRepository {
+    private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
+    private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
+
+    private const val DASH_COL = "dashboard_admins"
+    private const val OWNER_CODES_COL = "dashboard_owner_codes"
+
+    // ---------------- جلب ----------------
+    suspend fun fetchCategories(): List<Category> {
+        val snap = db.collection("categories").get().await()
+        return snap.documents
+            .map { Category.fromDoc(it.id, it.dataMap()) }
+            .sortedBy { it.name }
+    }
+
+    suspend fun fetchSubcategories(): List<Subcategory> {
+        val snap = db.collection("subcategories").get().await()
+        return snap.documents.map { Subcategory.fromDoc(it.id, it.dataMap()) }
+    }
+
+    suspend fun fetchLessons(): List<Lesson> {
+        val snap = db.collection("lessons").get().await()
+        return snap.documents
+            .map { Lesson.fromDoc(it.id, it.dataMap()) }
+            .sortedByDescending { it.createdAtMs }
+    }
+
+    // ---------------- مشرفو لوحة التحكّم (dashboard_admins) ----------------
+    // المشرف يُنشأ فقط عبر رمز الاعتماد (AuthService.verifyOwnerCode)، تماماً
+    // كما في نبراس — لا يوجد هنا إضافة مشرف يدوياً بكتابة بريده.
+
+    /**
+     * قائمة كل الحسابات المصرَّح لها (المالك + المشرفون) — نظير صفحة
+     * المشرفين في نبراس. أحدث تسجيل دخول في الأعلى (fallback: addedAt).
+     */
+    suspend fun fetchDashAdmins(): List<DashAdmin> {
+        val snap = db.collection(DASH_COL).get().await()
+        return snap.documents
+            .map { DashAdmin.fromDoc(it.id, it.dataMap()) }
+            .sortedByDescending { it.lastSignedInAtMs ?: it.addedAtMs }
+    }
+
+    /** حالة بريد معيّن: null إن غير موجود، وإلا الوثيقة. */
+    suspend fun getDashAdmin(email: String): DashAdmin? {
+        val id = email.trim().lowercase()
+        if (id.isEmpty()) return null
+        val doc = db.collection(DASH_COL).document(id).get().await()
+        if (!doc.exists()) return null
+        return DashAdmin.fromDoc(doc.id, doc.dataMap())
+    }
+
+    /**
+     * يثبّت دور المالك ويحدّث وقت آخر دخول (idempotent — نظير Owner Bypass
+     * في نبراس). يُستدعى من AuthService.resolveAccess عند كل دخول للمالك.
+     */
+    suspend fun upsertOwnerRecord(email: String, displayName: String = "", photoURL: String = "") {
+        val id = email.trim().lowercase()
+        if (id.isEmpty()) return
+        db.collection(DASH_COL).document(id).set(
+            mapOf(
+                "email" to id,
+                "role" to "owner",
+                "blocked" to false,
+                "blockMode" to null,
+                "displayName" to displayName,
+                "photoURL" to photoURL,
+                "addedBy" to "owner_bypass",
+                "addedAt" to nowIso(),
+                "lastSignedInAt" to nowIso(),
+            ),
+            SetOptions.merge(),
+        ).await()
+    }
+
+    /**
+     * يحدّث وقت آخر دخول لمشرف معتمَد (مسموح للمستخدم بتحديث وثيقته فقط
+     * طالما غير محظور — انظر firestore.rules).
+     */
+    suspend fun touchLastSignedIn(email: String) {
+        val id = email.trim().lowercase()
+        if (id.isEmpty()) return
+        runCatching {
+            db.collection(DASH_COL).document(id)
+                .update("lastSignedInAt", nowIso()).await()
+        }
+    }
+
+    /** حظر مؤقّت/نهائي أو إلغاء الحظر — نظير أزرار صفحة المشرفين في نبراس. */
+    suspend fun setDashAdminBlocked(email: String, blocked: Boolean, mode: String = "temporary") {
+        val id = email.trim().lowercase()
+        db.collection(DASH_COL).document(id).update(
+            mapOf(
+                "blocked" to blocked,
+                "blockMode" to if (blocked) mode else null,
+                "blockedAt" to if (blocked) nowIso() else null,
+            ),
+        ).await()
+    }
+
+    suspend fun removeDashAdmin(email: String) {
+        val id = email.trim().lowercase()
+        db.collection(DASH_COL).document(id).delete().await()
+    }
+
+    /**
+     * بثّ حيّ لكل رموز الاعتماد المعلَّقة (يقرؤها المالك فقط — firestore.rules).
+     * الرموز الحقيقية وثائق بمعرّف = بريد المرشّح؛ وثيقة `current` مرآة توافق
+     * قديمة تُستبعد كي لا يظهر الرمز نفسه مرتين.
+     */
+    fun watchPendingOwnerCodes(): Flow<List<PendingOwnerCode>> =
+        db.collection(OWNER_CODES_COL).querySnapshots().map { snap ->
+            snap.documents
+                .filter { it.id != "current" }
+                .map { PendingOwnerCode.fromDoc(it.dataMap()) }
+                .filter { !it.isExpired && it.code.isNotEmpty() }
+                .sortedByDescending { it.expiresAtMs }
+        }
+
+    /**
+     * يُبطل رمز مرشّح فعلياً: يحذف وثيقة بريده (التي يتحقق منها الخادم)،
+     * ومرآة `current` إن كانت تخص المرشّح نفسه.
+     */
+    suspend fun cancelOwnerCode(code: PendingOwnerCode) {
+        val email = code.candidateEmail.trim().lowercase()
+        if (email.isNotEmpty()) {
+            db.collection(OWNER_CODES_COL).document(email).delete().await()
+        }
+        runCatching {
+            val mirrorRef = db.collection(OWNER_CODES_COL).document("current")
+            val mirror = mirrorRef.get().await()
+            val mirrorEmail = str(mirror.dataMap()["candidateEmail"]).lowercase()
+            if (mirror.exists() && (mirrorEmail.isEmpty() || mirrorEmail == email)) {
+                mirrorRef.delete().await()
+            }
+        }
+    }
+
+    // ---------------- إضافة ----------------
+    suspend fun addCategory(name: String) {
+        db.collection("categories").add(
+            mapOf("name" to name.trim(), "createdAt" to nowIso()),
+        ).await()
+    }
+
+    suspend fun addSubcategory(name: String, categoryId: String) {
+        db.collection("subcategories").add(
+            mapOf(
+                "name" to name.trim(),
+                "categoryId" to categoryId,
+                "createdAt" to nowIso(),
+            ),
+        ).await()
+    }
+
+    suspend fun addLesson(
+        title: String,
+        categoryId: String,
+        subcategoryId: String,
+        audioUrl: String,
+        audioStoragePath: String? = null,
+        addedBy: String = "",
+        publishAtMs: Long? = null,
+        featured: Boolean = false,
+    ) {
+        val data = mutableMapOf<String, Any>(
+            "title" to title.trim(),
+            "categoryId" to categoryId,
+            "subcategoryId" to subcategoryId,
+            "audioUrl" to audioUrl,
+            "createdAt" to nowIso(),
+        )
+        if (!audioStoragePath.isNullOrEmpty()) data["audioStoragePath"] = audioStoragePath
+        if (featured) data["featured"] = true
+        if (addedBy.isNotEmpty()) data["addedBy"] = addedBy.lowercase()
+        if (publishAtMs != null) data["publishAt"] = isoOf(publishAtMs)
+        functions.getHttpsCallable("createLesson").call(data).await()
+    }
+
+    /** تمييز/إلغاء تمييز درس (يظهر في «المميّزة» أعلى التطبيق). */
+    suspend fun setLessonFeatured(id: String, featured: Boolean) =
+        updateCompat("lessons", id, mapOf("featured" to featured))
+
+    /** جدولة/إلغاء جدولة نشر درس (يظهر للمستخدمين عند حلول الوقت). */
+    suspend fun setLessonPublishAt(id: String, whenMs: Long?) =
+        updateCompat(
+            "lessons",
+            id,
+            mapOf("publishAt" to (if (whenMs == null) FieldValue.delete() else isoOf(whenMs))),
+        )
+
+    /**
+     * «نشر الآن» لدرس مجدول: عبر الدالة الخادمية التي تنشر **وترسل إشعار
+     * «درس جديد»** (حذف publishAt وحده كان ينشر بصمت بلا أيّ إشعار).
+     * إن تعذّر الوصول للدالة نعود للسلوك القديم كي لا يعلق المشرف.
+     */
+    suspend fun publishScheduledNow(lessonId: String) {
+        try {
+            functions.getHttpsCallable("publishScheduledLesson")
+                .call(mapOf("lessonId" to lessonId)).await()
+        } catch (e: FirebaseFunctionsException) {
+            val code = e.code
+            if (code == FirebaseFunctionsException.Code.UNIMPLEMENTED ||
+                code == FirebaseFunctionsException.Code.UNAVAILABLE ||
+                code == FirebaseFunctionsException.Code.INTERNAL ||
+                code == FirebaseFunctionsException.Code.NOT_FOUND
+            ) {
+                setLessonPublishAt(lessonId, null)
+                return
+            }
+            throw e
+        }
+    }
+
+    // ---------------- تعديل ----------------
+    suspend fun updateCategory(id: String, name: String) =
+        updateCompat("categories", id, mapOf("name" to name.trim()))
+
+    suspend fun updateSubcategory(id: String, name: String) =
+        updateCompat("subcategories", id, mapOf("name" to name.trim()))
+
+    suspend fun updateLessonTitle(id: String, title: String) =
+        updateCompat("lessons", id, mapOf("title" to title.trim()))
+
+    /**
+     * يحافظ على شكل الوثائق القديمة `{data:{...}}` بدلاً من كتابة حقل جديد
+     * في الجذر لا يقرأه التطبيق العام.
+     */
+    private suspend fun updateCompat(collection: String, id: String, fields: Map<String, Any?>) {
+        val ref = db.collection(collection).document(id)
+        val user = FirebaseAuth.getInstance().currentUser
+        val tracked = buildMap<String, Any?> {
+            putAll(fields)
+            if (user != null) put("updatedByUid", user.uid)
+            val email = user?.email.orEmpty()
+            if (email.isNotEmpty()) put("updatedByEmail", email.trim().lowercase())
+            put("updatedAt", nowIso())
+        }
+        db.runTransaction { transaction ->
+            val snapshot = transaction.get(ref)
+            if (!snapshot.exists()) error("المستند المطلوب غير موجود.")
+            val raw = snapshot.data ?: emptyMap()
+            if (raw["data"] is Map<*, *>) {
+                transaction.update(ref, tracked.mapKeys { "data.${it.key}" })
+            } else {
+                transaction.update(ref, tracked)
+            }
+            null
+        }.await()
+    }
+
+    // ---------------- حذف ----------------
+    /**
+     * يحذف القسم الرئيسي حذفاً تعاقبياً كاملاً: كل أقسامه الفرعية ودروسها
+     * (مع ملفاتها الصوتية في التخزين)، ثم أي دروس مرتبطة به مباشرةً، ثم القسم.
+     */
+    suspend fun deleteCategory(id: String) {
+        functions.getHttpsCallable("deleteCategoryCascade")
+            .call(mapOf("categoryId" to id)).await()
+    }
+
+    /**
+     * يحذف القسم الفرعي حذفاً تعاقبياً: كل دروسه (مع ملفاتها الصوتية في
+     * التخزين)، ثم وثيقة القسم الفرعي.
+     */
+    suspend fun deleteSubcategory(id: String) {
+        functions.getHttpsCallable("deleteSubcategoryCascade")
+            .call(mapOf("subcategoryId" to id)).await()
+    }
+
+    /** يحذف الدرس: الملف الصوتي من التخزين (إن وُجد) ثم الوثيقة. */
+    suspend fun deleteLesson(lesson: Lesson) {
+        functions.getHttpsCallable("deleteLesson")
+            .call(mapOf("lessonId" to lesson.id)).await()
+    }
+
+    // ---------------- تفاعل المستمعين (feedback) ----------------
+    suspend fun fetchFeedback(): List<Map<String, Any?>> {
+        val snap = db.collection("feedback").get().await()
+        return snap.documents
+            .map { doc -> buildMap<String, Any?> { put("id", doc.id); putAll(doc.dataMap()) } }
+            .sortedByDescending { (it["createdAtMs"] as? Number)?.toLong() ?: 0L }
+    }
+
+    suspend fun deleteFeedback(id: String) {
+        db.collection("feedback").document(id).delete().await()
+    }
+
+    // ---------------- تنبيهات المشرف (إنجازات/تقرير أسبوعي) ----------------
+    /** يزيل خادمياً تنبيهات المساهمات التي حُسمت قبل الإصلاح الحالي. */
+    suspend fun cleanupResolvedAdminAlerts() {
+        // لا نحجب اللوحة إذا كانت الدالة لم تُنشر بعد أو كان الاتصال ضعيفاً.
+        runCatching { functions.getHttpsCallable("cleanupResolvedAdminAlerts").call().await() }
+    }
+
+    /** المالك يرى كل التنبيهات؛ المشرف يرى تنبيهاته والعامة (email == ''). */
+    suspend fun fetchAdminAlerts(email: String, isOwner: Boolean): List<Map<String, Any?>> {
+        val e = email.trim().lowercase()
+        val docs = LinkedHashMap<String, Map<String, Any?>>()
+        if (isOwner) {
+            db.collection("admin_alerts").get().await().documents.forEach {
+                docs[it.id] = buildMap { put("id", it.id); putAll(it.dataMap()) }
+            }
+        } else {
+            if (e.isEmpty()) return emptyList()
+            // تطابق قواعد القراءة: لا نجلب كل التنبيهات ثم نرشّحها محلياً.
+            val personal = db.collection("admin_alerts").whereEqualTo("email", e).get().await()
+            val general = db.collection("admin_alerts").whereEqualTo("email", "").get().await()
+            (personal.documents + general.documents).forEach {
+                docs[it.id] = buildMap { put("id", it.id); putAll(it.dataMap()) }
+            }
+        }
+        return docs.values.sortedByDescending { (it["createdAtMs"] as? Number)?.toLong() ?: 0L }
+    }
+}

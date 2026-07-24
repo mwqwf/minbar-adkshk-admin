@@ -1,0 +1,35 @@
+package com.ali.ishaqiyin_admin.core
+
+/**
+ * إعدادات لوحة إدارة منبر ادكصهك.
+ * القيم ثابتة في الكود كما كانت في نسخة Flutter (`lib/core/config.dart`)،
+ * ولا تُخزَّن هنا أيّ أسرار: مفتاح المالك بريد معلن، ومعرّف عميل Google عامّ.
+ */
+object AppConfig {
+    /**
+     * بريد المالك المخوّل بالكتابة — نفس البريد المستعمل في لوحة نبراس.
+     * يجب أن يطابق القيمة في قواعد Firestore/Storage.
+     */
+    const val OWNER_EMAIL = "bdalmjydtbwn812@gmail.com"
+
+    /**
+     * Web OAuth client (نوع 3) لمشروع mxqp-8d1e8 — مطلوب ليُصدِر تسجيل الدخول
+     * بـ Google على Android رمز ID صالحاً لـ Firebase Auth (وهو الطريقة
+     * الوحيدة للدخول، نظير نبراس).
+     */
+    const val GOOGLE_SERVER_CLIENT_ID =
+        "502388954405-gak0aso996p37run9ohovjbinv31r3vk.apps.googleusercontent.com"
+
+    val googleSignInConfigured: Boolean get() = GOOGLE_SERVER_CLIENT_ID.isNotEmpty()
+}
+
+/** إعداد Firebase لمشروع التطبيق نفسه (mxqp-8d1e8) بحزمة اللوحة. */
+object FirebaseConfig {
+    const val API_KEY = "AIzaSyCWAHqbzhfQ-ZcjSSVCAhFFqCTgQ66SdCs"
+
+    /** appId الخاص بحزمة com.ali.ishaqiyin_admin (مُسجَّلة في mxqp-8d1e8). */
+    const val APP_ID = "1:502388954405:android:21ab2f65113166c689b6cc"
+    const val SENDER_ID = "502388954405"
+    const val PROJECT_ID = "mxqp-8d1e8"
+    const val STORAGE_BUCKET = "mxqp-8d1e8.firebasestorage.app"
+}

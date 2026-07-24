@@ -1,0 +1,416 @@
+package com.ali.ishaqiyin_admin.ui
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.ali.ishaqiyin_admin.data.AdminRepository
+import com.ali.ishaqiyin_admin.data.Category
+import com.ali.ishaqiyin_admin.data.Lesson
+import com.ali.ishaqiyin_admin.data.Subcategory
+import kotlinx.coroutines.launch
+
+private sealed interface PendingAction {
+    data class EditCategory(val item: Category) : PendingAction
+    data class EditSubcategory(val item: Subcategory) : PendingAction
+    data class EditLesson(val item: Lesson) : PendingAction
+    data class DeleteCategory(val item: Category) : PendingAction
+    data class DeleteSubcategory(val item: Subcategory) : PendingAction
+    data class DeleteLesson(val item: Lesson) : PendingAction
+    data class PublishNow(val item: Lesson) : PendingAction
+}
+
+@Composable
+fun ManageAllScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val snack = LocalSnack.current
+
+    var categories by remember { mutableStateOf<List<Category>>(emptyList()) }
+    var subcategories by remember { mutableStateOf<List<Subcategory>>(emptyList()) }
+    var lessons by remember { mutableStateOf<List<Lesson>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var query by remember { mutableStateOf("") }
+    var reload by remember { mutableIntStateOf(0) }
+    var pending by remember { mutableStateOf<PendingAction?>(null) }
+
+    LaunchedEffect(reload) {
+        loading = true
+        runCatching {
+            categories = AdminRepository.fetchCategories()
+            subcategories = AdminRepository.fetchSubcategories()
+            lessons = AdminRepository.fetchLessons()
+        }
+        loading = false
+    }
+
+    fun <T> filter(list: List<T>, name: (T) -> String): List<T> {
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) return emptyList()
+        return list.mapNotNull { item ->
+            val idx = name(item).lowercase().indexOf(q)
+            if (idx == -1) null else item to idx
+        }.sortedBy { it.second }.map { it.first }
+    }
+
+    fun subName(id: String): String = subcategories.firstOrNull { it.id == id }?.name.orEmpty()
+
+    val cats = filter(categories) { it.name }
+    val subs = filter(subcategories) { it.name }
+    val foundLessons = filter(lessons) { it.title }
+    val hasQuery = query.trim().isNotEmpty()
+    val empty = hasQuery && cats.isEmpty() && subs.isEmpty() && foundLessons.isEmpty()
+
+    // حوارات التعديل/الحذف
+    when (val action = pending) {
+        is PendingAction.EditCategory -> EditTextDialog(
+            title = "تعديل القسم الرئيسي",
+            initial = action.item.name,
+            onDismiss = { pending = null },
+            onSave = { name ->
+                pending = null
+                if (name.isNotEmpty() && name != action.item.name) {
+                    scope.launch {
+                        runCatching { AdminRepository.updateCategory(action.item.id, name) }
+                            .onSuccess { snack("تم التعديل."); reload++ }
+                            .onFailure { snack("تعذّر التعديل: ${it.message ?: it}") }
+                    }
+                }
+            },
+        )
+
+        is PendingAction.EditSubcategory -> EditTextDialog(
+            title = "تعديل القسم الفرعي",
+            initial = action.item.name,
+            onDismiss = { pending = null },
+            onSave = { name ->
+                pending = null
+                if (name.isNotEmpty() && name != action.item.name) {
+                    scope.launch {
+                        runCatching { AdminRepository.updateSubcategory(action.item.id, name) }
+                            .onSuccess { snack("تم التعديل."); reload++ }
+                            .onFailure { snack("تعذّر التعديل: ${it.message ?: it}") }
+                    }
+                }
+            },
+        )
+
+        is PendingAction.EditLesson -> EditTextDialog(
+            title = "تعديل عنوان الدرس",
+            initial = action.item.title,
+            onDismiss = { pending = null },
+            onSave = { title ->
+                pending = null
+                if (title.isNotEmpty() && title != action.item.title) {
+                    scope.launch {
+                        runCatching { AdminRepository.updateLessonTitle(action.item.id, title) }
+                            .onSuccess { snack("تم التعديل."); reload++ }
+                            .onFailure { snack("تعذّر التعديل: ${it.message ?: it}") }
+                    }
+                }
+            },
+        )
+
+        is PendingAction.DeleteCategory -> ConfirmDialog(
+            title = "تأكيد الحذف",
+            body = "هل أنت متأكد من حذف \"${action.item.name}\"؟\n\n" +
+                "سيُحذف القسم مع كل أقسامه الفرعية ودروسها وملفاتها الصوتية " +
+                "من التخزين. لا يمكن التراجع.",
+            confirmLabel = "حذف",
+            confirmColor = kDanger,
+            onDismiss = { pending = null },
+            onConfirm = {
+                pending = null
+                loading = true
+                scope.launch {
+                    runCatching { AdminRepository.deleteCategory(action.item.id) }
+                        .onSuccess { snack("تم حذف القسم ومحتوياته بالكامل.") }
+                        .onFailure { snack("تعذّر الحذف: ${it.message ?: it}") }
+                    reload++
+                }
+            },
+        )
+
+        is PendingAction.DeleteSubcategory -> ConfirmDialog(
+            title = "تأكيد الحذف",
+            body = "هل أنت متأكد من حذف \"${action.item.name}\"؟\n\n" +
+                "سيُحذف القسم الفرعي مع كل دروسه وملفاتها الصوتية من التخزين. " +
+                "لا يمكن التراجع.",
+            confirmLabel = "حذف",
+            confirmColor = kDanger,
+            onDismiss = { pending = null },
+            onConfirm = {
+                pending = null
+                loading = true
+                scope.launch {
+                    runCatching { AdminRepository.deleteSubcategory(action.item.id) }
+                        .onSuccess { snack("تم حذف القسم الفرعي ومحتوياته بالكامل.") }
+                        .onFailure { snack("تعذّر الحذف: ${it.message ?: it}") }
+                    reload++
+                }
+            },
+        )
+
+        is PendingAction.DeleteLesson -> ConfirmDialog(
+            title = "تأكيد الحذف",
+            body = "هل أنت متأكد من حذف \"${action.item.title}\"؟",
+            confirmLabel = "حذف",
+            confirmColor = kDanger,
+            onDismiss = { pending = null },
+            onConfirm = {
+                pending = null
+                scope.launch {
+                    runCatching { AdminRepository.deleteLesson(action.item) }
+                        .onSuccess { snack("تم حذف الدرس والملف الصوتي.") }
+                        .onFailure { snack("تعذّر الحذف: ${it.message ?: it}") }
+                    reload++
+                }
+            },
+        )
+
+        is PendingAction.PublishNow -> ConfirmDialog(
+            title = "النشر مجدول",
+            body = "هذا الدرس مجدول للظهور في:\n" +
+                (action.item.publishAtMs?.let { java.util.Date(it).toString() } ?: ""),
+            confirmLabel = "نشر الآن",
+            onDismiss = { pending = null },
+            onConfirm = {
+                pending = null
+                scope.launch {
+                    // النشر عبر الخادم يرسل إشعار «درس جديد» أيضاً — حذف الجدولة
+                    // وحده كان ينشر بصمت بلا إشعار.
+                    runCatching { AdminRepository.publishScheduledNow(action.item.id) }
+                        .onSuccess { snack("نُشر الدرس فوراً وأُرسل إشعار «درس جديد».") }
+                        .onFailure { snack("تعذّر النشر الفوري: ${it.message ?: it}") }
+                    reload++
+                }
+            },
+        )
+
+        null -> Unit
+    }
+
+    AdminScaffold(title = "التعديل والحذف / البحث", onBack = onBack) { padding ->
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text("ابحث في الأقسام والدروس...") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                colors = adminFieldColors(),
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+            )
+            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = kTeal)
+            when {
+                !hasQuery -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("أدخل كلمة للبحث في كل العناصر.", color = kMuted)
+                }
+
+                empty -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("لا توجد نتائج")
+                }
+
+                else -> LazyColumn(
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        start = 12.dp,
+                        end = 12.dp,
+                        bottom = 24.dp,
+                    ),
+                ) {
+                    if (cats.isNotEmpty()) item { SectionTitle("الأقسام الرئيسية") }
+                    items(cats.size) { i ->
+                        val c = cats[i]
+                        SimpleRow(
+                            title = c.name,
+                            onEdit = { pending = PendingAction.EditCategory(c) },
+                            onDelete = { pending = PendingAction.DeleteCategory(c) },
+                        )
+                    }
+                    if (subs.isNotEmpty()) item { SectionTitle("الأقسام الفرعية") }
+                    items(subs.size) { i ->
+                        val s = subs[i]
+                        SimpleRow(
+                            title = s.name,
+                            onEdit = { pending = PendingAction.EditSubcategory(s) },
+                            onDelete = { pending = PendingAction.DeleteSubcategory(s) },
+                        )
+                    }
+                    if (foundLessons.isNotEmpty()) item { SectionTitle("الدروس الصوتية") }
+                    items(foundLessons.size) { i ->
+                        val l = foundLessons[i]
+                        LessonRow(
+                            lesson = l,
+                            subcategoryName = subName(l.subcategoryId),
+                            onToggleFeatured = {
+                                scope.launch {
+                                    runCatching {
+                                        AdminRepository.setLessonFeatured(l.id, !l.featured)
+                                    }
+                                        .onSuccess {
+                                            snack(
+                                                if (l.featured) {
+                                                    "أُلغي التمييز."
+                                                } else {
+                                                    "تم التمييز — سيظهر أعلى التطبيق."
+                                                },
+                                            )
+                                        }
+                                        .onFailure { snack("تعذّر التعديل: ${it.message ?: it}") }
+                                    reload++
+                                }
+                            },
+                            onSchedule = {
+                                val now = System.currentTimeMillis()
+                                val scheduled = (l.publishAtMs ?: 0) > now
+                                if (scheduled) {
+                                    pending = PendingAction.PublishNow(l)
+                                } else {
+                                    pickDateTime(context, now + 3600_000) { whenMs ->
+                                        scope.launch {
+                                            runCatching {
+                                                AdminRepository.setLessonPublishAt(l.id, whenMs)
+                                            }
+                                                .onSuccess { snack("جُدول النشر.") }
+                                                .onFailure {
+                                                    snack("تعذّرت الجدولة: ${it.message ?: it}")
+                                                }
+                                            reload++
+                                        }
+                                    }
+                                }
+                            },
+                            onEdit = { pending = PendingAction.EditLesson(l) },
+                            onDelete = { pending = PendingAction.DeleteLesson(l) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SimpleRow(title: String, onEdit: () -> Unit, onDelete: () -> Unit) {
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(title, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            IconButton(onClick = onEdit) {
+                Icon(Icons.Filled.Edit, contentDescription = "تعديل", tint = kTeal)
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Filled.Delete, contentDescription = "حذف", tint = kDanger)
+            }
+        }
+    }
+}
+
+@Composable
+private fun LessonRow(
+    lesson: Lesson,
+    subcategoryName: String,
+    onToggleFeatured: () -> Unit,
+    onSchedule: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val scheduled = (lesson.publishAtMs ?: 0) > System.currentTimeMillis()
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Text(
+                lesson.title.ifEmpty { "بدون عنوان" },
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (subcategoryName.isNotEmpty()) {
+                Text("القسم الفرعي: $subcategoryName", fontSize = 12.sp, color = kMuted)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (lesson.views > 0) {
+                    Text("${lesson.views} استماع", fontSize = 12.sp, color = kTeal)
+                }
+                if (scheduled) {
+                    Spacer(Modifier.size(8.dp))
+                    Icon(
+                        Icons.Filled.Schedule,
+                        contentDescription = null,
+                        tint = kOrange,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text(" مجدول", fontSize = 12.sp, color = kOrange)
+                }
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = onToggleFeatured) {
+                    Icon(
+                        if (lesson.featured) Icons.Filled.Star else Icons.Filled.StarBorder,
+                        contentDescription = if (lesson.featured) "إلغاء التمييز" else "تمييز",
+                        tint = if (lesson.featured) kGold else kMuted,
+                    )
+                }
+                IconButton(onClick = onSchedule) {
+                    Icon(
+                        Icons.Filled.Schedule,
+                        contentDescription = "جدولة النشر",
+                        tint = if (scheduled) kOrange else kMuted,
+                    )
+                }
+                IconButton(onClick = onEdit) {
+                    Icon(Icons.Filled.Edit, contentDescription = "تعديل", tint = kTeal)
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Filled.Delete, contentDescription = "حذف", tint = kDanger)
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- سمة النافذة قبل ظهور Compose: تركواز اللوحة على خلفية فاتحة (kBg). -->
+    <style name="Theme.MinbarAdmin" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#F8FCFC</item>
+        <item name="android:statusBarColor">#247172</item>
+        <item name="android:navigationBarColor">#F8FCFC</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>
