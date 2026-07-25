@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Firebase (Firestore + Storage) + اختيار الملفات يحتاجان الإنترنت -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -8,6 +9,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- التسجيل الصوتي المباشر داخل اللوحة والرسائل الصوتيّة في الدردشة -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- مواصلة رفع الدروس بعد مغادرة الشاشة أو إغلاق التطبيق -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:name=".AdminApplication"
@@ -44,6 +48,12 @@
                 <data android:mimeType="audio/*" />
             </intent-filter>
         </activity>
+
+        <!-- رفع الدروس يستمرّ في الخلفية عبر WorkManager. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
 
         <service
             android:name=".data.AdminMessagingService"

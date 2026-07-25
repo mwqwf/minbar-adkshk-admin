@@ -23,12 +23,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AudioFile
-import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -43,7 +41,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,9 +58,9 @@ import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.AuthService
 import com.ali.ishaqiyin_admin.data.Category
-import com.ali.ishaqiyin_admin.data.StorageService
+import com.ali.ishaqiyin_admin.data.LessonUploadWorker
 import com.ali.ishaqiyin_admin.data.Subcategory
-import com.ali.ishaqiyin_admin.data.UploadCanceller
+import com.ali.ishaqiyin_admin.data.UploadQueue
 import com.ali.ishaqiyin_admin.util.AudioMerger
 import com.ali.ishaqiyin_admin.util.Mp3FormatException
 import com.ali.ishaqiyin_admin.util.PickedFile
@@ -127,14 +124,14 @@ fun AddLessonScreen(onBack: () -> Unit) {
     /** الملفات المختارة بالترتيب — أكثر من ملف يعني دمجها في درس واحد. */
     val files = remember { mutableStateListOf<PickedFile>() }
 
-    var uploading by remember { mutableStateOf(false) }
+    // «إدراج» لا «رفع»: النموذج لا ينتظر الشبكة إطلاقاً — يُدرَج الدرس في
+    // الطابور فيفرغ النموذج فوراً ويستطيع المشرف تعبئة درس آخر بينما
+    // يُرفع الأوّل في الخلفية (ويستأنف وحده إن انقطع الاتصال).
+    var queuing by remember { mutableStateOf(false) }
     var merging by remember { mutableStateOf(false) }
-    var progress by remember { mutableDoubleStateOf(0.0) }
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
     var featured by remember { mutableStateOf(false) }
-    var publishAt by remember { mutableStateOf<Long?>(null) }
-    var canceller by remember { mutableStateOf<UploadCanceller?>(null) }
     var showRecorder by remember { mutableStateOf(false) }
 
     // ملفّ وارد من مشاركة خارجية: عبّئ الحقل واقترح عنواناً من اسمه.
@@ -192,112 +189,86 @@ fun AddLessonScreen(onBack: () -> Unit) {
     }
 
     val subsForCategory = subcategories.filter { it.categoryId == categoryId }
-    val canUpload = title.isNotBlank() && categoryId != null && subcategoryId != null &&
-        files.isNotEmpty() && !uploading
+    val canQueue = title.isNotBlank() && categoryId != null && subcategoryId != null &&
+        files.isNotEmpty() && !queuing
 
-    fun upload() {
-        if (!canUpload) {
+    /**
+     * يُدرج الدرس في طابور الرفع ثم يُفرغ النموذج فوراً.
+     * لا ينتظر شبكة ولا اكتمال رفع: الملفّ يُنسخ إلى تخزين التطبيق،
+     * ويُختم زمن الإضافة الآن فيصل الدرس إلى التطبيق العام بترتيب إضافته.
+     */
+    fun queueLesson() {
+        if (!canQueue) {
             message = "يرجى تعبئة جميع الحقول واختيار ملف صوتي."
             isError = true
             return
         }
-        uploading = true
+        queuing = true
         merging = false
-        progress = 0.0
         message = ""
         isError = false
-        val activeCanceller = UploadCanceller()
-        canceller = activeCanceller
+        val snapshotTitle = title
+        val cat = categories.firstOrNull { it.id == categoryId }
+        val sub = subsForCategory.firstOrNull { it.id == subcategoryId }
+        val label = listOfNotNull(cat?.name, sub?.name).joinToString(" ← ")
         scope.launch {
-            var mergedTemp: File? = null
             try {
-                // ملف واحد يُرفع كما هو؛ أكثر من ملف يُدمج محلياً أولاً ثم يُرفع
-                // الناتج درساً واحداً متصلاً بالترتيب الظاهر في القائمة.
-                val uploadUri: android.net.Uri
-                val srcName: String
                 if (files.size == 1) {
-                    uploadUri = files.first().uri
-                    srcName = files.first().name
+                    UploadQueue.enqueue(
+                        context = context,
+                        sourceUri = files.first().uri,
+                        fileName = files.first().name,
+                        title = snapshotTitle,
+                        categoryId = categoryId!!,
+                        subcategoryId = subcategoryId!!,
+                        sectionLabel = label,
+                        featured = featured,
+                        addedBy = AuthService.currentUser?.email.orEmpty(),
+                    )
                 } else {
+                    // عدّة ملفات = درس واحد متّصل: يُدمج محليّاً أوّلاً (لا
+                    // يحتاج شبكة) ثم يدخل الطابور ملفّاً واحداً.
                     merging = true
                     val locals = files.map { context.copyUriToCache(it.uri, it.name) }
                     val out = File(context.cacheDir, "merged_${System.currentTimeMillis()}.mp3")
-                    mergedTemp = withContext(Dispatchers.IO) {
+                    val merged = withContext(Dispatchers.IO) {
                         AudioMerger.mergeMp3(inputs = locals, outputPath = out.absolutePath)
                     }
                     locals.forEach { runCatching { it.delete() } }
                     merging = false
-                    uploadUri = android.net.Uri.fromFile(mergedTemp)
-                    srcName = "merged.mp3"
-                }
-
-                val filename = "${System.currentTimeMillis()}_$srcName"
-                val up = StorageService.uploadFile(
-                    uri = uploadUri,
-                    folder = "lessons",
-                    filename = filename,
-                    canceller = activeCanceller,
-                    onProgress = { progress = it },
-                )
-                try {
-                    AdminRepository.addLesson(
-                        title = title,
+                    UploadQueue.enqueueLocalFile(
+                        file = merged,
+                        fileName = "merged.mp3",
+                        title = snapshotTitle,
                         categoryId = categoryId!!,
                         subcategoryId = subcategoryId!!,
-                        audioUrl = up.url,
-                        audioStoragePath = up.path,
-                        addedBy = AuthService.currentUser?.email.orEmpty(),
-                        publishAtMs = publishAt,
+                        sectionLabel = label,
                         featured = featured,
+                        addedBy = AuthService.currentUser?.email.orEmpty(),
                     )
-                } catch (writeError: Exception) {
-                    // لا نترك ملفاً يتيماً إن رفض الخادم إنشاء وثيقة الدرس.
-                    try {
-                        StorageService.deleteFileOrThrow(up.path)
-                    } catch (cleanupError: Exception) {
-                        throw IllegalStateException(
-                            "فشل إنشاء الدرس، وتعذّر أيضاً تنظيف الملف المرفوع: " +
-                                "$writeError / $cleanupError",
-                        )
-                    }
-                    throw writeError
                 }
-                uploading = false
-                progress = 0.0
+                LessonUploadWorker.kick(context)
+
+                // إفراغ النموذج فوراً — المشرف يواصل إضافة درس آخر.
                 title = ""
                 files.clear()
                 featured = false
-                publishAt = null
+                queuing = false
                 if (sharedFile != null && !sharedConsumed) {
                     sharedConsumed = true
                     ShareIntake.consumeFirst()
                 }
-                message = "تم رفع الملف وإضافة الدرس بنجاح!"
+                message = "أُضيف «$snapshotTitle» إلى طابور الرفع — يكمل وحده."
                 isError = false
             } catch (e: Exception) {
-                uploading = false
+                queuing = false
                 merging = false
-                progress = 0.0
-                when {
-                    StorageService.isCancellation(e) || activeCanceller.cancelled -> {
-                        message = "أُلغي الرفع."
-                        isError = false
-                    }
-
-                    e is Mp3FormatException -> {
-                        message = "تعذّر دمج الملفات — تأكد أنها ملفات MP3 سليمة."
-                        isError = true
-                    }
-
-                    else -> {
-                        message = "خطأ أثناء الرفع: ${e.message ?: e}"
-                        isError = true
-                    }
+                message = if (e is Mp3FormatException) {
+                    "تعذّر دمج الملفات — تأكد أنها ملفات MP3 سليمة."
+                } else {
+                    "تعذّر تجهيز الدرس: ${e.message ?: e}"
                 }
-            } finally {
-                canceller = null
-                // الملف المدموج مؤقت — يُحذف بعد الرفع (أو الفشل) لتوفير المساحة.
-                runCatching { mergedTemp?.delete() }
+                isError = true
             }
         }
     }
@@ -327,6 +298,8 @@ fun AddLessonScreen(onBack: () -> Unit) {
             modifier = Modifier.padding(padding).fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         ) {
+            // مؤشّر حيّ لما يُرفع الآن وما ينتظر الدور.
+            item { UploadQueueBanner(Modifier.padding(bottom = 8.dp)) }
             item {
                 AdminTextField(
                     value = title,
@@ -337,7 +310,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedButton(
                         onClick = { picker.launch("audio/*") },
-                        enabled = !uploading,
+                        enabled = !queuing,
                         modifier = Modifier.weight(1f),
                     ) {
                         Icon(
@@ -358,7 +331,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     }
                     OutlinedButton(
                         onClick = { showRecorder = true },
-                        enabled = !uploading,
+                        enabled = !queuing,
                         modifier = Modifier.weight(1f),
                     ) {
                         Icon(Icons.Filled.Mic, contentDescription = null, tint = kDanger)
@@ -390,7 +363,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     name = file.name,
                     canMoveUp = index > 0,
                     canMoveDown = index < files.size - 1,
-                    enabled = !uploading,
+                    enabled = !queuing,
                     showReorder = files.size > 1,
                     onUp = {
                         val item = files.removeAt(index)
@@ -411,7 +384,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     items = categories,
                     selected = categories.firstOrNull { it.id == categoryId },
                     itemLabel = { it.name },
-                    enabled = !uploading,
+                    enabled = !queuing,
                     onSelected = {
                         categoryId = it.id
                         subcategoryId = null
@@ -424,7 +397,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         items = subsForCategory,
                         selected = subsForCategory.firstOrNull { it.id == subcategoryId },
                         itemLabel = { it.name },
-                        enabled = !uploading,
+                        enabled = !queuing,
                         onSelected = { subcategoryId = it.id },
                     )
                     if (subsForCategory.isEmpty()) {
@@ -440,88 +413,26 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(
                         checked = featured,
-                        onCheckedChange = { if (!uploading) featured = it },
-                        enabled = !uploading,
+                        onCheckedChange = { if (!queuing) featured = it },
+                        enabled = !queuing,
                     )
                     Icon(Icons.Filled.Star, contentDescription = null, tint = kTeal)
                     Spacer(Modifier.size(8.dp))
                     Text("تمييز الدرس (يظهر أعلى التطبيق)")
                 }
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Filled.Schedule, contentDescription = null, tint = kTeal)
-                    Spacer(Modifier.size(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("جدولة النشر")
-                        Text(
-                            publishAt?.let { "يظهر للمستخدمين في: ${fmtDate(it)}" }
-                                ?: "ينشر فوراً",
-                            fontSize = 12.sp,
-                            color = kMuted,
-                        )
-                    }
-                    if (publishAt == null) {
-                        TextButton(
-                            onClick = {
-                                pickDateTime(
-                                    context,
-                                    System.currentTimeMillis() + 3600_000,
-                                ) { publishAt = it }
-                            },
-                            enabled = !uploading,
-                        ) { Text("اختيار") }
-                    } else {
-                        IconButton(onClick = { publishAt = null }, enabled = !uploading) {
-                            Icon(Icons.Filled.Clear, contentDescription = null, tint = kDanger)
-                        }
-                    }
-                }
                 Spacer(Modifier.height(10.dp))
-                if (uploading) {
-                    if (merging) {
-                        LinearProgressIndicator(
-                            modifier = Modifier.fillMaxWidth(),
-                            color = kTeal,
-                        )
-                    } else {
-                        LinearProgressIndicator(
-                            progress = { (progress / 100).toFloat() },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = kTeal,
-                        )
-                    }
+                if (merging) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = kTeal,
+                    )
                     Spacer(Modifier.height(6.dp))
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            if (merging) {
-                                "جارٍ دمج الملفات في مقطع واحد…"
-                            } else {
-                                "جارٍ الرفع… ${progress.toInt()}%"
-                            },
-                            color = kTeal,
-                        )
-                        if (!merging) {
-                            Spacer(Modifier.size(12.dp))
-                            TextButton(onClick = { canceller?.cancel() }) {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = null,
-                                    tint = kDanger,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                                Spacer(Modifier.size(4.dp))
-                                Text("إلغاء الرفع", color = kDanger)
-                            }
-                        }
-                    }
+                    Text(
+                        "جارٍ دمج الملفات في مقطع واحد…",
+                        color = kTeal,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                     Spacer(Modifier.height(12.dp))
                 }
                 if (message.isNotEmpty()) {
@@ -534,15 +445,15 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     )
                 }
                 Button(
-                    onClick = { upload() },
-                    enabled = canUpload,
+                    onClick = { queueLesson() },
+                    enabled = canQueue,
                     shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = kTeal),
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                 ) {
                     Icon(Icons.Filled.CloudUpload, contentDescription = null)
                     Spacer(Modifier.size(8.dp))
-                    Text("رفع الدرس الصوتي")
+                    Text(if (queuing) "جارٍ التجهيز…" else "رفع الدرس الصوتي")
                 }
                 Spacer(Modifier.height(24.dp))
             }

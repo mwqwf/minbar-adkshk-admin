@@ -264,7 +264,7 @@ async function pushToTopic(title, body, data) {
     ),
     android: {
       priority: "high",
-      notification: { channelId: "content_updates", sound: "default" },
+      notification: { channelId: "minbar_content", sound: "default" },
     },
   });
 }
@@ -282,7 +282,7 @@ async function pushToCondition(title, body, data, condition) {
     ),
     android: {
       priority: "high",
-      notification: { channelId: "content_updates", sound: "default" },
+      notification: { channelId: "minbar_content", sound: "default" },
     },
   });
 }
@@ -302,7 +302,7 @@ async function pushToToken(token, title, body, data) {
       ),
       android: {
         priority: "high",
-        notification: { channelId: "content_updates", sound: "default" },
+        notification: { channelId: "minbar_content", sound: "default" },
       },
     });
   } catch (error) {
@@ -595,7 +595,16 @@ exports.publishScheduledLessons = functions.pubsub
   .schedule("*/15 * * * *")
   .timeZone("Asia/Riyadh")
   .onRun(async () => {
-    const nowIso = new Date().toISOString();
+    // زمن الإضافة: يقبل طابعاً من العميل (طابور الرفع دون اتصال) ليبقى
+  // ترتيب الدروس في التطبيق العام مطابقاً لترتيب إضافة المشرف لها، حتى لو
+  // اكتمل رفعها لاحقاً بترتيب مختلف. يُقبل فقط من حساب مخوَّل وبتاريخ صالح
+  // غير مستقبليّ، وإلّا فزمن الخادم.
+  const serverNowIso = new Date().toISOString();
+  const requestedCreatedAt = cleanString(input.createdAt, 40);
+  const requestedMs = requestedCreatedAt ? Date.parse(requestedCreatedAt) : NaN;
+  const nowIso = (!Number.isNaN(requestedMs) && requestedMs <= Date.now())
+    ? new Date(requestedMs).toISOString()
+    : serverNowIso;
     const snap = await db.collection("lessons")
       .where("publishAt", "<=", nowIso)
       .get();

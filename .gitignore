@@ -19,3 +19,6 @@
 
 # Local test artifacts
 /artifacts/
+
+# تبعيات الدوال الخادمية
+functions/node_modules/

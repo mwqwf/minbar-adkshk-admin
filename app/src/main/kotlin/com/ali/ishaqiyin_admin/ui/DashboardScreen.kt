@@ -158,6 +158,8 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
             modifier = Modifier.padding(padding).fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         ) {
+            // الرفع الجاري مرئيّ من اللوحة أيضاً، لا من شاشة الإضافة وحدها.
+            item { UploadQueueBanner() }
             if (error != null) {
                 item {
                     Box(

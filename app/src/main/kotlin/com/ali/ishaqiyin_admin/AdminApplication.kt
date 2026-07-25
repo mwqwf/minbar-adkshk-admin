@@ -7,6 +7,8 @@ import android.os.Build
 import com.ali.ishaqiyin_admin.core.FirebaseConfig
 import com.ali.ishaqiyin_admin.data.AdminChannels
 import com.ali.ishaqiyin_admin.data.AppPrefs
+import com.ali.ishaqiyin_admin.data.LessonUploadWorker
+import com.ali.ishaqiyin_admin.data.UploadQueue
 import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
@@ -21,6 +23,10 @@ class AdminApplication : Application() {
         super.onCreate()
         AppPrefs.init(this)
         NetworkMonitor.start(this)
+        // طابور رفع الدروس: يُستأنف وحده إن بقيت فيه دروس من جلسة سابقة
+        // (انقطاع اتصال أو إغلاق التطبيق أثناء الرفع).
+        UploadQueue.init(this)
+        if (!UploadQueue.isEmpty()) LessonUploadWorker.kick(this)
         createNotificationChannels()
         initializeFirebase()
         tuneForWeakNetworks()

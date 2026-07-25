@@ -397,11 +397,12 @@ private fun LessonRow(
                         tint = if (lesson.featured) kGold else kMuted,
                     )
                 }
-                IconButton(onClick = onSchedule) {
+                // الجدولة أُزيلت؛ يبقى «نشر الآن» لأيّ درس بقي مجدولاً سابقاً.
+                if (scheduled) IconButton(onClick = onSchedule) {
                     Icon(
                         Icons.Filled.Schedule,
-                        contentDescription = "جدولة النشر",
-                        tint = if (scheduled) kOrange else kMuted,
+                        contentDescription = "نشر الآن",
+                        tint = kOrange,
                     )
                 }
                 IconButton(onClick = onEdit) {

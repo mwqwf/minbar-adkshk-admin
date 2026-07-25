@@ -52,6 +52,12 @@ data class AdminAlert(
 object AdminAlertsFeed {
     private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
 
+    /**
+     * عمر التنبيه: 24 ساعة فقط. التنبيه إشعار لحظيّ لا سجلّ دائم، وبقاؤه
+     * أطول كان يحوّل «تنبيهاتك» إلى أرشيف لا يُقرأ.
+     */
+    const val TTL_MS = 24L * 60 * 60 * 1000
+
     val myEmail: String
         get() = AuthService.currentUser?.email.orEmpty().trim().lowercase()
 
@@ -62,12 +68,18 @@ object AdminAlertsFeed {
     fun stream(isOwner: Boolean): Flow<List<AdminAlert>> {
         val me = myEmail
 
+        val cutoff = System.currentTimeMillis() - TTL_MS
+
         fun visible(docs: Iterable<DocumentSnapshot>): List<AdminAlert> =
             docs.map { AdminAlert.fromDoc(it) }
                 .filter { alert ->
                     when {
                         alert.excludeEmail == me -> false
                         !isOwner && alert.email.isNotEmpty() && alert.email != me -> false
+                        // أقدم من 24 ساعة ⇒ لم يعد تنبيهاً.
+                        alert.createdAtMs in 1 until cutoff -> false
+                        // اطّلع عليه صاحبه ⇒ يختفي عنه هو وحده (يبقى عند غيره).
+                        alert.isReadBy(me) -> false
                         else -> true
                     }
                 }
@@ -87,23 +99,25 @@ object AdminAlertsFeed {
         }
     }
 
-    /** عدد غير المقروء (لشارة بطاقة اللوحة). */
-    fun unreadCount(isOwner: Boolean): Flow<Int> =
-        stream(isOwner).map { list -> list.count { !it.isReadBy(myEmail) } }
+    /**
+     * عدد التنبيهات الظاهرة (كلّها غير مقروءة بحكم الترشيح أعلاه).
+     */
+    fun unreadCount(isOwner: Boolean): Flow<Int> = stream(isOwner).map { it.size }
 
     /** تمييز تنبيه مقروءاً (إضافة بريدي إلى readBy — تسمح به القواعد). */
-    suspend fun markRead(alert: AdminAlert) {
+    fun markRead(alert: AdminAlert) {
         val e = myEmail
         if (e.isEmpty() || alert.isReadBy(e)) return
-        // أفضل جهد — يبقى غير مقروء حتى المحاولة التالية.
+        // بلا await: الكتابة تُطبَّق محليّاً فيختفي التنبيه فوراً حتى دون
+        // اتصال، وتُرسَل للخادم تلقائياً عند عودة الشبكة.
         runCatching {
             db.collection("admin_alerts").document(alert.id)
-                .update("readBy", FieldValue.arrayUnion(e)).await()
+                .update("readBy", FieldValue.arrayUnion(e))
         }
     }
 
     /** تمييز كلّ الظاهر مقروءاً. */
-    suspend fun markAllRead(alerts: List<AdminAlert>) {
+    fun markAllRead(alerts: List<AdminAlert>) {
         val e = myEmail
         if (e.isEmpty()) return
         val batch = db.batch()
@@ -117,7 +131,7 @@ object AdminAlertsFeed {
             n++
             if (n >= 400) break // حدّ دفعة Firestore.
         }
-        if (n > 0) runCatching { batch.commit().await() }
+        if (n > 0) runCatching { batch.commit() }
     }
 
     /**

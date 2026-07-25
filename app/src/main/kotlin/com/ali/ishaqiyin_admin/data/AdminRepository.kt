@@ -181,20 +181,24 @@ object AdminRepository {
         audioUrl: String,
         audioStoragePath: String? = null,
         addedBy: String = "",
-        publishAtMs: Long? = null,
         featured: Boolean = false,
+        /**
+         * زمن الإضافة الحقيقي (لحظة ضغط المشرف «رفع»)، لا لحظة اكتمال
+         * الرفع — به يبقى ترتيب الدروس في التطبيق العام مطابقاً لترتيب
+         * إضافتها حتى لو رُفعت لاحقاً بعد انقطاع طويل.
+         */
+        createdAtMs: Long? = null,
     ) {
         val data = mutableMapOf<String, Any>(
             "title" to title.trim(),
             "categoryId" to categoryId,
             "subcategoryId" to subcategoryId,
             "audioUrl" to audioUrl,
-            "createdAt" to nowIso(),
+            "createdAt" to (createdAtMs?.let(::isoOf) ?: nowIso()),
         )
         if (!audioStoragePath.isNullOrEmpty()) data["audioStoragePath"] = audioStoragePath
         if (featured) data["featured"] = true
         if (addedBy.isNotEmpty()) data["addedBy"] = addedBy.lowercase()
-        if (publishAtMs != null) data["publishAt"] = isoOf(publishAtMs)
         functions.getHttpsCallable("createLesson").call(data).await()
     }
 
@@ -202,7 +206,10 @@ object AdminRepository {
     suspend fun setLessonFeatured(id: String, featured: Boolean) =
         updateCompat("lessons", id, mapOf("featured" to featured))
 
-    /** جدولة/إلغاء جدولة نشر درس (يظهر للمستخدمين عند حلول الوقت). */
+    /**
+     * إلغاء جدولة درس قديم (النشر المجدول أُزيل من الواجهة؛ تبقى هذه
+     * لتحرير أيّ درس بقي مجدولاً في القاعدة من قبل).
+     */
     suspend fun setLessonPublishAt(id: String, whenMs: Long?) =
         updateCompat(
             "lessons",
@@ -331,6 +338,15 @@ object AdminRepository {
                 docs[it.id] = buildMap { put("id", it.id); putAll(it.dataMap()) }
             }
         }
-        return docs.values.sortedByDescending { (it["createdAtMs"] as? Number)?.toLong() ?: 0L }
+        // نفس قاعدة الموجز: 24 ساعة فقط، وما اطّلعت عليه يختفي عنّي.
+        val cutoff = System.currentTimeMillis() - AdminAlertsFeed.TTL_MS
+        return docs.values
+            .filter { alert ->
+                val at = (alert["createdAtMs"] as? Number)?.toLong() ?: 0L
+                val readBy = (alert["readBy"] as? List<*>)?.map { it.toString().lowercase() }
+                    ?: emptyList()
+                (at <= 0L || at >= cutoff) && !readBy.contains(e)
+            }
+            .sortedByDescending { (it["createdAtMs"] as? Number)?.toLong() ?: 0L }
     }
 }

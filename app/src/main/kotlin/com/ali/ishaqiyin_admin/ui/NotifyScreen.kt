@@ -41,14 +41,12 @@ import kotlinx.coroutines.tasks.await
 @Composable
 fun NotifyScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var title by remember { mutableStateOf("") }
     var body by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
 
-    val canSend = (title.trim().isNotEmpty() || body.trim().isNotEmpty()) &&
-        title.trim().length <= 100 && body.trim().length <= 500 && !sending
+    val canSend = body.trim().isNotEmpty() && body.trim().length <= 500 && !sending
 
     AdminScaffold(title = "إرسال إشعار", onBack = onBack) { padding ->
         Column(
@@ -71,13 +69,6 @@ fun NotifyScreen(onBack: () -> Unit) {
                 )
             }
             Spacer(Modifier.height(16.dp))
-            AdminTextField(
-                value = title,
-                onValueChange = { if (it.length <= 100) title = it },
-                label = "العنوان",
-                leadingIcon = { Icon(Icons.Filled.Title, contentDescription = null) },
-            )
-            Spacer(Modifier.height(14.dp))
             AdminTextField(
                 value = body,
                 onValueChange = { if (it.length <= 500) body = it },
@@ -109,7 +100,6 @@ fun NotifyScreen(onBack: () -> Unit) {
                                 .getHttpsCallable("sendNotification")
                                 .call(
                                     mapOf(
-                                        "title" to title.trim(),
                                         "body" to body.trim(),
                                     ),
                                 ).await()
@@ -120,7 +110,6 @@ fun NotifyScreen(onBack: () -> Unit) {
                             val sent = (data as? Map<*, *>)?.get("sent") as? Number
                             val failed = (data as? Map<*, *>)?.get("failed") as? Number
                             sending = false
-                            title = ""
                             body = ""
                             message = if (sent == null) {
                                 "أكّد الخادم استلام الإشعار وإرساله."

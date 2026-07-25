@@ -111,6 +111,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.navigation:navigation-compose:2.9.8")
+    // طابور رفع الدروس دون اتصال (يستأنف تلقائياً بعد انقطاع أو إغلاق).
+    implementation("androidx.work:work-runtime-ktx:2.11.2")
 
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
