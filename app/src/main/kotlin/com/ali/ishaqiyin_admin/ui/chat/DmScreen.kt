@@ -137,7 +137,10 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
     var confirmClearChat by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
-    val membersList by ChatRepository.membersStream().collectAsState(initial = emptyList())
+    // ⚠️ remember إلزاميّ: بلاه يُنشأ تدفّق جديد مع كل إعادة تركيب
+    // فيُعاد ربط مستمع Firestore في كلّ مرّة (قراءات وبطء بلا داعٍ).
+    val membersList by remember { ChatRepository.membersStream() }
+        .collectAsState(initial = emptyList())
     val members = remember(membersList) { membersList.associateBy { it.uid } }
     val other = members[otherUid]
     val messages by remember(threadId, limit) {

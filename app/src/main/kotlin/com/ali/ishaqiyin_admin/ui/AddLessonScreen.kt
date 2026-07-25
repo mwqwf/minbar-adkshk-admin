@@ -27,7 +27,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
@@ -341,7 +341,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         modifier = Modifier.weight(1f),
                     ) {
                         Icon(
-                            if (files.isEmpty()) Icons.Filled.AudioFile else Icons.Filled.PlaylistAdd,
+                            if (files.isEmpty()) Icons.Filled.AudioFile else Icons.AutoMirrored.Filled.PlaylistAdd,
                             contentDescription = null,
                             tint = kTeal,
                         )

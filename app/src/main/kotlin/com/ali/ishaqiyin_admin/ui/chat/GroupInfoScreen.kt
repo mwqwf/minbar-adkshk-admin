@@ -100,8 +100,12 @@ fun GroupInfoScreen(isOwner: Boolean, nav: NavHostController, onBack: () -> Unit
     val snack = LocalSnack.current
     val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
 
-    val meta by ChatRepository.metaStream().collectAsState(initial = ChatGroupMeta.fallback)
-    val members by ChatRepository.membersStream().collectAsState(initial = emptyList())
+    // ⚠️ remember إلزاميّ: بلاه يُنشأ تدفّق جديد مع كل إعادة تركيب
+    // فيُعاد ربط مستمع Firestore في كلّ مرّة (قراءات وبطء بلا داعٍ).
+    val meta by remember { ChatRepository.metaStream() }
+        .collectAsState(initial = ChatGroupMeta.fallback)
+    val members by remember { ChatRepository.membersStream() }
+        .collectAsState(initial = emptyList())
     var busy by remember { mutableStateOf(false) }
     var muted by remember { mutableStateOf(ChatNotifications.isMuted) }
     var autoDownload by remember { mutableStateOf(AppPrefs.autoDownloadMedia) }

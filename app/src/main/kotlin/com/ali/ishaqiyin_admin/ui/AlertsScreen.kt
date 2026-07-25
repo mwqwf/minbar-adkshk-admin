@@ -20,7 +20,7 @@ import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.GppMaybe
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Insights
-import androidx.compose.material.icons.filled.TrendingUp
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -142,7 +142,7 @@ private fun iconFor(type: String): ImageVector = when (type) {
     "milestone" -> Icons.Filled.EmojiEvents
     "owner_code" -> Icons.Filled.VerifiedUser
     "digest", "weekly_digest" -> Icons.Filled.Insights
-    "engagement" -> Icons.Filled.TrendingUp
+    "engagement" -> Icons.AutoMirrored.Filled.TrendingUp
     "suspicious_lesson" -> Icons.Filled.GppMaybe
     else -> Icons.Filled.Campaign
 }

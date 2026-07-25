@@ -15,7 +15,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Report
 import androidx.compose.material.icons.filled.ThumbUp
-import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -130,6 +130,6 @@ private data class FeedbackKind(val label: String, val icon: ImageVector, val co
 
 private fun kindOf(type: String): FeedbackKind = when (type) {
     "benefited" -> FeedbackKind("استفاد", Icons.Filled.ThumbUp, kGreen)
-    "audio_issue" -> FeedbackKind("مشكلة صوت", Icons.Filled.VolumeOff, kDanger)
+    "audio_issue" -> FeedbackKind("مشكلة صوت", Icons.AutoMirrored.Filled.VolumeOff, kDanger)
     else -> FeedbackKind("بلاغ", Icons.Filled.Report, kOrange)
 }

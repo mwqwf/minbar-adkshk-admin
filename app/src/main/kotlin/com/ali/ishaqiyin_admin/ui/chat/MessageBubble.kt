@@ -23,7 +23,7 @@ import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.DownloadForOffline
-import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.CircularProgressIndicator
@@ -355,7 +355,7 @@ private fun FileTile(att: ChatAttachment) {
             } else {
                 Icon(
                     if (status.isReady) {
-                        Icons.Filled.InsertDriveFile
+                        Icons.AutoMirrored.Filled.InsertDriveFile
                     } else {
                         Icons.Filled.DownloadForOffline
                     },

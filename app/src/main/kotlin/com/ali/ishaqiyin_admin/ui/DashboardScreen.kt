@@ -28,7 +28,7 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.ManageSearch
+import androidx.compose.material.icons.automirrored.filled.ManageSearch
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -126,7 +126,10 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
         if (pendingShared.isNotEmpty()) nav.navigate(Routes.ADD_LESSON)
     }
 
-    val unreadAlerts by AdminAlertsFeed.unreadCount(isOwner).collectAsState(initial = 0)
+    // ⚠️ remember إلزاميّ: بلاه يُنشأ تدفّق جديد مع كل إعادة تركيب
+    // فيُعاد ربط مستمع Firestore في كلّ مرّة (قراءات وبطء بلا داعٍ).
+    val unreadAlerts by remember(isOwner) { AdminAlertsFeed.unreadCount(isOwner) }
+        .collectAsState(initial = 0)
 
     if (showProfileDialog) {
         ProfileDialog(firstRun = true, onDismiss = { showProfileDialog = false })
@@ -206,16 +209,21 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
 
 @Composable
 private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
-    val chatUnread by ChatRepository.unreadCountStream().collectAsState(initial = 0)
-    val dmUnread by DmRepository.unreadThreadsStream().collectAsState(initial = 0)
-    val pendingSubmissions by SubmissionsRepository.watchPendingCount().collectAsState(initial = 0)
-    val suspicious by (
+    // ⚠️ remember إلزاميّ: بلاه يُنشأ تدفّق جديد مع كل إعادة تركيب
+    // فيُعاد ربط مستمع Firestore في كلّ مرّة (قراءات وبطء بلا داعٍ).
+    val chatUnread by remember { ChatRepository.unreadCountStream() }
+        .collectAsState(initial = 0)
+    val dmUnread by remember { DmRepository.unreadThreadsStream() }
+        .collectAsState(initial = 0)
+    val pendingSubmissions by remember { SubmissionsRepository.watchPendingCount() }
+        .collectAsState(initial = 0)
+    val suspicious by remember(isOwner) {
         if (isOwner) {
             OwnerReviewRepository.watchPending()
         } else {
             kotlinx.coroutines.flow.flowOf(emptyList())
         }
-        ).collectAsState(initial = emptyList())
+    }.collectAsState(initial = emptyList())
 
     data class ActionSpec(
         val icon: ImageVector,
@@ -259,7 +267,7 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
         )
         add(
             ActionSpec(
-                Icons.Filled.ManageSearch, kBlue, "التعديل والبحث",
+                Icons.AutoMirrored.Filled.ManageSearch, kBlue, "التعديل والبحث",
                 "تعديل وحذف وجدولة", 0, Routes.MANAGE_ALL,
             ),
         )

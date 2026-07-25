@@ -55,6 +55,7 @@ import com.ali.ishaqiyin_admin.ui.chat.DmListScreen
 import com.ali.ishaqiyin_admin.ui.chat.DmScreen
 import com.ali.ishaqiyin_admin.ui.chat.GroupInfoScreen
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.launch
 
 object Routes {
@@ -113,7 +114,9 @@ fun AdminApp() {
         for (attempt in 0 until 3) {
             if (attempt > 0) delay(attempt * 2000L)
             try {
-                val state = AuthService.resolveAccess()
+                // مهلة صريحة: بلاها يبقى الدوّار أبديّاً إن علق أيّ نداء
+                // شبكيّ، والمستخدم بلا زرّ إعادة محاولة.
+                val state = withTimeout(25_000) { AuthService.resolveAccess() }
                 access = state
                 loading = false
                 if (state == AccessState.Owner || state == AccessState.Supervisor) {

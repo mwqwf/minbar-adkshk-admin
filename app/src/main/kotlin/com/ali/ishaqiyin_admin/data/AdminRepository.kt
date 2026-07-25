@@ -70,9 +70,13 @@ object AdminRepository {
      * يثبّت دور المالك ويحدّث وقت آخر دخول (idempotent — نظير Owner Bypass
      * في نبراس). يُستدعى من AuthService.resolveAccess عند كل دخول للمالك.
      */
-    suspend fun upsertOwnerRecord(email: String, displayName: String = "", photoURL: String = "") {
+    fun upsertOwnerRecord(email: String, displayName: String = "", photoURL: String = "") {
         val id = email.trim().lowercase()
         if (id.isEmpty()) return
+        // ⚠️ بلا await: مهمّة كتابة Firestore لا تكتمل إلا بتأكيد الخادم،
+        // فانتظارها هنا كان يُجمّد **تسجيل الدخول نفسه** على شبكة ضعيفة
+        // (الأصل Flutter كان يستدعيها بـ unawaited لهذا السبب بالضبط).
+        // التوثيق أفضل-جهد: يُطبَّق محليّاً ويُرسَل تلقائياً عند عودة الشبكة.
         db.collection(DASH_COL).document(id).set(
             mapOf(
                 "email" to id,
@@ -86,19 +90,20 @@ object AdminRepository {
                 "lastSignedInAt" to nowIso(),
             ),
             SetOptions.merge(),
-        ).await()
+        )
     }
 
     /**
      * يحدّث وقت آخر دخول لمشرف معتمَد (مسموح للمستخدم بتحديث وثيقته فقط
      * طالما غير محظور — انظر firestore.rules).
      */
-    suspend fun touchLastSignedIn(email: String) {
+    fun touchLastSignedIn(email: String) {
         val id = email.trim().lowercase()
         if (id.isEmpty()) return
+        // بلا await — للسبب نفسه في [upsertOwnerRecord]: ختم وقت الدخول
+        // معلومة إداريّة لا يجوز أن تحجز شاشة الدخول خلف الشبكة.
         runCatching {
-            db.collection(DASH_COL).document(id)
-                .update("lastSignedInAt", nowIso()).await()
+            db.collection(DASH_COL).document(id).update("lastSignedInAt", nowIso())
         }
     }
 

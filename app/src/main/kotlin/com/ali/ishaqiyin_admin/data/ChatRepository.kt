@@ -733,12 +733,19 @@ object ChatRepository {
         // الكاش أوّلاً: فتح اللوحة يجب ألّا ينتظر ردّ الخادم على شبكة ضعيفة.
         val cached = runCatching {
             members.document(uid).get(com.google.firebase.firestore.Source.CACHE).await()
-        }.getOrNull()
-        if (cached != null && cached.exists()) return ChatMember.fromDoc(cached)
-        return runCatching {
+        }.getOrNull()?.takeIf { it.exists() }
+        // لا نثق بالكاش إلّا إذا حمل إثباتاً صريحاً بأنّ الملفّ الشخصي مُعدّ:
+        // upsertSelf تكتب محليّاً بلا انتظار، فلو اكتفينا بوجود الوثيقة لعاد
+        // حوار «اسمك وصورتك» لمشرف قديم بعد كلّ تثبيت جديد (كاش فارغ).
+        if (cached != null && cached.dataMap()["profileSet"] == true) {
+            return ChatMember.fromDoc(cached)
+        }
+        val fromServer = runCatching {
             val doc = members.document(uid).get().await()
             if (doc.exists()) ChatMember.fromDoc(doc) else null
         }.getOrNull()
+        // تعذّر الخادم (دون اتصال) ⇒ نعود للكاش بدل حجب الشاشة.
+        return fromServer ?: cached?.let { ChatMember.fromDoc(it) }
     }
 
     /** تعيين/إزالة مشرف مجموعة ⭐ (صلاحيّات داخل الدردشة فقط) — للمالك. */

@@ -18,7 +18,11 @@ import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Source
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.filter
@@ -55,6 +59,7 @@ data class OwnerCodeResult(
  */
 object AuthService {
     private val auth: FirebaseAuth get() = FirebaseAuth.getInstance()
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val currentUser: FirebaseUser? get() = auth.currentUser
     val isLoggedIn: Boolean get() = auth.currentUser != null
@@ -139,7 +144,12 @@ object AuthService {
             if (cachedData != null && cachedData["blocked"] != true &&
                 str(cachedData["role"]) == "supervisor"
             ) {
-                runCatching { AdminRepository.touchLastSignedIn(email) }
+                AdminRepository.touchLastSignedIn(email)
+                // الكاش يمنح دخولاً فوريّاً، لكنّه لا يجوز أن يمنح صلاحية
+                // دائمة: نعيد التحقّق من الخادم في الخلفية، وإن كان الحساب
+                // قد حُظر أو حُذف نُخرجه فوراً (بوّابة المصادقة تلتقط تغيّر
+                // حالة الدخول فتعيده إلى شاشة الدخول).
+                revalidateInBackground(ref)
                 return AccessState.Supervisor
             }
             val doc = ref.get().await()
@@ -155,6 +165,23 @@ object AuthService {
             throw AccessVerificationException(
                 "تعذّر الاتصال بالخادم للتحقق من الدور والحظر. لم تُمنح أيّ صلاحية مؤقتة.",
             )
+        }
+    }
+
+    /**
+     * إعادة تحقّق صامتة من الخادم بعد منح دخول فوري من الكاش. لا تُبطئ
+     * الواجهة، وتُنهي الجلسة إن تبيّن أنّ الحساب حُظر أو أُلغي اعتماده.
+     */
+    private fun revalidateInBackground(ref: DocumentReference) {
+        backgroundScope.launch {
+            runCatching {
+                val fresh = ref.get(Source.SERVER).await()
+                val data = fresh.takeIf { it.exists() }?.dataMap()
+                val stillAllowed = data != null &&
+                    data["blocked"] != true &&
+                    str(data["role"]) == "supervisor"
+                if (!stillAllowed) auth.signOut()
+            }
         }
     }
 

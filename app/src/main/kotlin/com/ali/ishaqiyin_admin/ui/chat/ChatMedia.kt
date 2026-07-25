@@ -22,7 +22,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -482,7 +482,7 @@ fun VideoPlayerDialog(file: File, name: String, onDismiss: () -> Unit) {
                 )
                 IconButton(onClick = { context.openLocalFile(file) }) {
                     Icon(
-                        Icons.Filled.OpenInNew,
+                        Icons.AutoMirrored.Filled.OpenInNew,
                         contentDescription = "فتح بتطبيق آخر",
                         tint = Color.White,
                     )

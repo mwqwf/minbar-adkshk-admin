@@ -13,7 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Message
+import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -85,7 +85,7 @@ fun NotifyScreen(onBack: () -> Unit) {
                 singleLine = false,
                 minLines = 4,
                 maxLines = 6,
-                leadingIcon = { Icon(Icons.Filled.Message, contentDescription = null) },
+                leadingIcon = { Icon(Icons.AutoMirrored.Filled.Message, contentDescription = null) },
             )
             Spacer(Modifier.height(18.dp))
             if (message.isNotEmpty()) {

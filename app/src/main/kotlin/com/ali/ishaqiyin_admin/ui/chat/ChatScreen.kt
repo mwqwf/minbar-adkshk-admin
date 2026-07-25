@@ -40,11 +40,11 @@ import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FiberManualRecord
-import androidx.compose.material.icons.filled.ForwardToInbox
+import androidx.compose.material.icons.automirrored.filled.ForwardToInbox
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.KeyboardDoubleArrowDown
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
@@ -184,12 +184,17 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
     var forwarding by remember { mutableStateOf<ChatMessage?>(null) }
 
     val listState = rememberLazyListState()
-    val meta by ChatRepository.metaStream().collectAsState(initial = ChatGroupMeta.fallback)
-    val membersList by ChatRepository.membersStream().collectAsState(initial = emptyList())
+    // ⚠️ remember إلزاميّ: بلاه يُنشأ تدفّق جديد مع كل إعادة تركيب
+    // فيُعاد ربط مستمع Firestore في كلّ مرّة (قراءات وبطء بلا داعٍ).
+    val meta by remember { ChatRepository.metaStream() }
+        .collectAsState(initial = ChatGroupMeta.fallback)
+    val membersList by remember { ChatRepository.membersStream() }
+        .collectAsState(initial = emptyList())
     val members = remember(membersList) { membersList.associateBy { it.uid } }
     val allMessages by remember(limit) { ChatRepository.messagesStream(limit.toLong()) }
         .collectAsState(initial = emptyList())
-    val dmUnread by DmRepository.unreadThreadsStream().collectAsState(initial = 0)
+    val dmUnread by remember { DmRepository.unreadThreadsStream() }
+        .collectAsState(initial = 0)
 
     // أوّل دفعة رسائل لم تصل بعد (كاش أو خادم) — للتمييز عن محادثة فارغة.
     var loadingFirstBatch by remember { mutableStateOf(true) }
@@ -1306,7 +1311,7 @@ private fun MessageActionsSheet(
                 // رسالته من المجموعة (نمط واتساب تماماً).
                 if (!msg.isMine && msg.senderId != "system") {
                     SheetItem(
-                        Icons.Filled.ForwardToInbox,
+                        Icons.AutoMirrored.Filled.ForwardToInbox,
                         "ردّ بشكل خاص",
                         ChatColors.accentDark,
                         subtitle = "محادثة فرديّة مع " +
@@ -1653,7 +1658,7 @@ fun AttachMenuSheet(onDismiss: () -> Unit, onPick: (String) -> Unit) {
             AttachOption(Icons.Filled.Image, "صورة", ChatColors.accent) { onPick("image/*") }
             AttachOption(Icons.Filled.Videocam, "فيديو", ChatColors.amber) { onPick("video/*") }
             AttachOption(Icons.Filled.MusicNote, "صوت", Color(0xFF2563EB)) { onPick("audio/*") }
-            AttachOption(Icons.Filled.InsertDriveFile, "ملفّ", Color(0xFF7C3AED)) { onPick("*/*") }
+            AttachOption(Icons.AutoMirrored.Filled.InsertDriveFile, "ملفّ", Color(0xFF7C3AED)) { onPick("*/*") }
         }
     }
 }

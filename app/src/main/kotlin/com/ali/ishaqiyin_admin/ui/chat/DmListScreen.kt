@@ -67,9 +67,13 @@ fun DmListScreen(nav: NavHostController, onBack: () -> Unit) {
     val snack = LocalSnack.current
     val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
 
-    val membersList by ChatRepository.membersStream().collectAsState(initial = emptyList())
+    // ⚠️ remember إلزاميّ: بلاه يُنشأ تدفّق جديد مع كل إعادة تركيب
+    // فيُعاد ربط مستمع Firestore في كلّ مرّة (قراءات وبطء بلا داعٍ).
+    val membersList by remember { ChatRepository.membersStream() }
+        .collectAsState(initial = emptyList())
     val members = remember(membersList) { membersList.associateBy { it.uid } }
-    val threads by DmRepository.threadsStream().collectAsState(initial = emptyList())
+    val threads by remember { DmRepository.threadsStream() }
+        .collectAsState(initial = emptyList())
     var showPicker by remember { mutableStateOf(false) }
 
     fun openDm(member: ChatMember) {
