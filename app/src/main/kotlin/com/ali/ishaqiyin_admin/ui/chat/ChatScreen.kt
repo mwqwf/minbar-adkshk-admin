@@ -324,15 +324,23 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
 
     fun stopRecording(send: Boolean) {
         val elapsed = recordSeconds
-        val file = recorder.stop() ?: recordFile
+        // ⚠️ بلا `?: recordFile`: المسجّل يعيد null للتسجيل التالف عمداً،
+        // والسقوط إلى الملفّ الخام كان يُعيد إرسال العطب نفسه — وهو سبب
+        // «رسالة صوتيّة لا تعمل عند أحد».
+        val file = recorder.stop()
         recording = false
         recordSeconds = 0
         if (!send) {
+            runCatching { (file ?: recordFile)?.delete() }
+            return
+        }
+        if (elapsed < 1) {
+            snack("التسجيل قصير جدّاً.")
             runCatching { file?.delete() }
             return
         }
-        if (file == null || elapsed < 1) {
-            snack("التسجيل قصير جدّاً.")
+        if (file == null) {
+            snack("تعذّر حفظ التسجيل على هذا الجهاز — أعد المحاولة.")
             return
         }
         val name = "رسالة صوتيّة ${fileTimeFormat.format(Date())}.m4a"

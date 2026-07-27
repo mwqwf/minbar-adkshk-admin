@@ -726,11 +726,16 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                     },
                     onSend = {
                         val elapsed = recordSeconds
-                        val file = recorder.stop() ?: recordFile
+                        // بلا سقوط إلى الملفّ الخام: null يعني تسجيلاً
+                        // تالفاً رفضه المسجّل، وإرساله يُنتج رسالة ميّتة.
+                        val file = recorder.stop()
                         recording = false
                         recordSeconds = 0
-                        if (file == null || elapsed < 1) {
+                        if (elapsed < 1) {
                             snack("التسجيل قصير جدّاً.")
+                            runCatching { file?.delete() }
+                        } else if (file == null) {
+                            snack("تعذّر حفظ التسجيل على هذا الجهاز — أعد المحاولة.")
                         } else {
                             val name = "رسالة صوتيّة ${voiceNameFmt.format(Date())}.m4a"
                             sendAttachment(

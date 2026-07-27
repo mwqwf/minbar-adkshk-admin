@@ -54,6 +54,10 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import android.util.Log
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.PlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil3.compose.AsyncImage
@@ -74,6 +78,7 @@ import java.io.File
  * يشغّل **ملفّاً محليّاً** دائماً (بعد التنزيل) فلا يتأثّر بالشبكة إطلاقاً.
  */
 object SharedAudioPlayer {
+    private const val TAG = "SharedAudioPlayer"
     private var player: ExoPlayer? = null
 
     private val _activeKey = MutableStateFlow<String?>(null)
@@ -99,13 +104,55 @@ object SharedAudioPlayer {
     @Volatile
     var onCompleted: ((String) -> Unit)? = null
 
+    /** آخر خطأ تشغيل — تعرضه الفقاعة بدل الصمت المُربك. */
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error
+
+    fun clearError() {
+        _error.value = null
+    }
+
     private fun ensure(context: Context): ExoPlayer {
         player?.let { return it }
-        val created = ExoPlayer.Builder(context.applicationContext).build()
+        val created = ExoPlayer.Builder(context.applicationContext)
+            // ⚠️ إلزاميّ لتوافق الأجهزة: بلا سمات صوت صريحة وطلب البؤرة
+            // الصوتيّة، تخفض بعض واجهات المصنّعين (شاومي/أوبو/فيفو) صوت
+            // التطبيق أو تكتمه إذا كان تطبيق آخر يحتفظ بالبؤرة — فيبدو
+            // للمشرف أنّ «الصوت لا يعمل» بينما التشغيل جارٍ فعلاً.
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+                    .build(),
+                /* handleAudioFocus = */ true,
+            )
+            // إيقاف تلقائي عند نزع السمّاعة بدل بثّ الصوت على مكبّر الجهاز.
+            .setHandleAudioBecomingNoisy(true)
+            .build()
         created.addListener(
             object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     _playing.value = isPlaying
+                }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    // كان الفشل صامتاً تماماً: لا تشغيل ولا رسالة، فيظنّ
+                    // المشرف أنّ التطبيق معطّل. الآن يُعلَن سببه.
+                    Log.w(TAG, "playback failed: ${error.errorCodeName}", error)
+                    _error.value = when (error.errorCode) {
+                        PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
+                            "الملفّ الصوتي غير موجود — أعد تنزيله."
+                        PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+                        PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED,
+                        ->
+                            "هذا التسجيل تالف ولا يمكن تشغيله."
+                        PlaybackException.ERROR_CODE_DECODING_FAILED,
+                        PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+                        ->
+                            "جهازك لا يدعم ترميز هذا المقطع."
+                        else -> "تعذّر تشغيل المقطع."
+                    }
+                    stop()
                 }
 
                 override fun onPlaybackStateChanged(state: Int) {
@@ -126,6 +173,7 @@ object SharedAudioPlayer {
 
     fun playFile(context: Context, key: String, file: File) {
         val p = ensure(context)
+        _error.value = null
         if (_activeKey.value == key) {
             p.play()
             return
@@ -186,6 +234,7 @@ fun AudioBubblePlayer(attachment: ChatAttachment, isVoice: Boolean) {
     val speed by SharedAudioPlayer.speed.collectAsState()
 
     val active = activeKey == key && status.isReady
+    val playbackError by SharedAudioPlayer.error.collectAsState()
 
     LaunchedEffect(active, playing) {
         while (active && playing) {
@@ -208,6 +257,7 @@ fun AudioBubblePlayer(attachment: ChatAttachment, isVoice: Boolean) {
                 .background(ChatColors.accentDark, CircleShape)
                 .clickable {
                     scope.launch {
+                        SharedAudioPlayer.clearError()
                         when {
                             status.state == MediaState.Downloading -> Unit
                             status.state == MediaState.Failed -> {
@@ -262,10 +312,17 @@ fun AudioBubblePlayer(attachment: ChatAttachment, isVoice: Boolean) {
                 modifier = Modifier.height(24.dp),
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // خطأ التشغيل يخصّ المقطع النشط وحده؛ يُعرض مكان سطر
+                // الحالة بدل أن يبقى الفشل صامتاً بلا تفسير.
+                val showError = playbackError != null && activeKey == key
                 Text(
-                    statusLine(status, position, total, attachment),
+                    if (showError) {
+                        playbackError.orEmpty()
+                    } else {
+                        statusLine(status, position, total, attachment)
+                    },
                     fontSize = 10.5.sp,
-                    color = ChatColors.textMuted,
+                    color = if (showError) ChatColors.rose else ChatColors.textMuted,
                 )
                 Spacer(Modifier.weight(1f))
                 if (active) {
@@ -440,7 +497,16 @@ fun ImageViewerDialog(file: File, name: String, onDismiss: () -> Unit) {
 fun VideoPlayerDialog(file: File, name: String, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val player = remember {
-        ExoPlayer.Builder(context).build().apply {
+        ExoPlayer.Builder(context)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .build(),
+                /* handleAudioFocus = */ true,
+            )
+            .setHandleAudioBecomingNoisy(true)
+            .build().apply {
             setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(file)))
             prepare()
             playWhenReady = true

@@ -56,7 +56,20 @@ class PreviewPlayerState internal constructor(private val player: ExoPlayer) {
 @Composable
 fun rememberPreviewPlayer(): PreviewPlayerState {
     val context = LocalContext.current
-    val player = remember { ExoPlayer.Builder(context).build() }
+    val player = remember {
+        // نفس سمات مشغّل الدردشة: بلا طلب البؤرة الصوتيّة تكتم بعض واجهات
+        // المصنّعين الصوتَ إن كان تطبيق آخر يحتفظ بها.
+        ExoPlayer.Builder(context)
+            .setAudioAttributes(
+                androidx.media3.common.AudioAttributes.Builder()
+                    .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                    .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_SPEECH)
+                    .build(),
+                /* handleAudioFocus = */ true,
+            )
+            .setHandleAudioBecomingNoisy(true)
+            .build()
+    }
     val state = remember { PreviewPlayerState(player) }
     DisposableEffect(Unit) {
         val listener = state.attach()
