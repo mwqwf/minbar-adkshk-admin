@@ -913,6 +913,15 @@ exports.createLesson = functions.https.onCall(async (data, context) => {
     description: cleanString(input.description, 3000),
     sheikhName: cleanString(input.sheikhName, 180),
     featured: input.featured === true,
+    // مدّة التمييز: بانقضائها يسقط الدرس من «مختارات المنبر». تُقبل فقط
+    // مع featured=true وبتاريخ صالح مستقبليّ؛ غيابها = تمييز دائم.
+    ...(function () {
+      if (input.featured !== true) return {};
+      const until = cleanString(input.featuredUntil, 40);
+      const ms = until ? Date.parse(until) : NaN;
+      if (Number.isNaN(ms) || ms <= Date.now()) return {};
+      return { featuredUntil: new Date(ms).toISOString() };
+    })(),
     views: 0,
     createdAt: nowIso,
     createdAtTs: admin.firestore.FieldValue.serverTimestamp(),
@@ -2159,6 +2168,51 @@ exports.sendNotification = functions.https.onCall(async (data, context) => {
   });
   return { ok: true, messageId };
 });
+
+// ⭐ إنهاء تمييز الدروس التي انقضت مدّتها. التطبيق العام يُخفيها فوراً
+// بترشيح محلّي، وهذه تُنظّف الراية في القاعدة كي يستقيم المصدر ولا تظهر
+// عند النسخ القديمة التي لا تعرف featuredUntil.
+exports.expireFeaturedLessons = functions.pubsub
+  .schedule("every 30 minutes")
+  .timeZone("Asia/Riyadh")
+  .onRun(async () => {
+    const nowIso = new Date().toISOString();
+    const snap = await db.collection("lessons")
+      .where("featured", "==", true)
+      .get();
+    let cleared = 0;
+    let batch = db.batch();
+    let pending = 0;
+    for (const doc of snap.docs) {
+      const value = doc.data() || {};
+      const until = value.featuredUntil || (value.data && value.data.featuredUntil);
+      if (!until) continue; // تمييز دائم.
+      const ms = Date.parse(until);
+      if (Number.isNaN(ms) || ms > Date.now()) continue;
+      const wrapped = value.data && typeof value.data === "object";
+      batch.update(doc.ref, wrapped
+        ? {
+          "data.featured": false,
+          "data.featuredUntil": admin.firestore.FieldValue.delete(),
+          "data.featuredExpiredAt": nowIso,
+        }
+        : {
+          featured: false,
+          featuredUntil: admin.firestore.FieldValue.delete(),
+          featuredExpiredAt: nowIso,
+        });
+      cleared += 1;
+      pending += 1;
+      if (pending >= 400) {
+        await batch.commit();
+        batch = db.batch();
+        pending = 0;
+      }
+    }
+    if (pending > 0) await batch.commit();
+    if (cleared > 0) console.log(`expireFeaturedLessons: cleared ${cleared}`);
+    return null;
+  });
 
 // تنظيف يومي للملفات اليتيمة وإعادة محاولة مهام تنظيف التخزين الفاشلة.
 exports.cleanupOrphanSubmissionUploads = functions.runWith({

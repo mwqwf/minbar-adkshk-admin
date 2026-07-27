@@ -112,6 +112,12 @@ data class Lesson(
     val hasCreatedAt: Boolean,
     val views: Int = 0,
     val featured: Boolean = false,
+    /**
+     * نهاية مدّة التمييز. `null` = تمييز دائم. بانقضائها يسقط الدرس من
+     * «مختارات المنبر» في التطبيق العام فوراً (ترشيح عميل) وتُنظَّف الراية
+     * خادميّاً بعدها.
+     */
+    val featuredUntilMs: Long? = null,
     val addedBy: String = "",
     val publishAtMs: Long? = null,
 ) {
@@ -139,6 +145,8 @@ data class Lesson(
                 hasCreatedAt = rawCreated != null && str(rawCreated).isNotEmpty(),
                 views = int(d["views"]),
                 featured = d["featured"] == true,
+                featuredUntilMs = d["featuredUntil"]?.let { parseDateMs(it) }
+                    ?.takeIf { it > 0L },
                 addedBy = str(d["addedBy"]),
                 publishAtMs = d["publishAt"]?.let { parseDateMs(it) },
             )

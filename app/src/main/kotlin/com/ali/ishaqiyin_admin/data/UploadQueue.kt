@@ -24,6 +24,8 @@ data class PendingUpload(
     val subcategoryId: String,
     val sectionLabel: String,
     val featured: Boolean,
+    /** نهاية مدّة التمييز إن ميّزه المشرف عند الإضافة (null = دائم). */
+    val featuredUntilMs: Long? = null,
     val addedBy: String,
     val localPath: String,
     val fileName: String,
@@ -47,6 +49,7 @@ data class PendingUpload(
         put("subcategoryId", subcategoryId)
         put("sectionLabel", sectionLabel)
         put("featured", featured)
+        put("featuredUntilMs", featuredUntilMs ?: JSONObject.NULL)
         put("addedBy", addedBy)
         put("localPath", localPath)
         put("fileName", fileName)
@@ -66,6 +69,7 @@ data class PendingUpload(
             subcategoryId = o.optString("subcategoryId"),
             sectionLabel = o.optString("sectionLabel"),
             featured = o.optBoolean("featured"),
+            featuredUntilMs = o.optLong("featuredUntilMs").takeIf { it > 0L },
             addedBy = o.optString("addedBy"),
             localPath = o.optString("localPath"),
             fileName = o.optString("fileName"),
@@ -158,6 +162,7 @@ object UploadQueue {
         subcategoryId: String,
         sectionLabel: String,
         featured: Boolean,
+        featuredUntilMs: Long?,
         addedBy: String,
     ): PendingUpload = withContext(Dispatchers.IO) {
         val id = "up_${System.currentTimeMillis()}_${(0..9999).random()}"
@@ -175,6 +180,7 @@ object UploadQueue {
             subcategoryId = subcategoryId,
             sectionLabel = sectionLabel,
             featured = featured,
+            featuredUntilMs = featuredUntilMs,
             addedBy = addedBy,
             localPath = dest.absolutePath,
             fileName = fileName,
@@ -194,6 +200,7 @@ object UploadQueue {
         subcategoryId: String,
         sectionLabel: String,
         featured: Boolean,
+        featuredUntilMs: Long?,
         addedBy: String,
     ): PendingUpload {
         val id = "up_${System.currentTimeMillis()}_${(0..9999).random()}"
@@ -208,6 +215,7 @@ object UploadQueue {
             subcategoryId = subcategoryId,
             sectionLabel = sectionLabel,
             featured = featured,
+            featuredUntilMs = featuredUntilMs,
             addedBy = addedBy,
             localPath = dest.absolutePath,
             fileName = fileName,

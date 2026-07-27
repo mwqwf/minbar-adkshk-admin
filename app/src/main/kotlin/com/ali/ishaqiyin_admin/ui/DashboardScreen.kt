@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.automirrored.filled.ManageSearch
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -219,6 +220,12 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
         .collectAsState(initial = 0)
     val pendingSubmissions by remember { SubmissionsRepository.watchPendingCount() }
         .collectAsState(initial = 0)
+    // عدد المميّزة السارية فقط (ما انتهت مدّته لا يُعدّ).
+    val featured by remember { AdminRepository.watchFeatured() }
+        .collectAsState(initial = emptyList())
+    val featuredActive = featured.count {
+        it.featuredUntilMs == null || it.featuredUntilMs > System.currentTimeMillis()
+    }
     val suspicious by remember(isOwner) {
         if (isOwner) {
             OwnerReviewRepository.watchPending()
@@ -271,6 +278,12 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
             ActionSpec(
                 Icons.AutoMirrored.Filled.ManageSearch, kBlue, "التعديل والبحث",
                 "تعديل وحذف وجدولة", 0, Routes.MANAGE_ALL,
+            ),
+        )
+        add(
+            ActionSpec(
+                Icons.Filled.Star, kGold, "مختارات المنبر",
+                "الدروس المميّزة ومدّتها", featuredActive, Routes.FEATURED,
             ),
         )
         add(

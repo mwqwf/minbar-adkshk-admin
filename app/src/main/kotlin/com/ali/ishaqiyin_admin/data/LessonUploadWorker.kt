@@ -71,6 +71,7 @@ class LessonUploadWorker(
                     audioStoragePath = url.second,
                     addedBy = item.addedBy,
                     featured = item.featured,
+                    featuredUntilMs = item.featuredUntilMs,
                     // ختم لحظة الإدراج: يحفظ الترتيب في التطبيق العام.
                     createdAtMs = item.queuedAtMs,
                 )

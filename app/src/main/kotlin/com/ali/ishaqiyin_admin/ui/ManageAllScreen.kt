@@ -62,6 +62,8 @@ fun ManageAllScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
+    // اختيار مدّة التمييز — التمييز لم يعد دائماً بالضرورة.
+    var featureFor by remember { mutableStateOf<Lesson?>(null) }
 
     var categories by remember { mutableStateOf<List<Category>>(emptyList()) }
     var subcategories by remember { mutableStateOf<List<Subcategory>>(emptyList()) }
@@ -227,6 +229,25 @@ fun ManageAllScreen(onBack: () -> Unit) {
         null -> Unit
     }
 
+    featureFor?.let { lesson ->
+        FeatureDurationSheet(
+            lessonTitle = lesson.title,
+            currentUntilMs = lesson.featuredUntilMs,
+            onDismiss = { featureFor = null },
+            onPick = { duration ->
+                featureFor = null
+                scope.launch {
+                    runCatching {
+                        AdminRepository.setLessonFeatured(lesson.id, true, duration.untilMs())
+                    }.onSuccess {
+                        snack("مُيّز في مختارات المنبر — ${duration.label}")
+                        reload++
+                    }.onFailure { snack("تعذّر التمييز: ${it.message ?: it}") }
+                }
+            },
+        )
+    }
+
     AdminScaffold(title = "التعديل والحذف / البحث", onBack = onBack) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             OutlinedTextField(
@@ -281,21 +302,19 @@ fun ManageAllScreen(onBack: () -> Unit) {
                             lesson = l,
                             subcategoryName = subName(l.subcategoryId),
                             onToggleFeatured = {
-                                scope.launch {
-                                    runCatching {
-                                        AdminRepository.setLessonFeatured(l.id, !l.featured)
-                                    }
-                                        .onSuccess {
-                                            snack(
-                                                if (l.featured) {
-                                                    "أُلغي التمييز."
-                                                } else {
-                                                    "تم التمييز — سيظهر أعلى التطبيق."
-                                                },
-                                            )
+                                if (l.featured) {
+                                    scope.launch {
+                                        runCatching {
+                                            AdminRepository.setLessonFeatured(l.id, false)
+                                        }.onSuccess {
+                                            snack("أُزيل من مختارات المنبر.")
+                                            reload++
+                                        }.onFailure {
+                                            snack("تعذّر التعديل: ${it.message ?: it}")
                                         }
-                                        .onFailure { snack("تعذّر التعديل: ${it.message ?: it}") }
-                                    reload++
+                                    }
+                                } else {
+                                    featureFor = l
                                 }
                             },
                             onSchedule = {

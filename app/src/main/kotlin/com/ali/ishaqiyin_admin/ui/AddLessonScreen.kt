@@ -132,6 +132,10 @@ fun AddLessonScreen(onBack: () -> Unit) {
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
     var featured by remember { mutableStateOf(false) }
+    // التمييز صار مؤقّتاً: null مع featured=true يعني «دائم».
+    var featuredUntil by remember { mutableStateOf<Long?>(null) }
+    var featuredLabel by remember { mutableStateOf("") }
+    var showFeatureSheet by remember { mutableStateOf(false) }
     var showRecorder by remember { mutableStateOf(false) }
 
     // ملفّ وارد من مشاركة خارجية: عبّئ الحقل واقترح عنواناً من اسمه.
@@ -223,6 +227,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         subcategoryId = subcategoryId!!,
                         sectionLabel = label,
                         featured = featured,
+                        featuredUntilMs = featuredUntil,
                         addedBy = AuthService.currentUser?.email.orEmpty(),
                     )
                 } else {
@@ -244,6 +249,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         subcategoryId = subcategoryId!!,
                         sectionLabel = label,
                         featured = featured,
+                        featuredUntilMs = featuredUntil,
                         addedBy = AuthService.currentUser?.email.orEmpty(),
                     )
                 }
@@ -253,6 +259,8 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 title = ""
                 files.clear()
                 featured = false
+                featuredUntil = null
+                featuredLabel = ""
                 queuing = false
                 if (sharedFile != null && !sharedConsumed) {
                     sharedConsumed = true
@@ -271,6 +279,23 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 isError = true
             }
         }
+    }
+
+    if (showFeatureSheet) {
+        FeatureDurationSheet(
+            lessonTitle = title.ifBlank { "الدرس الجديد" },
+            currentUntilMs = featuredUntil,
+            onDismiss = {
+                showFeatureSheet = false
+                if (!featured) featuredLabel = ""
+            },
+            onPick = { duration ->
+                showFeatureSheet = false
+                featured = true
+                featuredUntil = duration.untilMs()
+                featuredLabel = duration.label
+            },
+        )
     }
 
     if (showRecorder) {
@@ -413,12 +438,32 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(
                         checked = featured,
-                        onCheckedChange = { if (!queuing) featured = it },
+                        onCheckedChange = {
+                            if (queuing) return@Checkbox
+                            if (it) {
+                                // التمييز يلزمه مدّة — لا يُترك دائماً بالصدفة.
+                                showFeatureSheet = true
+                            } else {
+                                featured = false
+                                featuredUntil = null
+                                featuredLabel = ""
+                            }
+                        },
                         enabled = !queuing,
                     )
-                    Icon(Icons.Filled.Star, contentDescription = null, tint = kTeal)
+                    Icon(Icons.Filled.Star, contentDescription = null, tint = kGold)
                     Spacer(Modifier.size(8.dp))
-                    Text("تمييز الدرس (يظهر أعلى التطبيق)")
+                    Column {
+                        Text("تمييز الدرس (مختارات المنبر)")
+                        if (featured) {
+                            Text(
+                                featuredLabel,
+                                fontSize = 11.sp,
+                                color = kGold,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
                 }
                 Spacer(Modifier.height(10.dp))
                 if (merging) {

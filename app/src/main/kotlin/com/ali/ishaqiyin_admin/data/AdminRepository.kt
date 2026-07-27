@@ -182,6 +182,7 @@ object AdminRepository {
         audioStoragePath: String? = null,
         addedBy: String = "",
         featured: Boolean = false,
+        featuredUntilMs: Long? = null,
         /**
          * زمن الإضافة الحقيقي (لحظة ضغط المشرف «رفع»)، لا لحظة اكتمال
          * الرفع — به يبقى ترتيب الدروس في التطبيق العام مطابقاً لترتيب
@@ -197,14 +198,50 @@ object AdminRepository {
             "createdAt" to (createdAtMs?.let(::isoOf) ?: nowIso()),
         )
         if (!audioStoragePath.isNullOrEmpty()) data["audioStoragePath"] = audioStoragePath
-        if (featured) data["featured"] = true
+        if (featured) {
+            data["featured"] = true
+            featuredUntilMs?.let { data["featuredUntil"] = isoOf(it) }
+        }
         if (addedBy.isNotEmpty()) data["addedBy"] = addedBy.lowercase()
         functions.getHttpsCallable("createLesson").call(data).await()
     }
 
-    /** تمييز/إلغاء تمييز درس (يظهر في «المميّزة» أعلى التطبيق). */
-    suspend fun setLessonFeatured(id: String, featured: Boolean) =
-        updateCompat("lessons", id, mapOf("featured" to featured))
+    /**
+     * تمييز/إلغاء تمييز درس (يظهر في «مختارات المنبر» أعلى التطبيق).
+     * [untilMs] نهاية المدّة، و`null` تعني تمييزاً دائماً.
+     * إلغاء التمييز يمسح المدّة أيضاً كي لا تبقى قيمة معلّقة تُربك العرض.
+     */
+    suspend fun setLessonFeatured(id: String, featured: Boolean, untilMs: Long? = null) =
+        updateCompat(
+            "lessons",
+            id,
+            mapOf(
+                "featured" to featured,
+                "featuredUntil" to when {
+                    !featured -> FieldValue.delete()
+                    untilMs == null -> FieldValue.delete()
+                    else -> isoOf(untilMs)
+                },
+                "featuredAt" to if (featured) nowIso() else FieldValue.delete(),
+            ),
+        )
+
+    /**
+     * بثّ حيّ لدروس «مختارات المنبر». الترشيح محلّي على `featured` كي لا
+     * يحتاج فهرساً مركّباً، والقائمة صغيرة أصلاً بطبيعتها.
+     */
+    fun watchFeatured(): Flow<List<Lesson>> =
+        db.collection("lessons").whereEqualTo("featured", true).querySnapshots()
+            .map { snap ->
+                snap.documents
+                    .map { Lesson.fromDoc(it.id, it.dataMap()) }
+                    .sortedWith(
+                        // الدائم أوّلاً ثم الأقرب انتهاءً — ما يوشك على
+                        // السقوط يجب أن يقع تحت عين المالك.
+                        compareBy<Lesson> { it.featuredUntilMs ?: Long.MAX_VALUE }
+                            .thenByDescending { it.createdAtMs },
+                    )
+            }
 
     /**
      * إلغاء جدولة درس قديم (النشر المجدول أُزيل من الواجهة؛ تبقى هذه

@@ -71,6 +71,7 @@ object Routes {
     const val SUPERVISORS = "supervisors"
     const val SUBMISSIONS = "submissions"
     const val OWNER_REVIEW = "owner_review"
+    const val FEATURED = "featured"
     const val CHAT = "chat"
     const val GROUP_INFO = "group_info"
     const val DM_LIST = "dm_list"
@@ -198,6 +199,7 @@ private fun AdminNavHost(isOwner: Boolean) {
         composable(Routes.SUPERVISORS) { SupervisorsScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.SUBMISSIONS) { SubmissionsScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.OWNER_REVIEW) { OwnerReviewScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.FEATURED) { FeaturedScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.CHAT) { ChatScreen(isOwner = isOwner, nav = nav) }
         composable(Routes.GROUP_INFO) {
             GroupInfoScreen(isOwner = isOwner, nav = nav, onBack = { nav.popBackStack() })
