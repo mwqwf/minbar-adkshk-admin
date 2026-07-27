@@ -189,6 +189,11 @@ object AdminRepository {
          * إضافتها حتى لو رُفعت لاحقاً بعد انقطاع طويل.
          */
         createdAtMs: Long? = null,
+        /**
+         * مفتاح ثابت من العميل يمنع إنشاء درسين متطابقين إن ضاع ردّ
+         * الخادم بعد نجاح الكتابة (حالة معتادة على شبكة ضعيفة).
+         */
+        clientKey: String? = null,
     ) {
         val data = mutableMapOf<String, Any>(
             "title" to title.trim(),
@@ -203,6 +208,7 @@ object AdminRepository {
             featuredUntilMs?.let { data["featuredUntil"] = isoOf(it) }
         }
         if (addedBy.isNotEmpty()) data["addedBy"] = addedBy.lowercase()
+        if (!clientKey.isNullOrEmpty()) data["clientKey"] = clientKey
         functions.getHttpsCallable("createLesson").call(data).await()
     }
 

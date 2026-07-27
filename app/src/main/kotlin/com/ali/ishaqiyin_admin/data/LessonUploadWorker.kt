@@ -19,6 +19,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ali.ishaqiyin_admin.R
 import com.google.firebase.storage.FirebaseStorage
+import com.google.firebase.storage.StorageException
 import com.google.firebase.storage.StorageMetadata
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
@@ -51,7 +52,10 @@ class LessonUploadWorker(
         runCatching { setForeground(foregroundInfo(null, 0)) }
 
         while (true) {
+            // قراءة طازجة في كلّ دورة: الحالة قد تتغيّر أثناء الرفع
+            // (إلغاء من المشرف، أو جلسة استئناف حُفظت).
             val item = UploadQueue.peek() ?: break
+            lastPercent = 0
             val file = File(item.localPath)
             if (!file.exists() || file.length() == 0L) {
                 // الملفّ ضاع (مسح يدويّ/تخزين ممتلئ) — لا معنى لإبقائه.
@@ -63,6 +67,15 @@ class LessonUploadWorker(
             UploadQueue.setProgress(UploadProgress(item.id, item.title, 0))
             try {
                 val url = uploadWithResume(item, file)
+                if (UploadQueue.consumeCancelled(item.id) || UploadQueue.byId(item.id) == null) {
+                    // ألغاه المشرف أثناء الرفع: لا يُنشر، ويُحذف ما رُفع
+                    // كي لا يبقى ملفّ يتيم في التخزين.
+                    Log.i(TAG, "cancelled during upload: ${item.id}")
+                    runCatching { StorageService.deleteFileOrThrow(url.second) }
+                    UploadQueue.remove(item.id)
+                    UploadQueue.setProgress(null)
+                    continue
+                }
                 AdminRepository.addLesson(
                     title = item.title,
                     categoryId = item.categoryId,
@@ -74,31 +87,46 @@ class LessonUploadWorker(
                     featuredUntilMs = item.featuredUntilMs,
                     // ختم لحظة الإدراج: يحفظ الترتيب في التطبيق العام.
                     createdAtMs = item.queuedAtMs,
+                    // مفتاح ثابت: إعادة المحاولة بعد ضياع الردّ لا تُنشئ درساً ثانياً.
+                    clientKey = item.id,
                 )
                 UploadQueue.remove(item.id)
                 UploadQueue.setProgress(null)
-            } catch (io: IOException) {
-                // انقطاع شبكة: نُبقي الجلسة والملفّ ونطلب إعادة التشغيل.
-                UploadQueue.update(item.copy(lastError = null))
-                UploadQueue.setProgress(
-                    UploadProgress(item.id, item.title, lastPercent, waitingForNetwork = true),
-                )
-                return Result.retry()
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                // إيقاف WorkManager (فقدان قيد الشبكة/انتهاء مهلة الخدمة
+                // الأماميّة) ليس فشلاً للدرس: لا يُحسب من المحاولات ولا
+                // يمسّ جلسة الاستئناف — نُعيد رميه احتراماً للتزامن البنيوي.
+                UploadQueue.setProgress(null)
+                throw cancel
             } catch (e: Exception) {
+                if (isNetworkFailure(e)) {
+                    // انقطاع شبكة (ولو وصل ملفوفاً في StorageException بعد
+                    // نفاد مهلة إعادة المحاولة الداخلية): لا يُحسب من
+                    // المحاولات أبداً — نُبقي الجلسة والملفّ ونطلب إعادة
+                    // التشغيل، فيُستأنف مهما طال الانقطاع.
+                    UploadQueue.update(item.id) { it.copy(lastError = null) }
+                    UploadQueue.setProgress(
+                        UploadProgress(item.id, item.title, lastPercent, waitingForNetwork = true),
+                    )
+                    return Result.retry()
+                }
                 val attempts = item.attempts + 1
                 Log.w(TAG, "upload failed (${attempts}) for ${item.id}: $e")
                 if (attempts >= MAX_ATTEMPTS) {
-                    // فشل مستمرّ غير شبكيّ (قسم محذوف/صلاحية) — نُبقيه معلّماً
-                    // بالخطأ ليقرّر المشرف، وننتقل للتالي كي لا يتوقّف الطابور.
-                    UploadQueue.update(
-                        item.copy(
+                    // فشل مستمرّ غير شبكيّ (قسم محذوف/صلاحية) — يُركن صراحةً
+                    // فيخرج من دور الرفع ويبقى معروضاً ليقرّر المشرف،
+                    // وينتقل الطابور لما بعده بدل أن يدور عليه بلا نهاية.
+                    UploadQueue.update(item.id) {
+                        it.copy(
                             attempts = attempts,
                             lastError = e.message ?: "تعذّر الرفع",
-                            seq = item.seq + PARK_OFFSET,
-                        ),
-                    )
+                            parked = true,
+                        )
+                    }
                 } else {
-                    UploadQueue.update(item.copy(attempts = attempts, lastError = e.message))
+                    UploadQueue.update(item.id) {
+                        it.copy(attempts = attempts, lastError = e.message)
+                    }
                     return Result.retry()
                 }
                 UploadQueue.setProgress(null)
@@ -111,12 +139,37 @@ class LessonUploadWorker(
 
     private var lastPercent: Int = 0
 
+    /**
+     * هل هذا فشل شبكيّ؟ Firebase يلفّ انقطاع الشبكة في StorageException
+     * (ليست IOException)، فبلا هذا الفحص كان الانقطاع الطويل يُعامل
+     * كفشل دائم ويُركن الدرس بعد 5 دورات.
+     */
+    private fun isNetworkFailure(e: Throwable): Boolean {
+        if (e is IOException) return true
+        if (e is StorageException &&
+            e.errorCode == StorageException.ERROR_RETRY_LIMIT_EXCEEDED
+        ) {
+            return true
+        }
+        var cause: Throwable? = e.cause
+        var depth = 0
+        while (cause != null && depth < 8) {
+            if (cause is IOException) return true
+            cause = cause.cause
+            depth++
+        }
+        return false
+    }
+
     /** رفع مع استئناف — يعيد (رابط التنزيل، مسار التخزين). */
     private suspend fun uploadWithResume(
         item: PendingUpload,
         file: File,
     ): Pair<String, String> {
-        val storagePath = "lessons/${item.queuedAtMs}_${file.name.substringAfter('_')}"
+        // اسم نظيف: يُنزع معرّف الطابور كاملاً لا حتى أوّل شرطة سفليّة
+        // (المعرّف نفسه يحوي شرطات: up_<millis>_<rand>).
+        val cleanName = file.name.removePrefix("${item.id}_")
+        val storagePath = "lessons/${item.queuedAtMs}_$cleanName"
         val ref = FirebaseStorage.getInstance().reference.child(storagePath)
         val metadata = StorageMetadata.Builder()
             .setContentType(StorageService.mimeForExt(item.fileName.substringAfterLast('.', "")))
@@ -129,14 +182,15 @@ class LessonUploadWorker(
             } else {
                 ref.putFile(Uri.fromFile(file), metadata)
             }
+            UploadQueue.bindActiveTask(item.id) { task.cancel() }
             var sessionSaved = item.sessionUri != null
             task.addOnProgressListener { snap ->
                 // نحفظ جلسة الرفع مرّة واحدة فور صدورها: بها وحدها يُستأنف
                 // الرفع بعد موت العمليّة بدل إعادته من الصفر.
                 if (!sessionSaved) {
-                    snap.uploadSessionUri?.let {
+                    snap.uploadSessionUri?.let { uri ->
                         sessionSaved = true
-                        UploadQueue.update(item.copy(sessionUri = it.toString()))
+                        UploadQueue.update(item.id) { it.copy(sessionUri = uri.toString()) }
                     }
                 }
                 if (snap.totalByteCount > 0) {
@@ -152,6 +206,7 @@ class LessonUploadWorker(
             task.addOnFailureListener { cont.resumeWithException(it) }
             cont.invokeOnCancellation { runCatching { task.cancel() } }
         }.let { ref.downloadUrl.await().toString() }
+        UploadQueue.clearActiveTask(item.id)
 
         return downloadUrl to storagePath
     }
@@ -198,8 +253,6 @@ class LessonUploadWorker(
         private const val TAG = "LessonUpload"
         private const val MAX_ATTEMPTS = 5
 
-        /** يُنحّى الفاشل نهائياً إلى آخر الطابور كي لا يحجب ما بعده. */
-        private const val PARK_OFFSET = 1_000_000L
         const val WORK_NAME = "lesson_upload_queue"
 
         /** يوقظ الطابور: يبدأ فوراً إن كان هناك اتصال، وينتظره إن لم يكن. */

@@ -40,6 +40,11 @@ data class PendingUpload(
     val sessionUri: String? = null,
     val attempts: Int = 0,
     val lastError: String? = null,
+    /**
+     * رُكن بعد فشل دائم: يبقى معروضاً للمشرف ليقرّر، لكنّه **يخرج من دور
+     * الرفع** — بلا هذا كان العامل يعيد رفعه بلا توقّف حين لا يبقى غيره.
+     */
+    val parked: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -58,6 +63,7 @@ data class PendingUpload(
         put("sessionUri", sessionUri ?: JSONObject.NULL)
         put("attempts", attempts)
         put("lastError", lastError ?: JSONObject.NULL)
+        put("parked", parked)
     }
 
     companion object {
@@ -78,6 +84,7 @@ data class PendingUpload(
             sessionUri = o.optString("sessionUri").takeIf { it.isNotEmpty() && it != "null" },
             attempts = o.optInt("attempts"),
             lastError = o.optString("lastError").takeIf { it.isNotEmpty() && it != "null" },
+            parked = o.optBoolean("parked"),
         )
     }
 }
@@ -191,8 +198,11 @@ object UploadQueue {
         item
     }
 
-    /** يُدرج ملفاً مدموجاً جاهزاً (نُقل بالفعل إلى تخزين التطبيق). */
-    fun enqueueLocalFile(
+    /**
+     * يُدرج ملفاً مدموجاً جاهزاً. `suspend` على IO: نسخ ملفّ مدموج قد يبلغ
+     * مئات الميغابايتات كان يجمّد خيط الواجهة لحظةَ الوعد بأنّه «لا يحجز».
+     */
+    suspend fun enqueueLocalFile(
         file: File,
         fileName: String,
         title: String,
@@ -202,7 +212,7 @@ object UploadQueue {
         featured: Boolean,
         featuredUntilMs: Long?,
         addedBy: String,
-    ): PendingUpload {
+    ): PendingUpload = withContext(Dispatchers.IO) {
         val id = "up_${System.currentTimeMillis()}_${(0..9999).random()}"
         val dest = File(queueDir(), "${id}_${file.name}")
         file.copyTo(dest, overwrite = true)
@@ -223,14 +233,33 @@ object UploadQueue {
             queuedAtMs = System.currentTimeMillis(),
         )
         synchronized(lock) { persist(load() + item) }
-        return item
+        item
     }
 
-    /** العنصر التالي للرفع (الأقدم إدراجاً) — أساس ضمان الترتيب. */
-    fun peek(): PendingUpload? = synchronized(lock) { load().minByOrNull { it.seq } }
+    /**
+     * العنصر التالي للرفع: أقدم عنصر **غير مركون** — أساس ضمان الترتيب.
+     * المركون يبقى في القائمة للعرض وإعادة المحاولة اليدويّة فقط.
+     */
+    fun peek(): PendingUpload? = synchronized(lock) {
+        load().filterNot { it.parked }.minByOrNull { it.seq }
+    }
 
-    fun update(item: PendingUpload) = synchronized(lock) {
-        persist(load().map { if (it.id == item.id) item else it })
+    fun byId(id: String): PendingUpload? = synchronized(lock) {
+        load().firstOrNull { it.id == id }
+    }
+
+    /**
+     * تحديث بالدمج على أحدث نسخة مخزَّنة، لا بالكتابة فوقها.
+     * ⚠️ الكتابة بلقطة قديمة كانت تمحو `sessionUri` الذي حفظه مستمع
+     * التقدّم أثناء الرفع، فيضيع الاستئناف ويعود الرفع من الصفر.
+     */
+    fun update(id: String, transform: (PendingUpload) -> PendingUpload) = synchronized(lock) {
+        persist(load().map { if (it.id == id) transform(it) else it })
+    }
+
+    /** إعادة المحاولة يدويّاً لعنصر مركون. */
+    fun unpark(id: String) = update(id) {
+        it.copy(parked = false, attempts = 0, lastError = null)
     }
 
     /** إزالة بعد نجاح الرفع — تحذف النسخة المحليّة أيضاً. */
@@ -240,8 +269,35 @@ object UploadQueue {
         persist(list.filterNot { it.id == id })
     }
 
-    /** إلغاء يدويّ من المشرف. */
+    /**
+     * مُلغى في هذه الجلسة — يفحصه العامل بعد اكتمال الرفع وقبل إنشاء
+     * الدرس، فلا يُنشر ما ألغاه المشرف أثناء رفعه.
+     */
+    private val cancelled = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    /** يوقف النقل الجاري فعليّاً (يضبطه العامل عند بدء كلّ عنصر). */
+    @Volatile
+    private var activeCancel: Pair<String, () -> Unit>? = null
+
+    fun bindActiveTask(id: String, cancelTask: () -> Unit) {
+        activeCancel = id to cancelTask
+    }
+
+    fun clearActiveTask(id: String) {
+        if (activeCancel?.first == id) activeCancel = null
+    }
+
+    fun isCancelled(id: String): Boolean = cancelled.contains(id)
+
+    fun consumeCancelled(id: String): Boolean = cancelled.remove(id)
+
+    /**
+     * إلغاء يدويّ من المشرف — يوقف النقل الجاري إن كان هذا العنصر قيد
+     * الرفع، ويمنع نشره حتى لو كان الرفع قد اكتمل لتوّه.
+     */
     fun cancel(id: String) {
+        cancelled.add(id)
+        activeCancel?.let { (activeId, stop) -> if (activeId == id) runCatching { stop() } }
         remove(id)
         if (_progress.value?.id == id) _progress.value = null
     }

@@ -595,16 +595,7 @@ exports.publishScheduledLessons = functions.pubsub
   .schedule("*/15 * * * *")
   .timeZone("Asia/Riyadh")
   .onRun(async () => {
-    // زمن الإضافة: يقبل طابعاً من العميل (طابور الرفع دون اتصال) ليبقى
-  // ترتيب الدروس في التطبيق العام مطابقاً لترتيب إضافة المشرف لها، حتى لو
-  // اكتمل رفعها لاحقاً بترتيب مختلف. يُقبل فقط من حساب مخوَّل وبتاريخ صالح
-  // غير مستقبليّ، وإلّا فزمن الخادم.
-  const serverNowIso = new Date().toISOString();
-  const requestedCreatedAt = cleanString(input.createdAt, 40);
-  const requestedMs = requestedCreatedAt ? Date.parse(requestedCreatedAt) : NaN;
-  const nowIso = (!Number.isNaN(requestedMs) && requestedMs <= Date.now())
-    ? new Date(requestedMs).toISOString()
-    : serverNowIso;
+    const nowIso = new Date().toISOString();
     const snap = await db.collection("lessons")
       .where("publishAt", "<=", nowIso)
       .get();
@@ -901,7 +892,20 @@ exports.createLesson = functions.https.onCall(async (data, context) => {
       "لا يجوز نشر درس مباشر من مجلد المساهمات الخاص.",
     );
   }
-  const nowIso = new Date().toISOString();
+  const serverNowIso = new Date().toISOString();
+  // زمن الإضافة: طابور الرفع دون اتصال يختم لحظة ضغط المشرف «رفع» ويرسلها
+  // هنا، فيبقى ترتيب الدروس في التطبيق العام مطابقاً لترتيب إضافتها لا
+  // لترتيب اكتمال رفعها. يُقبل فقط من حساب مخوَّل، وبتاريخ صالح غير
+  // مستقبليّ ولا أقدم من 30 يوماً؛ وإلّا فزمن الخادم.
+  const requestedCreatedAt = cleanString(input.createdAt, 40);
+  const requestedMs = requestedCreatedAt ? Date.parse(requestedCreatedAt) : NaN;
+  const MAX_BACKDATE_MS = 30 * 24 * 60 * 60 * 1000;
+  const acceptableCreatedAt = !Number.isNaN(requestedMs) &&
+    requestedMs <= Date.now() + 60 * 1000 &&
+    requestedMs >= Date.now() - MAX_BACKDATE_MS;
+  const nowIso = acceptableCreatedAt
+    ? new Date(requestedMs).toISOString()
+    : serverNowIso;
   const lessonData = {
     title,
     normalizedTitle: title.toLocaleLowerCase("ar").replace(/\s+/g, " ").trim(),
@@ -912,15 +916,19 @@ exports.createLesson = functions.https.onCall(async (data, context) => {
     subcategoryName: cleanString(input.subcategoryName, 180),
     description: cleanString(input.description, 3000),
     sheikhName: cleanString(input.sheikhName, 180),
-    featured: input.featured === true,
-    // مدّة التمييز: بانقضائها يسقط الدرس من «مختارات المنبر». تُقبل فقط
-    // مع featured=true وبتاريخ صالح مستقبليّ؛ غيابها = تمييز دائم.
+    // مدّة التمييز: بانقضائها يسقط الدرس من «مختارات المنبر». غياب المدّة
+    // مع featured=true = تمييز دائم.
+    // ⚠️ درس بقي في طابور الرفع حتى انقضت مدّة تمييزه يجب أن يصل **غير
+    // مميّز**؛ إسقاط المدّة وحدها كان يحوّله إلى مميّز إلى الأبد، وهو عكس
+    // المقصود تماماً (وexpireFeaturedLessons لا تلمس ما لا مدّة له).
     ...(function () {
-      if (input.featured !== true) return {};
+      if (input.featured !== true) return { featured: false };
       const until = cleanString(input.featuredUntil, 40);
-      const ms = until ? Date.parse(until) : NaN;
-      if (Number.isNaN(ms) || ms <= Date.now()) return {};
-      return { featuredUntil: new Date(ms).toISOString() };
+      if (!until) return { featured: true }; // تمييز دائم مقصود.
+      const ms = Date.parse(until);
+      if (Number.isNaN(ms)) return { featured: true };
+      if (ms <= Date.now()) return { featured: false }; // انقضت قبل الوصول.
+      return { featured: true, featuredUntil: new Date(ms).toISOString() };
     })(),
     views: 0,
     createdAt: nowIso,
@@ -958,7 +966,22 @@ exports.createLesson = functions.https.onCall(async (data, context) => {
       .map((item) => cleanString(item, 60))
       .filter(Boolean);
   }
-  const lessonRef = db.collection("lessons").doc();
+  // منع التكرار: طابور الرفع يعيد المحاولة إن ضاع الردّ بعد نجاح الكتابة
+  // (حالة معتادة على شبكة ضعيفة)، فبلا مفتاح ثابت يُنشأ درسان متطابقان.
+  // المفتاح معرّف العنصر في الطابور، ومعرّف الوثيقة يُشتقّ منه حتميّاً.
+  const clientKey = cleanString(input.clientKey, 120);
+  const lessonRef = clientKey
+    ? db.collection("lessons").doc(
+      crypto.createHash("sha1")
+        .update(`${context.auth.uid}:${clientKey}`)
+        .digest("hex")
+        .slice(0, 20),
+    )
+    : db.collection("lessons").doc();
+  if (clientKey) {
+    const existing = await lessonRef.get();
+    if (existing.exists) return { ok: true, id: lessonRef.id, duplicate: true };
+  }
   await lessonRef.set(lessonData);
   await auditOwnerAction(actor.email, "create_lesson", lessonRef.id, {
     title,
@@ -2161,7 +2184,9 @@ exports.sendNotification = functions.https.onCall(async (data, context) => {
   if (!title && !body) {
     throw new functions.https.HttpsError("invalid-argument", "العنوان أو النص مطلوب.");
   }
-  const messageId = await pushToTopic(title || "إشعار", body, { type: "manual" });
+  // بلا عنوان من اللوحة: يسقط إلى اسم التطبيق «منبر ادكصهك» داخل
+  // pushToTopic — لا إلى كلمة «إشعار» العامّة.
+  const messageId = await pushToTopic(title, body, { type: "manual" });
   await auditOwnerAction(actor.email, "send_notification", "", {
     title,
     bodyLength: body.length,

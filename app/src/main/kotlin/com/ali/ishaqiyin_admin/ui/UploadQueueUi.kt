@@ -230,7 +230,13 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                             }
                         }
                         if (item.lastError != null) {
-                            IconButton(onClick = { LessonUploadWorker.kick(context) }) {
+                            IconButton(
+                                onClick = {
+                                    // رفع الركن أولاً وإلّا بقي خارج الدور.
+                                    UploadQueue.unpark(item.id)
+                                    LessonUploadWorker.kick(context)
+                                },
+                            ) {
                                 Icon(
                                     Icons.Filled.Refresh,
                                     contentDescription = "إعادة المحاولة",

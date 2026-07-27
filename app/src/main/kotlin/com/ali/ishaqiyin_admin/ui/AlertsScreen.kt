@@ -1,7 +1,6 @@
 package com.ali.ishaqiyin_admin.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,7 +14,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.GppMaybe
 import androidx.compose.material.icons.filled.HowToVote
@@ -27,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -42,27 +41,35 @@ import com.ali.ishaqiyin_admin.data.AdminAlertsFeed
 import kotlinx.coroutines.launch
 
 /**
- * شاشة «تنبيهاتك» الكاملة: قائمة حيّة، غير المقروء بارز، تمييز بالقراءة
- * عند النقر، وحذف (حسب الصلاحيّة).
+ * شاشة «تنبيهاتك»: **الاطّلاع نفسه يُميّز الكلّ مقروءاً** فتختفي التنبيهات
+ * عن هذا المشرف وحده في الزيارة التالية (وتبقى عند غيره). لقطة الجلسة
+ * تُبقي المعروض ثابتاً أثناء الزيارة كي لا يختفي التنبيه من تحت العين
+ * لحظة تمييزه، والجديد الوارد أثناء الفتح يُضاف حيّاً ويُميّز بدوره.
  */
 @Composable
 fun AlertsScreen(isOwner: Boolean, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    val alerts by remember(isOwner) { AdminAlertsFeed.stream(isOwner) }
+    val live by remember(isOwner) { AdminAlertsFeed.stream(isOwner) }
         .collectAsState(initial = emptyList())
     val me = AdminAlertsFeed.myEmail
-    val hasUnread = alerts.any { !it.isReadBy(me) }
+
+    // لقطة الزيارة: كلّ ما ظهر منذ فتح الشاشة يبقى معروضاً حتى الخروج.
+    val session = remember { androidx.compose.runtime.mutableStateMapOf<String, AdminAlert>() }
+    LaunchedEffect(live) {
+        live.forEach { session[it.id] = it }
+        // الاطّلاع = قراءة: يُميَّز الوارد فوراً (كتابة محليّة لا تنتظر
+        // الشبكة)، ويُحدَّث النموذج المحلّي كي يخفت التمييز البصري.
+        val unread = live.filter { !it.isReadBy(me) }
+        if (unread.isNotEmpty()) {
+            AdminAlertsFeed.markAllRead(unread)
+            unread.forEach { session[it.id] = it.copy(readBy = it.readBy + me) }
+        }
+    }
+    val alerts = session.values.sortedByDescending { it.createdAtMs }
 
     AdminScaffold(
         title = "تنبيهاتك",
         onBack = onBack,
-        actions = {
-            if (hasUnread) {
-                IconButton(onClick = { scope.launch { AdminAlertsFeed.markAllRead(alerts) } }) {
-                    Icon(Icons.Filled.DoneAll, contentDescription = "تمييز الكل مقروءاً")
-                }
-            }
-        },
     ) { padding ->
         if (alerts.isEmpty()) {
             Box(
@@ -84,7 +91,6 @@ fun AlertsScreen(isOwner: Boolean, onBack: () -> Unit) {
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .clickable { scope.launch { AdminAlertsFeed.markRead(alert) } }
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -122,7 +128,12 @@ fun AlertsScreen(isOwner: Boolean, onBack: () -> Unit) {
                         }
                     }
                     if (deletable) {
-                        IconButton(onClick = { scope.launch { AdminAlertsFeed.delete(alert) } }) {
+                        IconButton(
+                            onClick = {
+                                session.remove(alert.id)
+                                scope.launch { AdminAlertsFeed.delete(alert) }
+                            },
+                        ) {
                             Icon(
                                 Icons.Filled.Delete,
                                 contentDescription = "حذف التنبيه",
