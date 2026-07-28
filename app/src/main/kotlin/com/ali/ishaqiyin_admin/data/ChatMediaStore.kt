@@ -3,6 +3,7 @@ package com.ali.ishaqiyin_admin.data
 import android.util.Log
 import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.SupervisorJob
@@ -164,21 +165,27 @@ object ChatMediaStore {
      * تنزيل المرفق إلى الجهاز. آمن للاستدعاء المتكرّر: النداء المتزامن
      * ينضمّ إلى نفس المهمّة بدل أن يعود فارغاً (كان زرّ التشغيل «لا يفعل
      * شيئاً» عند الضغط أثناء تنزيل جارٍ).
+     *
+     * التسجيل ذرّي (`putIfAbsent` على مهمّة كسولة): الفحص ثمّ الإسناد
+     * المنفصلان كانا يسمحان لخيطين بكتابة نفس ملفّ `.part` معاً فيفسد.
      */
     suspend fun download(att: ChatAttachment): File? {
         val key = keyOf(att)
         val flow = flowOf(key)
         flow.value.file?.takeIf { it.exists() && it.length() > 0 }?.let { return it }
-        jobs[key]?.let { return runCatching { it.await() }.getOrNull() }
 
-        val job = scope.async {
+        val fresh = scope.async(start = CoroutineStart.LAZY) {
             try {
                 downloadInternal(att, flow)
             } finally {
                 jobs.remove(key)
             }
         }
-        jobs[key] = job
+        val running = jobs.putIfAbsent(key, fresh)
+        // خسر السباق: ألغِ النسخة الكسولة (لم تبدأ فلا يعمل جسمها) وانضمّ للجارية.
+        if (running != null) fresh.cancel()
+        val job = running ?: fresh
+        job.start()
         return runCatching { job.await() }.getOrNull()
     }
 

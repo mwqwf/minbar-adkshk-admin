@@ -16,16 +16,12 @@ import kotlinx.coroutines.tasks.await
 object AdminNotificationService {
     private const val TAG = "AdminNotifications"
 
-    @Volatile
-    private var isOwner: Boolean = false
-
     suspend fun registerCurrentDevice(isOwner: Boolean) {
         try {
             val user = FirebaseAuth.getInstance().currentUser
             val email = user?.email.orEmpty().trim().lowercase()
             if (user == null || email.isEmpty()) return
 
-            this.isOwner = isOwner
             val token = FirebaseMessaging.getInstance().token.await()
             if (!token.isNullOrEmpty()) saveToken(user, email, token, isOwner)
             ChatNotifications.syncSubscription()
@@ -40,7 +36,10 @@ object AdminNotificationService {
         val user = FirebaseAuth.getInstance().currentUser ?: return
         val email = user.email.orEmpty().trim().lowercase()
         if (email.isEmpty()) return
-        runCatching { saveToken(user, email, token, isOwner) }
+        // الدور يُشتق من البريد لا من حالة مخبّأة: التجديد قد يقع في عملية
+        // خلفية باردة لم تمرّ بالتسجيل، فتهبط رتبة المالك إلى supervisor.
+        val owner = AuthService.isOwnerEmail(email)
+        runCatching { saveToken(user, email, token, owner) }
             .onFailure { Log.d(TAG, "FCM token refresh failed: $it") }
     }
 

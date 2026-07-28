@@ -1,5 +1,7 @@
 package com.ali.ishaqiyin_admin.ui.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -51,12 +53,12 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,11 +68,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.ali.ishaqiyin_admin.data.ChatMediaStore
 import com.ali.ishaqiyin_admin.data.ChatMessage
 import com.ali.ishaqiyin_admin.data.ChatMessageType
 import com.ali.ishaqiyin_admin.data.ChatNotifications
 import com.ali.ishaqiyin_admin.data.ChatReplyRef
 import com.ali.ishaqiyin_admin.data.ChatRepository
+import com.ali.ishaqiyin_admin.data.ChatUploadTarget
+import com.ali.ishaqiyin_admin.data.ChatUploader
 import com.ali.ishaqiyin_admin.data.DmRepository
 import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.ali.ishaqiyin_admin.data.QUICK_REACTIONS
@@ -81,7 +87,6 @@ import com.ali.ishaqiyin_admin.ui.ConfirmDialog
 import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.adminFieldColors
 import com.ali.ishaqiyin_admin.util.AudioRecorderController
-import com.ali.ishaqiyin_admin.util.ImageCompressor
 import com.ali.ishaqiyin_admin.util.PickedFile
 import com.ali.ishaqiyin_admin.util.pickedFileFrom
 import com.google.firebase.auth.FirebaseAuth
@@ -109,16 +114,24 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
     val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
 
     var limit by remember { mutableIntStateOf(60) }
-    var text by remember { mutableStateOf("") }
+    // المسودّة والاقتباسات تصمد أمام التدوير (كانت تضيع مع كلّ دوران).
+    var text by rememberSaveable { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
-    var replyTo by remember { mutableStateOf<ChatReplyRef?>(null) }
-    // اقتباس رسالة المجموعة عند «الردّ بشكل خاص».
-    var quotedFromGroup by remember { mutableStateOf(PendingGroupQuote.value) }
+    var replyTo by rememberSaveable(stateSaver = chatReplyRefSaver) {
+        mutableStateOf<ChatReplyRef?>(null)
+    }
+    // اقتباس رسالة المجموعة عند «الردّ بشكل خاص» — يُلتقط هنا قبل تصفير
+    // PendingGroupQuote في DisposableEffect، ثمّ يصمد أمام التدوير.
+    var quotedFromGroup by rememberSaveable(stateSaver = chatReplyRefSaver) {
+        mutableStateOf(PendingGroupQuote.value)
+    }
 
-    var uploading by remember { mutableStateOf(false) }
-    var uploadPct by remember { mutableDoubleStateOf(0.0) }
-    var uploadName by remember { mutableStateOf("") }
-    var uploadAborted by remember { mutableStateOf(false) }
+    // الرفع يعمل في ChatUploader (نطاق مستقلّ) فلا يلغيه التدوير ولا الرجوع.
+    val uploads by ChatUploader.uploads.collectAsState()
+    val myUploads = uploads.filter {
+        val target = it.target
+        target is ChatUploadTarget.Dm && target.threadId == threadId
+    }
 
     val recorder = remember { AudioRecorderController() }
     var recording by remember { mutableStateOf(false) }
@@ -143,9 +156,16 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         .collectAsState(initial = emptyList())
     val members = remember(membersList) { membersList.associateBy { it.uid } }
     val other = members[otherUid]
-    val messages by remember(threadId, limit) {
-        DmRepository.messagesStream(threadId, limit.toLong())
-    }.collectAsState(initial = emptyList())
+    // ⚠️ حالة مستقلّة لا `collectAsState(emptyList())`: توسيع النافذة يعيد
+    // الربط، وتصفير القائمة كان يومض بشاشة فارغة حتى أوّل انبعاث.
+    var messages by remember(threadId) { mutableStateOf(emptyList<ChatMessage>()) }
+    var rawPageSize by remember(threadId) { mutableIntStateOf(0) }
+    LaunchedEffect(threadId, limit) {
+        DmRepository.messagesStream(threadId, limit.toLong()).collect { page ->
+            messages = page.messages
+            rawPageSize = page.rawSize
+        }
+    }
     val thread by remember(threadId) { DmRepository.threadStream(threadId) }
         .collectAsState(initial = null)
     val otherTyping by remember(threadId, otherUid) {
@@ -162,11 +182,18 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
     }
 
     // نهاية التمرير (أقدم الرسائل) → وسّع النافذة المحمَّلة.
-    LaunchedEffect(listState, messages.size) {
+    // المقارنة بحجم الصفحة الخام لا بالمرشَّحة: رسالة مخفيّة واحدة كانت تكفي
+    // لتجميد الترقيم إلى الأبد فلا يصل المستخدم لما هو أقدم.
+    LaunchedEffect(listState) {
         androidx.compose.runtime.snapshotFlow {
             listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
         }.collect { lastIndex ->
-            if (messages.isNotEmpty() && lastIndex >= messages.size - 5 && limit < 2000) {
+            if (
+                messages.isNotEmpty() &&
+                lastIndex >= messages.size - 5 &&
+                limit < 2000 &&
+                rawPageSize >= limit
+            ) {
                 limit += 60
             }
         }
@@ -206,9 +233,36 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         }
     }
 
+    // انتهت رسالة صوتيّة؟ شغّل التالية تلقائياً (نمط واتساب — كالمجموعة).
+    DisposableEffect(messages) {
+        SharedAudioPlayer.onCompleted = { finishedKey ->
+            val index = messages.indexOfFirst {
+                it.attachment?.let(ChatMediaStore::keyOf) == finishedKey
+            }
+            val next = if (index > 0) messages.getOrNull(index - 1) else null
+            val att = next?.attachment
+            if (
+                att != null &&
+                (next.type == ChatMessageType.Voice || next.type == ChatMessageType.Audio)
+            ) {
+                scope.launch {
+                    ChatMediaStore.download(att)?.let { file ->
+                        SharedAudioPlayer.playFile(context, ChatMediaStore.keyOf(att), file)
+                    }
+                }
+            }
+        }
+        onDispose { SharedAudioPlayer.onCompleted = null }
+    }
+
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent(),
     ) { uri -> if (uri != null) pendingUpload = context.pickedFileFrom(uri) }
+
+    // أخطاء الرفع تصل من النطاق المستقلّ (لا من نطاق الشاشة).
+    LaunchedEffect(Unit) {
+        ChatUploader.errors.collect { snack(it) }
+    }
 
     fun sendAttachment(
         file: PickedFile,
@@ -218,38 +272,44 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         deleteAfter: File? = null,
     ) {
         val reply = replyTo
+        // الردّ الخاصّ بمرفق يحمل اقتباس المجموعة أيضاً (كما في الردّ النصّي).
+        val quoted = quotedFromGroup
         replyTo = null
-        uploading = true
-        uploadPct = 0.0
-        uploadName = file.name
-        uploadAborted = false
-        scope.launch {
-            var temp: java.io.File? = null
-            try {
-                // ضغط الصور قبل الرفع (توفير كبير على الشبكات الضعيفة).
-                val prepared = ImageCompressor.prepare(context, file, contentType)
-                temp = prepared.temp
-                val payload = prepared.file
-                DmRepository.sendAttachment(
-                    threadId = threadId,
-                    otherUid = otherUid,
-                    uri = payload.uri,
-                    filename = payload.name,
-                    contentType = contentType,
-                    type = type,
-                    durationMs = durationMs,
-                    replyTo = reply,
-                    onProgress = { uploadPct = it },
-                    isAborted = { uploadAborted },
-                )
-            } catch (e: Exception) {
-                if (!uploadAborted) snack("فشل رفع \"${file.name}\": ${e.message ?: e}")
-            } finally {
-                runCatching { deleteAfter?.delete() }
-                runCatching { temp?.delete() }
-                uploading = false
-            }
-        }
+        quotedFromGroup = null
+        ChatUploader.enqueue(
+            target = ChatUploadTarget.Dm(threadId, otherUid),
+            file = file,
+            type = type,
+            contentType = contentType,
+            durationMs = durationMs,
+            replyTo = reply,
+            fromGroup = quoted,
+            deleteAfter = deleteAfter,
+        )
+    }
+
+    fun beginRecording() {
+        runCatching {
+            recordFile = recorder.start(context, "dm_voice")
+            recording = true
+            recordSeconds = 0
+        }.onFailure { snack("تعذّر بدء التسجيل: ${it.message ?: it}") }
+    }
+
+    // إذن الميكروفون: إذن خطر يجب طلبه وقت التشغيل، وبلا طلبه كان التسجيل
+    // يفشل بصمت على أوّل تثبيت.
+    val micPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) beginRecording() else snack("لم يُسمح باستخدام الميكروفون.")
+    }
+
+    fun startRecording() {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) beginRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     LaunchedEffect(pendingUpload) {
@@ -376,24 +436,21 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
             myUid = myUid,
             includeGroup = true,
             onDismiss = { forwarding = null },
+            // النقل يمرّ بـChatUploader لأن نسخ المرفق رفعٌ طويل يجب أن يصمد
+            // أمام التدوير والرجوع (وإلّا بقي ملفّ يتيم في التخزين بلا رسالة).
             onPickGroup = {
                 forwarding = null
-                scope.launch {
-                    runCatching { ChatRepository.forward(msg) }
-                        .onSuccess { snack("أُعيد توجيه الرسالة إلى المجموعة.") }
-                        .onFailure { snack("تعذّرت إعادة التوجيه: ${it.message ?: it}") }
-                }
+                ChatUploader.enqueueForward(ChatUploadTarget.Group, msg)
+                snack("جارٍ إعادة التوجيه إلى المجموعة…")
             },
             onPickMember = { member ->
                 forwarding = null
-                scope.launch {
-                    runCatching {
-                        val target = DmRepository.ensureThread(member.uid)
-                        DmRepository.forward(target, member.uid, msg)
-                    }
-                        .onSuccess { snack("أُعيد توجيه الرسالة إلى ${member.displayName}.") }
-                        .onFailure { snack("تعذّرت إعادة التوجيه: ${it.message ?: it}") }
-                }
+                val target = DmRepository.ensureThread(member.uid)
+                ChatUploader.enqueueForward(
+                    ChatUploadTarget.Dm(threadId = target, otherUid = member.uid),
+                    msg,
+                )
+                snack("جارٍ إعادة التوجيه إلى ${member.displayName}…")
             },
         )
     }
@@ -670,8 +727,9 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
 
             val online by NetworkMonitor.online.collectAsState()
             if (!online) OfflineBanner()
-            if (uploading) {
-                UploadBanner(uploadName, uploadPct) { uploadAborted = true }
+            // شريط مستقلّ لكلّ عمليّة رفع في هذه المحادثة.
+            myUploads.forEach { upload ->
+                UploadBanner(upload.name, upload.percent) { ChatUploader.cancel(upload.id) }
             }
             quotedFromGroup?.let { quote ->
                 // شريط الاقتباس من المجموعة عند «الردّ بشكل خاص» (نمط واتساب).
@@ -766,7 +824,6 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                         }
                     },
                     sending = sending,
-                    uploading = uploading,
                     hint = "رسالة خاصّة…",
                     onAttach = { showAttachMenu = true },
                     onSend = {
@@ -793,13 +850,7 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                             sending = false
                         }
                     },
-                    onRecord = {
-                        runCatching {
-                            recordFile = recorder.start(context, "dm_voice")
-                            recording = true
-                            recordSeconds = 0
-                        }.onFailure { snack("تعذّر بدء التسجيل: ${it.message ?: it}") }
-                    },
+                    onRecord = { startRecording() },
                 )
             }
         }

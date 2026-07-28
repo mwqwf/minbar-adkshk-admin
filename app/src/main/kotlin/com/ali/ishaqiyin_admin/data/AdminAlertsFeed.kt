@@ -68,10 +68,11 @@ object AdminAlertsFeed {
     fun stream(isOwner: Boolean): Flow<List<AdminAlert>> {
         val me = myEmail
 
-        val cutoff = System.currentTimeMillis() - TTL_MS
-
-        fun visible(docs: Iterable<DocumentSnapshot>): List<AdminAlert> =
-            docs.map { AdminAlert.fromDoc(it) }
+        fun visible(docs: Iterable<DocumentSnapshot>): List<AdminAlert> {
+            // يُحسب مع كل انبعاث: حسابه مرّة عند إنشاء التدفّق يجمّد حدّ
+            // الـ24 ساعة على لحظة الفتح فلا يسقط التنبيه أبداً بعدها.
+            val cutoff = System.currentTimeMillis() - TTL_MS
+            return docs.map { AdminAlert.fromDoc(it) }
                 .filter { alert ->
                     when {
                         alert.excludeEmail == me -> false
@@ -84,6 +85,7 @@ object AdminAlertsFeed {
                     }
                 }
                 .sortedByDescending { it.createdAtMs }
+        }
 
         if (isOwner) {
             return db.collection("admin_alerts").querySnapshots().map { visible(it.documents) }

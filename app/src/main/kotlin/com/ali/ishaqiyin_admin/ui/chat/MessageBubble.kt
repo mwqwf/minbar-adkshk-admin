@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.DownloadForOffline
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.Schedule
@@ -140,6 +141,8 @@ fun MessageBubble(
             ) {
                 if (!mine && showSenderHeader) SenderHeader(msg, sender)
                 msg.replyTo?.let { ReplyPreview(it, onReplyTap) }
+                // اقتباس «ردّ بشكل خاص» — كان يُخزَّن في الوثيقة ولا يُعرَض.
+                msg.fromGroup?.let { GroupQuotePreview(it) }
                 if (msg.deleted) DeletedBody(msg, members) else BubbleBody(msg)
                 Spacer(Modifier.height(2.dp))
                 BubbleFooter(msg, readByAll)
@@ -196,6 +199,46 @@ private fun ReplyPreview(ref: ChatReplyRef, onReplyTap: (ChatReplyRef) -> Unit) 
             fontWeight = FontWeight.Bold,
             color = senderColor(ref.senderId),
         )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            ref.preview.ifEmpty { chatTypeLabel(ref.type) },
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            fontSize = 11.5.sp,
+            color = ChatColors.textMuted,
+        )
+    }
+}
+
+/**
+ * اقتباس رسالة من المجموعة في محادثة خاصّة («ردّ بشكل خاص» — نمط واتساب).
+ * غير قابل للنقر: الرسالة الأصليّة في مجموعة أخرى.
+ */
+@Composable
+private fun GroupQuotePreview(ref: ChatReplyRef) {
+    Column(
+        Modifier
+            .padding(bottom = 6.dp)
+            .background(ChatColors.highlight, RoundedCornerShape(8.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Filled.Groups,
+                contentDescription = null,
+                tint = ChatColors.accentDark,
+                modifier = Modifier.size(13.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                "من المجموعة — ${ref.senderName}",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = ChatColors.accentDark,
+            )
+        }
         Spacer(Modifier.height(2.dp))
         Text(
             ref.preview.ifEmpty { chatTypeLabel(ref.type) },

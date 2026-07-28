@@ -312,9 +312,10 @@ fun OwnerCodeScreen(onApproved: () -> Unit) {
                     Text(error, color = kDanger, textAlign = TextAlign.Center)
                 }
                 Spacer(Modifier.height(18.dp))
+                // لا يُعطَّل أبداً: تعطيله أثناء busy يحبس المستخدم في الشاشة
+                // إن تعذّر ردّ الخادم على طلب الرمز.
                 TextButton(
                     onClick = { scope.launch { AuthService.signOut(context) } },
-                    enabled = !busy,
                 ) { Text("إلغاء وتسجيل الخروج") }
             }
         }

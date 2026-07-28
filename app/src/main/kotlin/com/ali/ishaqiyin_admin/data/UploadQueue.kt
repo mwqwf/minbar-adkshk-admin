@@ -257,9 +257,12 @@ object UploadQueue {
         persist(load().map { if (it.id == id) transform(it) else it })
     }
 
-    /** إعادة المحاولة يدويّاً لعنصر مركون. */
+    /**
+     * إعادة المحاولة يدويّاً لعنصر مركون — تُمسح جلسة الرفع أيضاً: جلسة
+     * منتهية الصلاحية كانت تُفشل كلّ محاولة جديدة بلا نهاية.
+     */
     fun unpark(id: String) = update(id) {
-        it.copy(parked = false, attempts = 0, lastError = null)
+        it.copy(parked = false, attempts = 0, lastError = null, sessionUri = null)
     }
 
     /** إزالة بعد نجاح الرفع — تحذف النسخة المحليّة أيضاً. */

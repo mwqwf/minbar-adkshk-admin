@@ -31,14 +31,15 @@ object ChatNotifications {
      */
     suspend fun syncSubscription() {
         val muted = isMuted
-        // أفضل جهد — تُعاد المزامنة عند الفتح التالي.
-        runCatching {
-            FirebaseMessaging.getInstance().unsubscribeFromTopic(TOPIC).await()
-            val user = FirebaseAuth.getInstance().currentUser
-            if (user != null) {
+        // عمليتان مستقلّتان: فشل إلغاء الاشتراك يجب ألّا يمنع كتابة علم الكتم.
+        runCatching { FirebaseMessaging.getInstance().unsubscribeFromTopic(TOPIC).await() }
+        val user = FirebaseAuth.getInstance().currentUser
+        if (user != null) {
+            // بلا await: تُجدوَل الكتابة محليّاً وتصل عند عودة الشبكة.
+            runCatching {
                 FirebaseFirestore.getInstance()
                     .collection("admin_device_tokens").document(user.uid)
-                    .set(mapOf("chatMuted" to muted), SetOptions.merge()).await()
+                    .set(mapOf("chatMuted" to muted), SetOptions.merge())
             }
         }
     }

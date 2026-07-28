@@ -10,9 +10,12 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.storage.FirebaseStorage
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.tasks.await
 
 /**
@@ -117,14 +120,17 @@ object DmRepository {
     fun threadStream(threadId: String): Flow<DmThread?> =
         thread(threadId).docSnapshots().map { if (it.exists()) DmThread.fromDoc(it) else null }
 
-    fun messagesStream(threadId: String, limit: Long = 60): Flow<List<ChatMessage>> {
+    fun messagesStream(threadId: String, limit: Long = 60): Flow<ChatPage> {
         val me = uid
         return msgs(threadId).orderBy("sentAtMs", Query.Direction.DESCENDING).limit(limit)
             .querySnapshots()
             .map { snap ->
-                snap.documents
-                    .map { ChatMessage.fromDoc(it) }
-                    .filter { !it.hiddenFor.contains(me) }
+                ChatPage(
+                    messages = snap.documents
+                        .map { ChatMessage.fromDoc(it) }
+                        .filter { !it.hiddenFor.contains(me) },
+                    rawSize = snap.size(),
+                )
             }
     }
 
@@ -217,6 +223,7 @@ object DmRepository {
         caption: String = "",
         durationMs: Long? = null,
         replyTo: ChatReplyRef? = null,
+        fromGroup: ChatReplyRef? = null,
         onProgress: ((Double) -> Unit)? = null,
         isAborted: (() -> Boolean)? = null,
     ) {
@@ -241,6 +248,8 @@ object DmRepository {
                     durationMs = durationMs,
                 ).toMap(),
                 "replyTo" to replyTo?.toMap(),
+                // اقتباس المجموعة يبقى مع المرفق أيضاً («ردّ بشكل خاص» بمرفق).
+                "fromGroup" to fromGroup?.toMap(),
                 "sentAtMs" to System.currentTimeMillis(),
                 "createdAt" to FieldValue.serverTimestamp(),
                 "deleted" to false,
@@ -257,13 +266,19 @@ object DmRepository {
         )
     }
 
-    /** إعادة توجيه رسالة إلى محادثة خاصّة (بنفس المرفق، بلا إعادة رفع). */
+    /**
+     * إعادة توجيه رسالة إلى محادثة خاصّة — المرفق **يُنسَخ إلى مسار جديد**
+     * فلا يفقد التوجيه ملفّه عند حذف الأصل عند الطرفين.
+     */
     suspend fun forward(threadId: String, otherUid: String, msg: ChatMessage) {
+        val att = msg.attachment?.let {
+            chatCopyAttachment(it, "${DmPaths.STORAGE_FOLDER}/$threadId")
+        }
         msgs(threadId).add(
             senderFields() + mapOf(
                 "type" to chatTypeToString(msg.type),
                 "text" to msg.text,
-                "att" to msg.attachment?.toMap(),
+                "att" to att?.toMap(),
                 "replyTo" to null,
                 "sentAtMs" to System.currentTimeMillis(),
                 "createdAt" to FieldValue.serverTimestamp(),
@@ -293,21 +308,29 @@ object DmRepository {
         val me = uid
         if (me.isEmpty()) return 0
         var cleared = 0
+        // ترقيم بمؤشّر (كما في المجموعة): بلا startAfter لا يُمسّ ما هو أقدم
+        // من أحدث 300 رسالة، وصفحة كلّها مخفيّة تقدّم المؤشّر ولا توقف الحلقة.
+        var last: DocumentSnapshot? = null
         while (true) {
-            val snapshot = msgs(threadId)
+            var query: Query = msgs(threadId)
                 .orderBy("sentAtMs", Query.Direction.DESCENDING)
                 .limit(300)
-                .get()
-                .await()
+            last?.let { query = query.startAfter(it) }
+            val snapshot = query.get().await()
+            if (snapshot.isEmpty) return cleared
+            last = snapshot.documents.lastOrNull()
             val targets = snapshot.documents.filter { doc ->
                 val hidden = doc.get("hiddenFor") as? List<*> ?: emptyList<Any>()
                 !hidden.contains(me)
             }
-            if (targets.isEmpty()) return cleared
-            val batch = db.batch()
-            targets.forEach { batch.update(it.reference, "hiddenFor", FieldValue.arrayUnion(me)) }
-            batch.commit().await()
-            cleared += targets.size
+            if (targets.isNotEmpty()) {
+                val batch = db.batch()
+                targets.forEach {
+                    batch.update(it.reference, "hiddenFor", FieldValue.arrayUnion(me))
+                }
+                batch.commit().await()
+                cleared += targets.size
+            }
             if (snapshot.size() < 300) return cleared
         }
     }
@@ -323,6 +346,17 @@ object DmRepository {
                 "att" to null,
             ),
         )
+        // لو كانت آخر رسالة فمعاينة قائمة المحادثات يجب ألّا تبقى على نصّها.
+        runCatching {
+            val lastAtMs =
+                (thread(threadId).get().await().dataMap()["lastAtMs"] as? Number)?.toLong() ?: 0L
+            if (msg.sentAtMs >= lastAtMs) {
+                thread(threadId).set(
+                    mapOf("lastText" to "تم حذف هذه الرسالة", "lastType" to "text"),
+                    SetOptions.merge(),
+                )
+            }
+        }
         val path = msg.attachment?.path.orEmpty()
         if (path.isNotEmpty()) {
             runCatching { FirebaseStorage.getInstance().reference.child(path).delete().await() }
@@ -356,11 +390,21 @@ object DmRepository {
         }
     }
 
-    /** هل الطرف الآخر يكتب الآن؟ (يقرأ خريطة typingAtMs من وثيقة المحادثة) */
+    /**
+     * هل الطرف الآخر يكتب الآن؟ (يقرأ خريطة typingAtMs من وثيقة المحادثة)
+     * ينطفئ من تلقاء نفسه عند انقضاء النافذة: لا شيء يكتب الوثيقة بعد توقّف
+     * الكتابة، فكان المؤشّر يعلق ظاهراً للأبد.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun otherTypingStream(threadId: String, otherUid: String): Flow<Boolean> =
-        thread(threadId).docSnapshots().map { doc ->
-            val map = doc.dataMap()["typingAtMs"] as? Map<*, *> ?: return@map false
-            val v = map[otherUid] as? Number ?: return@map false
-            System.currentTimeMillis() - v.toLong() < TYPING_WINDOW_MS
+        thread(threadId).docSnapshots().transformLatest { doc ->
+            val map = doc.dataMap()["typingAtMs"] as? Map<*, *>
+            val at = (map?.get(otherUid) as? Number)?.toLong() ?: 0L
+            val remaining = at + TYPING_WINDOW_MS - System.currentTimeMillis()
+            emit(remaining > 0)
+            if (remaining > 0) {
+                delay(remaining)
+                emit(false)
+            }
         }
 }

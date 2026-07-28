@@ -3,6 +3,7 @@ package com.ali.ishaqiyin_admin.ui
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.Context
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -45,7 +46,10 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -109,6 +113,30 @@ fun pickDateTime(context: Context, initialMs: Long, onPicked: (Long) -> Unit) {
     }.show()
 }
 
+/**
+ * حفظ الملفات المختارة عبر تدوير الشاشة: (uri، حجم، اسم) في سطر واحد —
+ * الاسم آخراً كي لا يكسره أيّ فاصل داخله.
+ */
+private val pickedFilesSaver = listSaver<SnapshotStateList<PickedFile>, String>(
+    save = { list -> list.map { "${it.uri}\n${it.size}\n${it.name}" } },
+    restore = { saved ->
+        mutableStateListOf<PickedFile>().apply {
+            saved.forEach { entry ->
+                val parts = entry.split("\n", limit = 3)
+                if (parts.size == 3) {
+                    add(
+                        PickedFile(
+                            uri = Uri.parse(parts[0]),
+                            name = parts[2],
+                            size = parts[1].toLongOrNull() ?: 0L,
+                        ),
+                    )
+                }
+            }
+        }
+    },
+)
+
 @Composable
 fun AddLessonScreen(onBack: () -> Unit) {
     val context = LocalContext.current
@@ -117,12 +145,13 @@ fun AddLessonScreen(onBack: () -> Unit) {
 
     var categories by remember { mutableStateOf<List<Category>>(emptyList()) }
     var subcategories by remember { mutableStateOf<List<Subcategory>>(emptyList()) }
-    var title by remember { mutableStateOf("") }
-    var categoryId by remember { mutableStateOf<String?>(null) }
-    var subcategoryId by remember { mutableStateOf<String?>(null) }
+    // rememberSaveable: تدوير الشاشة كان يمسح النموذج كاملاً بعد تعبئته.
+    var title by rememberSaveable { mutableStateOf("") }
+    var categoryId by rememberSaveable { mutableStateOf<String?>(null) }
+    var subcategoryId by rememberSaveable { mutableStateOf<String?>(null) }
 
     /** الملفات المختارة بالترتيب — أكثر من ملف يعني دمجها في درس واحد. */
-    val files = remember { mutableStateListOf<PickedFile>() }
+    val files = rememberSaveable(saver = pickedFilesSaver) { mutableStateListOf<PickedFile>() }
 
     // «إدراج» لا «رفع»: النموذج لا ينتظر الشبكة إطلاقاً — يُدرَج الدرس في
     // الطابور فيفرغ النموذج فوراً ويستطيع المشرف تعبئة درس آخر بينما
@@ -131,10 +160,10 @@ fun AddLessonScreen(onBack: () -> Unit) {
     var merging by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
-    var featured by remember { mutableStateOf(false) }
+    var featured by rememberSaveable { mutableStateOf(false) }
     // التمييز صار مؤقّتاً: null مع featured=true يعني «دائم».
-    var featuredUntil by remember { mutableStateOf<Long?>(null) }
-    var featuredLabel by remember { mutableStateOf("") }
+    var featuredUntil by rememberSaveable { mutableStateOf<Long?>(null) }
+    var featuredLabel by rememberSaveable { mutableStateOf("") }
     var showFeatureSheet by remember { mutableStateOf(false) }
     var showRecorder by remember { mutableStateOf(false) }
 

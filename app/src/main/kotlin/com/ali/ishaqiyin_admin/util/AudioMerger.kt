@@ -43,7 +43,7 @@ object AudioMerger {
                     if (spec != streamSpec) {
                         throw Mp3FormatException("ملفات MP3 المختارة ليست بترميز صوتي متوافق")
                     }
-                    sink.write(bytes, frames.first, frames.last - frames.first)
+                    sink.write(bytes, frames.first, frames.last - frames.first + 1)
                     onProgress?.invoke((index + 1).toDouble() / inputs.size * 100)
                 }
                 sink.fd.sync()
@@ -107,6 +107,10 @@ object AudioMerger {
             if (hasVbrMarker(b, start, start + firstLen)) start += firstLen
         }
 
+        // بعد تخطي إطار Xing قد ينتهي المدى أو يفسد الرأس — تحقق قبل القراءة.
+        if (start + 4 > end || byteAt(b, start) != 0xFF || (byteAt(b, start + 1) and 0xE0) != 0xE0) {
+            throw Mp3FormatException("لم يُعثر على صوت MPEG في الملف")
+        }
         val h1 = byteAt(b, start + 1)
         val h2 = byteAt(b, start + 2)
         val h3 = byteAt(b, start + 3)

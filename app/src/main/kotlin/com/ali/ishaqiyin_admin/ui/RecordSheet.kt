@@ -107,9 +107,18 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
 
     fun stop() {
         try {
-            file = recorder.stop() ?: file
+            // إرجاع null يعني أنّ الملفّ حُذف لفساد التسجيل — العودة إلى
+            // المرجع القديم كانت تسلّم ملفّاً غير موجود للرفع.
+            val result = recorder.stop()
             recording = false
             paused = false
+            if (result == null) {
+                file = null
+                seconds = 0
+                error = "تعذّر حفظ التسجيل — أعد المحاولة."
+            } else {
+                file = result
+            }
         } catch (e: Exception) {
             error = "تعذّر إيقاف التسجيل: ${e.message ?: e}"
         }

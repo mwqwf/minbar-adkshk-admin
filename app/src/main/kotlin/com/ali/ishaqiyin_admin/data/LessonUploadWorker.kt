@@ -124,9 +124,13 @@ class LessonUploadWorker(
                         )
                     }
                 } else {
+                    // فشل غير شبكيّ ⇒ الجلسة نفسها قد تكون منتهية الصلاحية،
+                    // فتُمسح كي تبدأ المحاولة التالية جلسة جديدة بدل الدوران
+                    // على الفشل ذاته.
                     UploadQueue.update(item.id) {
-                        it.copy(attempts = attempts, lastError = e.message)
+                        it.copy(attempts = attempts, lastError = e.message, sessionUri = null)
                     }
+                    UploadQueue.setProgress(null)
                     return Result.retry()
                 }
                 UploadQueue.setProgress(null)
@@ -265,8 +269,11 @@ class LessonUploadWorker(
                 )
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 20, TimeUnit.SECONDS)
                 .build()
+            // APPEND_OR_REPLACE لا KEEP: مع KEEP كان درس يُضاف لحظة انتهاء
+            // العامل لا يبدأ رفعه أبداً. تشغيل إضافي بطابور فارغ رخيص —
+            // doWork يفحص ويخرج فوراً.
             WorkManager.getInstance(context)
-                .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.KEEP, request)
+                .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
         }
     }
 }

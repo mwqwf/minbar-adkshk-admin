@@ -14,6 +14,7 @@ import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.StorageException
 import com.google.firebase.storage.StorageMetadata
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 
@@ -381,6 +382,29 @@ suspend fun chatUploadFile(
     return ChatUploadResult(url = url, path = path, contentType = ct, size = size)
 }
 
+/**
+ * نسخ مرفق إلى مسار Storage جديد عند **إعادة التوجيه**: كلّ نسخة تملك
+ * ملفّها فيصبح «الحذف عند الجميع» للأصل آمناً ولا يُفرِّغ النسخ المُوجَّهة.
+ * لا يوفّر Firebase نسخاً خادميّاً، فنستعمل النسخة المحليّة (تُنزَّل إن
+ * لزم — وهي منزَّلة أصلاً في الغالب) ثمّ نرفعها من جديد.
+ */
+suspend fun chatCopyAttachment(att: ChatAttachment, folder: String): ChatAttachment {
+    val file = ChatMediaStore.download(att)
+        ?: error("تعذّر تحضير المرفق لإعادة التوجيه — تحقّق من الاتصال ثمّ أعد المحاولة.")
+    val up = chatUploadFile(
+        uri = Uri.fromFile(file),
+        filename = att.name,
+        contentType = att.contentType,
+        folder = folder,
+    )
+    return att.copy(
+        url = up.url,
+        path = up.path,
+        size = if (up.size > 0L) up.size else att.size,
+        contentType = up.contentType,
+    )
+}
+
 object ChatRepository {
     private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
 
@@ -399,14 +423,17 @@ object ChatRepository {
      * serverTimestamp: الحقل موجود فوراً حتى في الكتابات المعلَّقة، فتظهر
      * رسالتك لحظيّاً وتعمل الدردشة دون انقطاع أثناء ضعف الشبكة.
      */
-    fun messagesStream(limit: Long = 60): Flow<List<ChatMessage>> {
+    fun messagesStream(limit: Long = 60): Flow<ChatPage> {
         val me = uid
         return messages.orderBy("sentAtMs", Query.Direction.DESCENDING).limit(limit)
             .querySnapshots()
             .map { snap ->
-                snap.documents
-                    .map { ChatMessage.fromDoc(it) }
-                    .filter { !it.hiddenFor.contains(me) }
+                ChatPage(
+                    messages = snap.documents
+                        .map { ChatMessage.fromDoc(it) }
+                        .filter { !it.hiddenFor.contains(me) },
+                    rawSize = snap.size(),
+                )
             }
     }
 
@@ -489,15 +516,16 @@ object ChatRepository {
     }
 
     /**
-     * إعادة توجيه رسالة إلى المجموعة **بلا إعادة رفع المرفق**: نكتب وثيقة
-     * جديدة تشير إلى نفس ملفّ Storage. توفير كبير على الشبكات الضعيفة.
+     * إعادة توجيه رسالة إلى المجموعة — المرفق **يُنسَخ إلى مسار جديد** كي لا
+     * يفقد التوجيه ملفّه عند حذف الرسالة الأصليّة عند الجميع.
      */
     suspend fun forward(msg: ChatMessage) {
+        val att = msg.attachment?.let { chatCopyAttachment(it, ChatPaths.STORAGE_FOLDER) }
         messages.add(
             senderFields() + mapOf(
                 "type" to chatTypeToString(msg.type),
                 "text" to msg.text,
-                "att" to msg.attachment?.toMap(),
+                "att" to att?.toMap(),
                 "replyTo" to null,
                 "sentAtMs" to System.currentTimeMillis(),
                 "createdAt" to FieldValue.serverTimestamp(),
@@ -545,21 +573,29 @@ object ChatRepository {
         val me = uid
         if (me.isEmpty()) return 0
         var cleared = 0
+        // ترقيم بمؤشّر: بلا startAfter كانت الحلقة تعيد أحدث 300 رسالة نفسها
+        // فلا يُمسّ ما هو أقدم منها. وصفحة كلّها مخفيّة تقدّم المؤشّر ولا توقف.
+        var last: DocumentSnapshot? = null
         while (true) {
-            val snapshot = messages
+            var query: Query = messages
                 .orderBy("sentAtMs", Query.Direction.DESCENDING)
                 .limit(300)
-                .get()
-                .await()
+            last?.let { query = query.startAfter(it) }
+            val snapshot = query.get().await()
+            if (snapshot.isEmpty) return cleared
+            last = snapshot.documents.lastOrNull()
             val targets = snapshot.documents.filter { doc ->
                 val hidden = doc.get("hiddenFor") as? List<*> ?: emptyList<Any>()
                 !hidden.contains(me)
             }
-            if (targets.isEmpty()) return cleared
-            val batch = db.batch()
-            targets.forEach { batch.update(it.reference, "hiddenFor", FieldValue.arrayUnion(me)) }
-            batch.commit().await()
-            cleared += targets.size
+            if (targets.isNotEmpty()) {
+                val batch = db.batch()
+                targets.forEach {
+                    batch.update(it.reference, "hiddenFor", FieldValue.arrayUnion(me))
+                }
+                batch.commit().await()
+                cleared += targets.size
+            }
             if (snapshot.size() < 300) return cleared
         }
     }
@@ -774,26 +810,40 @@ object ChatRepository {
         .querySnapshots()
         .map { snap -> snap.documents.map { ChatMember.fromDoc(it) } }
 
-    /** بثّ عدد الرسائل غير المقروءة (تقريبي، حتى 60 رسالة) — لشارة اللوحة. */
+    /**
+     * بثّ عدد الرسائل غير المقروءة (تقريبي، حتى 60 رسالة) — لشارة اللوحة.
+     * مؤشّر القراءة يُدمج كتدفّق حيّ (لا `get()` لمرّة واحدة) فتُصفَّر الشارة
+     * فور كتابة `markRead` محليّاً.
+     */
     fun unreadCountStream(): Flow<Int> {
         val me = uid
         if (me.isEmpty()) return kotlinx.coroutines.flow.flowOf(0)
-        return messages.orderBy("sentAtMs", Query.Direction.DESCENDING).limit(60)
-            .querySnapshots()
-            .map { snap ->
-                val meDoc = runCatching { members.document(me).get().await() }.getOrNull()
-                val lastRead = (meDoc?.dataMap()?.get("lastReadAtMs") as? Number)?.toLong() ?: 0L
-                snap.documents
-                    .map { ChatMessage.fromDoc(it) }
-                    .count {
-                        !it.deleted &&
-                            it.senderId != me &&
-                            !it.hiddenFor.contains(me) &&
-                            it.sentAtMs > lastRead
-                    }
-            }
+        return combine(
+            messages.orderBy("sentAtMs", Query.Direction.DESCENDING).limit(60).querySnapshots(),
+            members.document(me).docSnapshots(),
+        ) { snap, meDoc ->
+            val lastRead = (meDoc.dataMap()["lastReadAtMs"] as? Number)?.toLong() ?: 0L
+            snap.documents
+                .map { ChatMessage.fromDoc(it) }
+                .count {
+                    !it.deleted &&
+                        it.senderId != me &&
+                        !it.hiddenFor.contains(me) &&
+                        it.sentAtMs > lastRead
+                }
+        }
     }
 }
+
+/**
+ * صفحة رسائل: المعروض بعد ترشيح المخفيّ محليّاً، و[rawSize] حجم ما أعاده
+ * الخادم فعلاً. الترقيم يقارن بـ[rawSize] لا بحجم القائمة المرشَّحة — وإلّا
+ * توقّف تحميل الأقدم إلى الأبد بمجرّد إخفاء رسالة واحدة.
+ */
+data class ChatPage(
+    val messages: List<ChatMessage> = emptyList(),
+    val rawSize: Int = 0,
+)
 
 /** تخمين MIME من الامتداد (لاختيار نوع الفقاعة وقاعدة Storage الملائمة). */
 fun guessContentType(filename: String): String =

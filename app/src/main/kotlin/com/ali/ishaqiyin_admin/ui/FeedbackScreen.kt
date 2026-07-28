@@ -33,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,14 +50,20 @@ fun FeedbackScreen(onBack: () -> Unit) {
     var items by remember { mutableStateOf<List<Map<String, Any?>>>(emptyList()) }
     var titles by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(reload) {
         loading = true
+        error = null
         runCatching {
-            items = AdminRepository.fetchFeedback()
-            titles = AdminRepository.fetchLessons().associate { it.id to it.title }
-        }
+            // الإسناد بعد نجاح الجلبتين معاً: فشل جلب الدروس وحده كان يترك
+            // العناوين فارغة فيظهر كل تفاعل بعنوان «(درس محذوف)».
+            val fetchedItems = AdminRepository.fetchFeedback()
+            val fetchedTitles = AdminRepository.fetchLessons().associate { it.id to it.title }
+            items = fetchedItems
+            titles = fetchedTitles
+        }.onFailure { error = "تعذّر جلب البيانات. تحقّق من الاتصال." }
         loading = false
     }
 
@@ -71,6 +78,11 @@ fun FeedbackScreen(onBack: () -> Unit) {
     ) { padding ->
         when {
             loading -> FullScreenLoader()
+            error != null -> Box(
+                Modifier.padding(padding).fillMaxSize().padding(24.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text(error!!, color = kDanger, textAlign = TextAlign.Center) }
+
             items.isEmpty() -> Box(
                 Modifier.padding(padding).fillMaxSize(),
                 contentAlignment = Alignment.Center,

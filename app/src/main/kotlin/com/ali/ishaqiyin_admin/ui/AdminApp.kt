@@ -54,6 +54,8 @@ import com.ali.ishaqiyin_admin.ui.chat.ChatScreen
 import com.ali.ishaqiyin_admin.ui.chat.DmListScreen
 import com.ali.ishaqiyin_admin.ui.chat.DmScreen
 import com.ali.ishaqiyin_admin.ui.chat.GroupInfoScreen
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.launch
@@ -129,6 +131,9 @@ fun AdminApp() {
                 }
                 return@LaunchedEffect
             } catch (e: Throwable) {
+                // إلغاء التركيب يجب أن يمرّ (وإلّا استمرّت الحلقة تكتب الحالة
+                // بعد زوال الشاشة)؛ مهلة withTimeout وحدها تُعاد محاولتها.
+                if (e is CancellationException && e !is TimeoutCancellationException) throw e
                 lastError = e
             }
         }

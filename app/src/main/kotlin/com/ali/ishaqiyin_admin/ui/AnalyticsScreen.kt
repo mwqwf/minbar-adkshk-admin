@@ -1,9 +1,11 @@
 package com.ali.ishaqiyin_admin.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -35,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,14 +55,18 @@ fun AnalyticsScreen(onBack: () -> Unit) {
     var lessons by remember { mutableStateOf<List<Lesson>>(emptyList()) }
     var subs by remember { mutableStateOf<List<Subcategory>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(reload) {
         loading = true
+        error = null
         runCatching {
-            lessons = AdminRepository.fetchLessons()
-            subs = AdminRepository.fetchSubcategories()
-        }
+            val fetchedLessons = AdminRepository.fetchLessons()
+            val fetchedSubs = AdminRepository.fetchSubcategories()
+            lessons = fetchedLessons
+            subs = fetchedSubs
+        }.onFailure { error = "تعذّر جلب البيانات. تحقّق من الاتصال." }
         loading = false
     }
 
@@ -93,6 +100,13 @@ fun AnalyticsScreen(onBack: () -> Unit) {
     ) { padding ->
         if (loading) {
             FullScreenLoader()
+            return@AdminScaffold
+        }
+        if (error != null) {
+            Box(
+                Modifier.padding(padding).fillMaxSize().padding(24.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text(error!!, color = kDanger, textAlign = TextAlign.Center) }
             return@AdminScaffold
         }
         LazyColumn(

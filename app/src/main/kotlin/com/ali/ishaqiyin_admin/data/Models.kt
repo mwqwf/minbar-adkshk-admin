@@ -134,6 +134,11 @@ data class Lesson(
             val d = unwrap(raw)
             val rawCreated = d["createdAt"]
             val title = str(d["title"]).ifEmpty { str(d["name"]) }
+            // التمييز يُكتب على جذر الوثيقة دائماً (استعلام watchFeatured
+            // يقرأ الجذر)، فيُقدَّم على نسخة `data` في الوثائق المغلَّفة.
+            val rawFeatured = if (raw.containsKey("featured")) raw["featured"] else d["featured"]
+            val rawFeaturedUntil =
+                if (raw.containsKey("featuredUntil")) raw["featuredUntil"] else d["featuredUntil"]
             return Lesson(
                 id = id,
                 title = title,
@@ -144,8 +149,8 @@ data class Lesson(
                 createdAtMs = parseDateMs(rawCreated),
                 hasCreatedAt = rawCreated != null && str(rawCreated).isNotEmpty(),
                 views = int(d["views"]),
-                featured = d["featured"] == true,
-                featuredUntilMs = d["featuredUntil"]?.let { parseDateMs(it) }
+                featured = rawFeatured == true,
+                featuredUntilMs = rawFeaturedUntil?.let { parseDateMs(it) }
                     ?.takeIf { it > 0L },
                 addedBy = str(d["addedBy"]),
                 publishAtMs = d["publishAt"]?.let { parseDateMs(it) },

@@ -21,6 +21,7 @@ import com.google.firebase.firestore.Source
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
@@ -189,19 +190,19 @@ object AuthService {
     // لا تتوفّر صلاحية استدعاء عامّة لدوالّ onCall في هذا المشروع، فالتنفيذ
     // عبر "طلب بوثيقة": نكتب وثيقة بمعرّف = بريدنا، ومُشغِّل Firestore على
     // الخادم يكتب النتيجة (result) رجوعاً في نفس الوثيقة، ونحذفها بعد القراءة.
+    // المهلة تلفّ العملية كاملة (الحذف والكتابة والانتظار): بلا اتصال تعلّق
+    // كتابة Firestore نفسها بلا نهاية فتُجمَّد الشاشة.
     private suspend fun requestResponse(
         ref: DocumentReference,
         payload: Map<String, Any?>,
-    ): Map<String, Any?> {
+    ): Map<String, Any?> = withTimeout(25_000) {
         runCatching { ref.delete().await() }
         ref.set(payload).await()
         try {
-            val snapshot = withTimeout(20_000) {
-                ref.docSnapshots()
-                    .filter { it.exists() && it.dataMap()["result"] != null }
-                    .first()
-            }
-            return snapshot.dataMap()
+            ref.docSnapshots()
+                .filter { it.exists() && it.dataMap()["result"] != null }
+                .first()
+                .dataMap()
         } finally {
             runCatching { ref.delete().await() }
         }
@@ -235,6 +236,9 @@ object AuthService {
                     retryAfterSec = (data["retryAfterSec"] as? Number)?.toInt(),
                 )
             }
+        } catch (_: TimeoutCancellationException) {
+            // انتهاء مهلة requestResponse = فشل عادي لا تعليق للشاشة.
+            OwnerCodeResult(ok = false, reason = "send_failed")
         } catch (_: Exception) {
             OwnerCodeResult(ok = false, reason = "send_failed")
         }
@@ -256,13 +260,18 @@ object AuthService {
             } else {
                 OwnerCodeResult(ok = false, reason = result ?: "server")
             }
+        } catch (_: TimeoutCancellationException) {
+            // انتهاء مهلة requestResponse = فشل عادي لا تعليق للشاشة.
+            OwnerCodeResult(ok = false, reason = "server")
         } catch (_: Exception) {
             OwnerCodeResult(ok = false, reason = "server")
         }
     }
 
     suspend fun signOut(context: Context) {
-        AdminNotificationService.unregisterCurrentDevice()
+        // دون اتصال لا يكتمل حذف الرمز أبداً (await لا يرمي بل ينتظر)،
+        // فيُحتجز تسجيل الخروج — مهلة قصيرة تضمن الوصول إلى signOut.
+        runCatching { withTimeout(3_000) { AdminNotificationService.unregisterCurrentDevice() } }
         runCatching {
             CredentialManager.create(context)
                 .clearCredentialState(ClearCredentialStateRequest())

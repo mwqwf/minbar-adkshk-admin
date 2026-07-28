@@ -217,20 +217,47 @@ object AdminRepository {
      * [untilMs] نهاية المدّة، و`null` تعني تمييزاً دائماً.
      * إلغاء التمييز يمسح المدّة أيضاً كي لا تبقى قيمة معلّقة تُربك العرض.
      */
-    suspend fun setLessonFeatured(id: String, featured: Boolean, untilMs: Long? = null) =
-        updateCompat(
-            "lessons",
-            id,
-            mapOf(
-                "featured" to featured,
-                "featuredUntil" to when {
-                    !featured -> FieldValue.delete()
-                    untilMs == null -> FieldValue.delete()
-                    else -> isoOf(untilMs)
-                },
-                "featuredAt" to if (featured) nowIso() else FieldValue.delete(),
-            ),
+    suspend fun setLessonFeatured(id: String, featured: Boolean, untilMs: Long? = null) {
+        // ⚠️ لا updateCompat هنا: هو يسبق المفاتيح بـ`data.` وحدها في الوثائق
+        // القديمة المغلَّفة، بينما watchFeatured يستعلم `featured` الجذري —
+        // فكان تمييز درس قديم لا يظهر في اللوحة. لكنّ التطبيق العام يقرأ
+        // المغلَّف وحده، فالكتابة على **الموضعين معاً** هي الحلّ الوحيد الذي
+        // يُبقي اللوحة والتطبيق متّفقَين (وإلا بقي درس ملغى التمييز مميّزاً
+        // في التطبيق إلى الأبد لأن `data.featured` لم يُلمس).
+        val user = FirebaseAuth.getInstance().currentUser
+        val featuredUntil: Any = when {
+            !featured -> FieldValue.delete()
+            untilMs == null -> FieldValue.delete()
+            else -> isoOf(untilMs)
+        }
+        val featuredKeys = mapOf(
+            "featured" to featured,
+            "featuredUntil" to featuredUntil,
+            "featuredAt" to if (featured) nowIso() else FieldValue.delete(),
         )
+        val tracking = buildMap<String, Any?> {
+            if (user != null) put("updatedByUid", user.uid)
+            val email = user?.email.orEmpty()
+            if (email.isNotEmpty()) put("updatedByEmail", email.trim().lowercase())
+            put("updatedAt", nowIso())
+        }
+        val ref = db.collection("lessons").document(id)
+        db.runTransaction { transaction ->
+            val snapshot = transaction.get(ref)
+            if (!snapshot.exists()) error("الدرس المطلوب غير موجود.")
+            val fields = buildMap<String, Any?> {
+                putAll(featuredKeys)
+                putAll(tracking)
+                // الوثائق القديمة المغلَّفة: نكتب النسخة المسبوقة أيضاً كي
+                // يراها التطبيق العام الذي يقرأ من `data` وحدها.
+                if (snapshot.data?.get("data") is Map<*, *>) {
+                    featuredKeys.forEach { (key, value) -> put("data.$key", value) }
+                }
+            }
+            transaction.update(ref, fields)
+            null
+        }.await()
+    }
 
     /**
      * بثّ حيّ لدروس «مختارات المنبر». الترشيح محلّي على `featured` كي لا
@@ -388,7 +415,12 @@ object AdminRepository {
                 val at = (alert["createdAtMs"] as? Number)?.toLong() ?: 0L
                 val readBy = (alert["readBy"] as? List<*>)?.map { it.toString().lowercase() }
                     ?: emptyList()
-                (at <= 0L || at >= cutoff) && !readBy.contains(e)
+                // موجَّه ليُخفى عنّي (تنبيه عام يقابل تنبيهي الشخصي) — وإلا ظهر مرّتين.
+                val exclude = str(
+                    alert["excludeEmail"] ?: (alert["data"] as? Map<*, *>)?.get("excludeEmail"),
+                ).lowercase()
+                (at <= 0L || at >= cutoff) && !readBy.contains(e) &&
+                    (exclude.isEmpty() || exclude != e)
             }
             .sortedByDescending { (it["createdAtMs"] as? Number)?.toLong() ?: 0L }
     }

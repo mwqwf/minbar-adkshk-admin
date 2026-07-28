@@ -73,6 +73,7 @@ import com.ali.ishaqiyin_admin.data.ChatMember
 import com.ali.ishaqiyin_admin.data.ChatNotifications
 import com.ali.ishaqiyin_admin.data.ChatRepository
 import com.ali.ishaqiyin_admin.data.DmRepository
+import com.ali.ishaqiyin_admin.data.ONLINE_WINDOW_MS
 import com.ali.ishaqiyin_admin.data.formatBytes
 import com.ali.ishaqiyin_admin.ui.AdminScaffold
 import com.ali.ishaqiyin_admin.ui.ConfirmDialog
@@ -82,6 +83,7 @@ import com.ali.ishaqiyin_admin.ui.RemoteImage
 import com.ali.ishaqiyin_admin.ui.Routes
 import com.ali.ishaqiyin_admin.util.pickedFileFrom
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -205,7 +207,16 @@ fun GroupInfoScreen(isOwner: Boolean, nav: NavHostController, onBack: () -> Unit
         )
     }
 
-    val online = members.count { it.isOnline }
+    // «متصل الآن» نافذة زمنيّة: بلا نبضة ثانية تبقى معروضة حتى إعادة
+    // التركيب التالية فلا تزول في وقتها.
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000)
+            now = System.currentTimeMillis()
+        }
+    }
+    val online = members.count { now - it.lastActiveAtMs < ONLINE_WINDOW_MS }
     val me = members.firstOrNull { it.uid == myUid }
 
     AdminScaffold(title = "معلومات المجموعة", onBack = onBack) { padding ->
@@ -433,6 +444,7 @@ fun GroupInfoScreen(isOwner: Boolean, nav: NavHostController, onBack: () -> Unit
                             member = member,
                             isOwner = isOwner,
                             myUid = myUid,
+                            now = now,
                             onOpenDm = {
                                 scope.launch {
                                     val threadId = DmRepository.ensureThread(member.uid)
@@ -550,6 +562,7 @@ private fun MemberTile(
     member: ChatMember,
     isOwner: Boolean,
     myUid: String,
+    now: Long,
     onOpenDm: () -> Unit,
     onSetModerator: (Boolean) -> Unit,
 ) {
@@ -557,6 +570,8 @@ private fun MemberTile(
     // المالك يعيّن/يزيل مشرفي المجموعة ⭐ (صلاحيّات داخل الدردشة فقط).
     val canManage = isOwner && member.uid != myUid && !member.isOwner
     val lastSeen = member.lastSeenAtMs?.let { lastSeenFormat.format(Date(it)) }.orEmpty()
+    // يُحسب من نبضة الثانية بدل الخاصيّة الجامدة وقت التركيب.
+    val memberOnline = now - member.lastActiveAtMs < ONLINE_WINDOW_MS
 
     Row(
         Modifier
@@ -571,7 +586,7 @@ private fun MemberTile(
             photo = member.displayPhoto,
             radius = 20,
             showOnline = true,
-            online = member.isOnline,
+            online = memberOnline,
         )
         Spacer(Modifier.size(12.dp))
         Column(Modifier.weight(1f)) {
@@ -593,7 +608,7 @@ private fun MemberTile(
                 }
             }
             Text(
-                if (member.isOnline) {
+                if (memberOnline) {
                     "متصل الآن"
                 } else if (lastSeen.isEmpty()) {
                     member.email
@@ -601,7 +616,7 @@ private fun MemberTile(
                     "آخر ظهور: $lastSeen"
                 },
                 fontSize = 11.sp,
-                color = if (member.isOnline) ChatColors.online else ChatColors.textMuted,
+                color = if (memberOnline) ChatColors.online else ChatColors.textMuted,
             )
         }
         // مراسلة خاصّة — متاحة لأيّ عضو (عدا نفسي).

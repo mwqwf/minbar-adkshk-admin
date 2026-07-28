@@ -1,5 +1,7 @@
 package com.ali.ishaqiyin_admin.ui.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
@@ -73,12 +75,13 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -92,6 +95,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavHostController
 import com.ali.ishaqiyin_admin.data.ChatGroupMeta
 import com.ali.ishaqiyin_admin.data.ChatMember
@@ -101,11 +105,17 @@ import com.ali.ishaqiyin_admin.data.ChatNotifications
 import com.ali.ishaqiyin_admin.data.ChatReplyRef
 import com.ali.ishaqiyin_admin.data.ChatRepository
 import com.ali.ishaqiyin_admin.data.ChatMediaStore
+import com.ali.ishaqiyin_admin.data.ChatUploadTarget
+import com.ali.ishaqiyin_admin.data.ChatUploader
 import com.ali.ishaqiyin_admin.data.DmRepository
 import com.ali.ishaqiyin_admin.data.NetworkMonitor
+import com.ali.ishaqiyin_admin.data.ONLINE_WINDOW_MS
 import com.ali.ishaqiyin_admin.data.QUICK_REACTIONS
+import com.ali.ishaqiyin_admin.data.TYPING_WINDOW_MS
 import com.ali.ishaqiyin_admin.data.chatTypeForMime
+import com.ali.ishaqiyin_admin.data.chatTypeFromString
 import com.ali.ishaqiyin_admin.data.chatTypeLabel
+import com.ali.ishaqiyin_admin.data.chatTypeToString
 import com.ali.ishaqiyin_admin.data.formatBytes
 import com.ali.ishaqiyin_admin.data.guessContentType
 import com.ali.ishaqiyin_admin.ui.CountBadge
@@ -114,7 +124,6 @@ import com.ali.ishaqiyin_admin.ui.RemoteImage
 import com.ali.ishaqiyin_admin.ui.Routes
 import com.ali.ishaqiyin_admin.ui.adminFieldColors
 import com.ali.ishaqiyin_admin.util.AudioRecorderController
-import com.ali.ishaqiyin_admin.util.ImageCompressor
 import com.ali.ishaqiyin_admin.util.PickedFile
 import com.ali.ishaqiyin_admin.util.openExternalUri
 import com.ali.ishaqiyin_admin.util.pickedFileFrom
@@ -141,6 +150,39 @@ private val emojiPalette = listOf(
 )
 
 /**
+ * حافظ مرجع الاقتباس (ردّ / ردّ خاصّ) عبر تدوير الشاشة — يسلسل حقول
+ * [ChatReplyRef] كقائمة نصوص. القيمة null تُحفظ كقائمة فارغة فيعود المُهيّئ.
+ */
+internal val chatReplyRefSaver = listSaver<ChatReplyRef?, String>(
+    save = { ref ->
+        if (ref == null) {
+            emptyList()
+        } else {
+            listOf(
+                ref.messageId,
+                ref.senderId,
+                ref.senderName,
+                ref.preview,
+                chatTypeToString(ref.type),
+            )
+        }
+    },
+    restore = { values ->
+        if (values.size < 5) {
+            null
+        } else {
+            ChatReplyRef(
+                messageId = values[0],
+                senderId = values[1],
+                senderName = values[2],
+                preview = values[3],
+                type = chatTypeFromString(values[4]),
+            )
+        }
+    },
+)
+
+/**
  * دردشة إدارة منبر ادكصهك الجماعيّة — بنمط واتساب، على Firestore (زمن
  * حقيقي) و Storage للمرفقات. العضويّة تلقائيّة، والمجموعة خاصّة بتطبيق
  * الإدارة — لا يراها تطبيق منبر العامّ إطلاقاً.
@@ -154,14 +196,16 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
     val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
 
     var limit by remember { mutableIntStateOf(60) }
-    var replyTo by remember { mutableStateOf<ChatReplyRef?>(null) }
+    // المسودّة ومرجع الردّ يصمدان أمام التدوير (كانا يضيعان مع كلّ دوران).
+    var replyTo by rememberSaveable(stateSaver = chatReplyRefSaver) {
+        mutableStateOf<ChatReplyRef?>(null)
+    }
     var sending by remember { mutableStateOf(false) }
-    var text by remember { mutableStateOf("") }
+    var text by rememberSaveable { mutableStateOf("") }
 
-    var uploading by remember { mutableStateOf(false) }
-    var uploadPct by remember { mutableDoubleStateOf(0.0) }
-    var uploadName by remember { mutableStateOf("") }
-    var uploadAborted by remember { mutableStateOf(false) }
+    // الرفع يعمل في ChatUploader (نطاق مستقلّ) فلا يلغيه التدوير ولا الرجوع.
+    val uploads by ChatUploader.uploads.collectAsState()
+    val myUploads = uploads.filter { it.target is ChatUploadTarget.Group }
 
     val recorder = remember { AudioRecorderController() }
     var recording by remember { mutableStateOf(false) }
@@ -191,8 +235,16 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
     val membersList by remember { ChatRepository.membersStream() }
         .collectAsState(initial = emptyList())
     val members = remember(membersList) { membersList.associateBy { it.uid } }
-    val allMessages by remember(limit) { ChatRepository.messagesStream(limit.toLong()) }
-        .collectAsState(initial = emptyList())
+    // ⚠️ القائمة حالة مستقلّة لا `collectAsState(emptyList())`: توسيع النافذة
+    // يعيد الربط، وتصفير القائمة كان يومض بشاشة فارغة حتى أوّل انبعاث.
+    var allMessages by remember { mutableStateOf(emptyList<ChatMessage>()) }
+    var rawPageSize by remember { mutableIntStateOf(0) }
+    LaunchedEffect(limit) {
+        ChatRepository.messagesStream(limit.toLong()).collect { page ->
+            allMessages = page.messages
+            rawPageSize = page.rawSize
+        }
+    }
     val dmUnread by remember { DmRepository.unreadThreadsStream() }
         .collectAsState(initial = 0)
 
@@ -238,9 +290,19 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
     }
 
     // ListView معكوس: نهاية التمرير = أقدم الرسائل → حمّل المزيد.
+    // شرط `rawPageSize >= limit`: لا نوسّع النافذة إلّا إذا امتلأ الاستعلام
+    // فعلاً، وإلّا تصاعد الحدّ 60←2000 في المحادثات القصيرة. والمقارنة بحجم
+    // الصفحة الخام لا بالمرشَّحة، وإلّا جمّدت رسالةٌ مخفيّة واحدة الترقيم.
     LaunchedEffect(listState) {
         snapshotFlowOfLastVisible(listState) { lastIndex, total ->
-            if (total > 0 && lastIndex >= total - 5 && limit < 2000) limit += 60
+            if (
+                total > 0 &&
+                lastIndex >= total - 5 &&
+                limit < 2000 &&
+                rawPageSize >= limit
+            ) {
+                limit += 60
+            }
         }
     }
 
@@ -279,6 +341,11 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
         if (uri != null) pendingUpload = context.pickedFileFrom(uri)
     }
 
+    // أخطاء الرفع تصل من النطاق المستقلّ (لا من نطاق الشاشة).
+    LaunchedEffect(Unit) {
+        ChatUploader.errors.collect { snack(it) }
+    }
+
     fun sendAttachment(
         file: PickedFile,
         caption: String,
@@ -289,37 +356,40 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
     ) {
         val reply = replyTo
         replyTo = null
-        uploading = true
-        uploadPct = 0.0
-        uploadName = file.name
-        uploadAborted = false
-        scope.launch {
-            var temp: java.io.File? = null
-            try {
-                // ضغط الصور قبل الرفع: أهمّ توفير للبيانات على شبكة ضعيفة.
-                val prepared = ImageCompressor.prepare(context, file, contentType)
-                temp = prepared.temp
-                val payload = prepared.file
-                ChatRepository.sendAttachment(
-                    uri = payload.uri,
-                    filename = payload.name,
-                    contentType = contentType,
-                    type = type,
-                    caption = caption,
-                    durationMs = durationMs,
-                    replyTo = reply,
-                    onProgress = { uploadPct = it },
-                    isAborted = { uploadAborted },
-                )
-                ChatRepository.markRead()
-            } catch (e: Exception) {
-                if (!uploadAborted) snack("فشل رفع \"${file.name}\": ${e.message ?: e}")
-            } finally {
-                runCatching { deleteAfter?.delete() }
-                runCatching { temp?.delete() }
-                uploading = false
-            }
-        }
+        ChatUploader.enqueue(
+            target = ChatUploadTarget.Group,
+            file = file,
+            type = type,
+            contentType = contentType,
+            caption = caption,
+            durationMs = durationMs,
+            replyTo = reply,
+            deleteAfter = deleteAfter,
+        )
+    }
+
+    fun beginRecording() {
+        runCatching {
+            recordFile = recorder.start(context, "voice")
+            recording = true
+            recordSeconds = 0
+        }.onFailure { snack("تعذّر بدء التسجيل: ${it.message ?: it}") }
+    }
+
+    // إذن الميكروفون: معلن بالمانيفست لكنّه إذن خطر يجب طلبه وقت التشغيل،
+    // وبلا طلبه كان التسجيل يفشل بصمت على أوّل تثبيت.
+    val micPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) beginRecording() else snack("لم يُسمح باستخدام الميكروفون.")
+    }
+
+    fun startRecording() {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) beginRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     fun stopRecording(send: Boolean) {
@@ -472,14 +542,14 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
             onPickGroup = {},
             onPickMember = { member ->
                 forwarding = null
-                scope.launch {
-                    runCatching {
-                        val threadId = DmRepository.ensureThread(member.uid)
-                        DmRepository.forward(threadId, member.uid, msg)
-                    }
-                        .onSuccess { snack("أُعيد توجيه الرسالة إلى ${member.displayName}.") }
-                        .onFailure { snack("تعذّرت إعادة التوجيه: ${it.message ?: it}") }
-                }
+                // النقل يمرّ بـChatUploader لأن نسخ المرفق رفعٌ طويل يجب أن
+                // يصمد أمام التدوير والرجوع (وإلّا بقي ملفّ يتيم بلا رسالة).
+                val threadId = DmRepository.ensureThread(member.uid)
+                ChatUploader.enqueueForward(
+                    ChatUploadTarget.Dm(threadId = threadId, otherUid = member.uid),
+                    msg,
+                )
+                snack("جارٍ إعادة التوجيه إلى ${member.displayName}…")
             },
         )
     }
@@ -719,11 +789,12 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
             }
             val online by NetworkMonitor.online.collectAsState()
             if (!online) OfflineBanner()
-            if (uploading) {
+            // شريط مستقلّ لكلّ عمليّة رفع (رفع صورة + رسالة صوتيّة معاً).
+            myUploads.forEach { upload ->
                 UploadBanner(
-                    name = uploadName,
-                    percent = uploadPct,
-                    onCancel = { uploadAborted = true },
+                    name = upload.name,
+                    percent = upload.percent,
+                    onCancel = { ChatUploader.cancel(upload.id) },
                 )
             }
             replyTo?.let { ReplyBanner(it) { replyTo = null } }
@@ -753,7 +824,6 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                         }
                     },
                     sending = sending,
-                    uploading = uploading,
                     onAttach = { showAttachMenu = true },
                     onSend = {
                         val body = text.trim()
@@ -772,13 +842,7 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                             sending = false
                         }
                     },
-                    onRecord = {
-                        runCatching {
-                            recordFile = recorder.start(context, "voice")
-                            recording = true
-                            recordSeconds = 0
-                        }.onFailure { snack("تعذّر بدء التسجيل: ${it.message ?: it}") }
-                    },
+                    onRecord = { startRecording() },
                 )
             }
         }
@@ -811,8 +875,19 @@ private fun GroupHeader(
     onOpenDms: () -> Unit,
     onOpenInfo: () -> Unit,
 ) {
-    val online = members.count { it.isOnline }
-    val typers = members.filter { it.uid != myUid && it.isTyping }.map { it.displayName }
+    // «متصل الآن» و«يكتب…» نوافذ زمنيّة: بلا نبضة ثانية تبقى معروضة حتى
+    // إعادة التركيب التالية فلا تزول في وقتها.
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000)
+            now = System.currentTimeMillis()
+        }
+    }
+    val online = members.count { now - it.lastActiveAtMs < ONLINE_WINDOW_MS }
+    val typers = members
+        .filter { it.uid != myUid && now - it.typingAtMs < TYPING_WINDOW_MS }
+        .map { it.displayName }
     val subtitle: String
     val subtitleColor: Color
     when {
@@ -1106,7 +1181,6 @@ fun InputBar(
     text: String,
     onTextChange: (String) -> Unit,
     sending: Boolean,
-    uploading: Boolean,
     hint: String = "اكتب رسالة…",
     onAttach: () -> Unit,
     onSend: () -> Unit,
@@ -1117,7 +1191,8 @@ fun InputBar(
             Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
-            IconButton(onClick = onAttach, enabled = !uploading) {
+            // الإرفاق متاح دائماً: كلّ رفع عمليّة مستقلّة في ChatUploader.
+            IconButton(onClick = onAttach) {
                 Icon(
                     Icons.Filled.AttachFile,
                     contentDescription = "إرفاق",
