@@ -86,8 +86,22 @@ android {
         compose = true
         buildConfig = true
     }
+    // اللوحة عربيّة حرفيّاً، ومكتبات AndroidX/Compose/media3/Firebase تشحن
+    // ترجماتها بـ85+ لغة تصير أقساماً لغويّة في الحزمة. الإبقاء على العربيّة
+    // والافتراضيّة يقلّص الحزمة دون أيّ أثر على الواجهة.
+    androidResources {
+        localeFilters += listOf("ar")
+    }
     packaging {
-        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        resources.excludes += setOf(
+            "/META-INF/{AL2.0,LGPL2.1}",
+            // بيانات وصفيّة لا يقرأها شيء وقت التشغيل: مِجسّات تصحيح
+            // الكوروتينات، وبصمات إصدارات SDK، وبيانات أدوات البناء.
+            "META-INF/*.version",
+            "META-INF/*.kotlin_module",
+            "kotlin-tooling-metadata.json",
+            "DebugProbesKt.bin",
+        )
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true
