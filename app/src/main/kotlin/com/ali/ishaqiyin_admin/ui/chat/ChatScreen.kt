@@ -1,7 +1,5 @@
 package com.ali.ishaqiyin_admin.ui.chat
 
-import android.Manifest
-import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
@@ -41,7 +39,6 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.automirrored.filled.ForwardToInbox
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Image
@@ -49,7 +46,6 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.KeyboardDoubleArrowDown
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Schedule
@@ -95,7 +91,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.navigation.NavHostController
 import com.ali.ishaqiyin_admin.data.ChatGroupMeta
 import com.ali.ishaqiyin_admin.data.ChatMember
@@ -123,7 +118,6 @@ import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.RemoteImage
 import com.ali.ishaqiyin_admin.ui.Routes
 import com.ali.ishaqiyin_admin.ui.adminFieldColors
-import com.ali.ishaqiyin_admin.util.AudioRecorderController
 import com.ali.ishaqiyin_admin.util.PickedFile
 import com.ali.ishaqiyin_admin.util.openExternalUri
 import com.ali.ishaqiyin_admin.util.pickedFileFrom
@@ -207,11 +201,6 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
     val uploads by ChatUploader.uploads.collectAsState()
     val myUploads = uploads.filter { it.target is ChatUploadTarget.Group }
 
-    val recorder = remember { AudioRecorderController() }
-    var recording by remember { mutableStateOf(false) }
-    var recordSeconds by remember { mutableIntStateOf(0) }
-    var recordFile by remember { mutableStateOf<File?>(null) }
-
     var searching by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var highlightedId by remember { mutableStateOf("") }
@@ -264,7 +253,6 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
         ChatNotifications.isChatOpen = true
         onDispose {
             ChatNotifications.isChatOpen = false
-            recorder.release()
             SharedAudioPlayer.stop()
         }
     }
@@ -303,13 +291,6 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
             ) {
                 limit += 60
             }
-        }
-    }
-
-    LaunchedEffect(recording) {
-        while (recording) {
-            delay(1000)
-            recordSeconds += 1
         }
     }
 
@@ -352,6 +333,7 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
         type: ChatMessageType,
         contentType: String,
         durationMs: Long? = null,
+        waveform: List<Int>? = null,
         deleteAfter: File? = null,
     ) {
         val reply = replyTo
@@ -363,66 +345,30 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
             contentType = contentType,
             caption = caption,
             durationMs = durationMs,
+            waveform = waveform,
             replyTo = reply,
             deleteAfter = deleteAfter,
         )
     }
 
-    fun beginRecording() {
-        runCatching {
-            recordFile = recorder.start(context, "voice")
-            recording = true
-            recordSeconds = 0
-        }.onFailure { snack("تعذّر بدء التسجيل: ${it.message ?: it}") }
-    }
-
-    // إذن الميكروفون: معلن بالمانيفست لكنّه إذن خطر يجب طلبه وقت التشغيل،
-    // وبلا طلبه كان التسجيل يفشل بصمت على أوّل تثبيت.
-    val micPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (granted) beginRecording() else snack("لم يُسمح باستخدام الميكروفون.")
-    }
-
-    fun startRecording() {
-        val granted = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.RECORD_AUDIO,
-        ) == PackageManager.PERMISSION_GRANTED
-        if (granted) beginRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
-    }
-
-    fun stopRecording(send: Boolean) {
-        val elapsed = recordSeconds
-        // ⚠️ بلا `?: recordFile`: المسجّل يعيد null للتسجيل التالف عمداً،
-        // والسقوط إلى الملفّ الخام كان يُعيد إرسال العطب نفسه — وهو سبب
-        // «رسالة صوتيّة لا تعمل عند أحد».
-        val file = recorder.stop()
-        recording = false
-        recordSeconds = 0
-        if (!send) {
-            runCatching { (file ?: recordFile)?.delete() }
-            return
-        }
-        if (elapsed < 1) {
-            snack("التسجيل قصير جدّاً.")
-            runCatching { file?.delete() }
-            return
-        }
-        if (file == null) {
-            snack("تعذّر حفظ التسجيل على هذا الجهاز — أعد المحاولة.")
-            return
-        }
-        val name = "رسالة صوتيّة ${fileTimeFormat.format(Date())}.m4a"
-        sendAttachment(
-            file = PickedFile(android.net.Uri.fromFile(file), name, file.length()),
-            caption = "",
-            type = ChatMessageType.Voice,
-            contentType = "audio/mp4",
-            durationMs = elapsed * 1000L,
-            deleteAfter = file,
-        )
-    }
+    // التسجيل كلّه (الإذن والمؤقّت والقفل والمعاينة) في المكوّن المشترك
+    // VoiceRecorderUi — كان مكرّراً حرفيّاً هنا وفي DmScreen فيتباعد سلوكهما.
+    val voice = rememberVoiceRecorderState(
+        prefix = "voice",
+        onNotice = { snack(it) },
+        onSend = { file, durationMs, waveform ->
+            val name = "رسالة صوتيّة ${fileTimeFormat.format(Date())}.m4a"
+            sendAttachment(
+                file = PickedFile(android.net.Uri.fromFile(file), name, file.length()),
+                caption = "",
+                type = ChatMessageType.Voice,
+                contentType = "audio/mp4",
+                durationMs = durationMs,
+                waveform = waveform,
+                deleteAfter = file,
+            )
+        },
+    )
 
     fun react(msg: ChatMessage, emoji: String) {
         scope.launch {
@@ -759,6 +705,9 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                                         onLongPress = { actionsFor = it },
                                         onReplyTap = { jumpTo(it) },
                                         onReactionsTap = { reactionsFor = it },
+                                        // أوّل استماع لرسالة صوتيّة = ميكروفون
+                                        // أزرق عند مرسِلها (نمط واتساب).
+                                        onListened = { ChatRepository.markListened(it.id) },
                                     )
                                 }
                             }
@@ -798,18 +747,14 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                 )
             }
             replyTo?.let { ReplyBanner(it) { replyTo = null } }
-            if (meta.locked && !isOwner) {
+            // مقفول أو معاينة: شريط مستقلّ يتقدّم على شريط قفل المجموعة —
+            // إخفاؤه أثناء تسجيل مقفول كان يترك المسجّل عاملاً بلا زرّ حذف
+            // ولا إرسال. أمّا أثناء الضغط المطوّل فيبقى شريط الإدخال كما هو
+            // (تغيير تخطيطه يزيح الزرّ فيُطلق القفل/الإلغاء زوراً).
+            if (voice.showsBar) {
+                VoiceRecorderBar(voice)
+            } else if (meta.locked && !isOwner) {
                 LockedBar()
-            } else if (recording) {
-                RecordingBar(
-                    seconds = recordSeconds,
-                    onCancel = {
-                        recorder.cancel()
-                        recording = false
-                        recordSeconds = 0
-                    },
-                    onSend = { stopRecording(send = true) },
-                )
             } else {
                 InputBar(
                     text = text,
@@ -842,7 +787,7 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                             sending = false
                         }
                     },
-                    onRecord = { startRecording() },
+                    voice = voice,
                 )
             }
         }
@@ -1176,6 +1121,10 @@ private fun LockedBar() {
     }
 }
 
+/**
+ * شريط الإدخال — والميكروفون فيه «اضغط-مع-الاستمرار» بنمط واتساب:
+ * سحب جانبيّ يلغي، وسحب للأعلى يقفل، والإفلات يرسل.
+ */
 @Composable
 fun InputBar(
     text: String,
@@ -1184,97 +1133,55 @@ fun InputBar(
     hint: String = "اكتب رسالة…",
     onAttach: () -> Unit,
     onSend: () -> Unit,
-    onRecord: () -> Unit,
+    voice: VoiceRecorderState,
 ) {
+    val hasText = text.trim().isNotEmpty()
     Surface(color = ChatColors.surface) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            // الإرفاق متاح دائماً: كلّ رفع عمليّة مستقلّة في ChatUploader.
-            IconButton(onClick = onAttach) {
-                Icon(
-                    Icons.Filled.AttachFile,
-                    contentDescription = "إرفاق",
-                    tint = ChatColors.textMuted,
-                )
-            }
-            OutlinedTextField(
-                value = text,
-                onValueChange = onTextChange,
-                placeholder = { Text(hint) },
-                minLines = 1,
-                maxLines = 5,
-                colors = adminFieldColors(),
-                shape = RoundedCornerShape(24.dp),
-                keyboardOptions = KeyboardOptions.Default,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(6.dp))
-            FloatingActionButton(
-                onClick = { if (!sending) if (text.trim().isNotEmpty()) onSend() else onRecord() },
-                containerColor = ChatColors.accentDark,
-                modifier = Modifier.size(48.dp),
+        Box {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.Bottom,
             ) {
-                Icon(
-                    if (text.trim().isNotEmpty()) {
-                        Icons.AutoMirrored.Filled.Send
-                    } else {
-                        Icons.Filled.Mic
-                    },
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp),
+                // الإرفاق متاح دائماً: كلّ رفع عمليّة مستقلّة في ChatUploader.
+                IconButton(onClick = onAttach) {
+                    Icon(
+                        Icons.Filled.AttachFile,
+                        contentDescription = "إرفاق",
+                        tint = ChatColors.textMuted,
+                    )
+                }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = onTextChange,
+                    placeholder = { Text(hint) },
+                    minLines = 1,
+                    maxLines = 5,
+                    colors = adminFieldColors(),
+                    shape = RoundedCornerShape(24.dp),
+                    keyboardOptions = KeyboardOptions.Default,
+                    modifier = Modifier.weight(1f),
                 )
+                Spacer(Modifier.width(6.dp))
+                if (hasText) {
+                    FloatingActionButton(
+                        onClick = { if (!sending) onSend() },
+                        containerColor = ChatColors.accentDark,
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                } else {
+                    VoiceMicButton(voice)
+                }
             }
-        }
-    }
-}
-
-@Composable
-fun RecordingBar(seconds: Int, onCancel: () -> Unit, onSend: () -> Unit) {
-    Surface(color = ChatColors.surface) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onCancel) {
-                Icon(
-                    Icons.Filled.Delete,
-                    contentDescription = "إلغاء التسجيل",
-                    tint = ChatColors.rose,
-                )
-            }
-            Icon(
-                Icons.Filled.FiberManualRecord,
-                contentDescription = null,
-                tint = ChatColors.rose,
-                modifier = Modifier.size(14.dp),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "%02d:%02d".format(seconds / 60, seconds % 60),
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp,
-            )
-            Spacer(Modifier.width(12.dp))
-            Text(
-                "جارٍ التسجيل…",
-                color = ChatColors.textMuted,
-                fontSize = 12.sp,
-                modifier = Modifier.weight(1f),
-            )
-            FloatingActionButton(
-                onClick = onSend,
-                containerColor = ChatColors.accentDark,
-                modifier = Modifier.size(44.dp),
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.Send,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp),
-                )
+            // طبقة التسجيل تُرسم فوق الشريط بلا تغيير أبعاده (انظر تعليقها).
+            if (voice.phase == VoicePhase.Holding) {
+                VoiceHoldOverlay(voice, Modifier.matchParentSize())
             }
         }
     }

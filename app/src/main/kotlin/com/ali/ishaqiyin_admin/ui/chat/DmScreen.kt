@@ -1,7 +1,5 @@
 package com.ali.ishaqiyin_admin.ui.chat
 
-import android.Manifest
-import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -68,7 +66,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import com.ali.ishaqiyin_admin.data.ChatMediaStore
 import com.ali.ishaqiyin_admin.data.ChatMessage
 import com.ali.ishaqiyin_admin.data.ChatMessageType
@@ -86,7 +83,6 @@ import com.ali.ishaqiyin_admin.data.guessContentType
 import com.ali.ishaqiyin_admin.ui.ConfirmDialog
 import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.adminFieldColors
-import com.ali.ishaqiyin_admin.util.AudioRecorderController
 import com.ali.ishaqiyin_admin.util.PickedFile
 import com.ali.ishaqiyin_admin.util.pickedFileFrom
 import com.google.firebase.auth.FirebaseAuth
@@ -133,10 +129,6 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         target is ChatUploadTarget.Dm && target.threadId == threadId
     }
 
-    val recorder = remember { AudioRecorderController() }
-    var recording by remember { mutableStateOf(false) }
-    var recordSeconds by remember { mutableIntStateOf(0) }
-    var recordFile by remember { mutableStateOf<File?>(null) }
     var lastTypingSentMs by remember { mutableLongStateOf(0L) }
     var lastReadMarkMs by remember { mutableLongStateOf(0L) }
 
@@ -204,7 +196,6 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         PendingGroupQuote.value = null
         onDispose {
             ChatNotifications.openDmThreadId = ""
-            recorder.release()
             SharedAudioPlayer.stop()
         }
     }
@@ -223,13 +214,6 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         if (newest > lastReadMarkMs) {
             lastReadMarkMs = newest
             DmRepository.markRead(threadId)
-        }
-    }
-
-    LaunchedEffect(recording) {
-        while (recording) {
-            delay(1000)
-            recordSeconds += 1
         }
     }
 
@@ -269,6 +253,7 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         type: ChatMessageType,
         contentType: String,
         durationMs: Long? = null,
+        waveform: List<Int>? = null,
         deleteAfter: File? = null,
     ) {
         val reply = replyTo
@@ -282,35 +267,30 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
             type = type,
             contentType = contentType,
             durationMs = durationMs,
+            waveform = waveform,
             replyTo = reply,
             fromGroup = quoted,
             deleteAfter = deleteAfter,
         )
     }
 
-    fun beginRecording() {
-        runCatching {
-            recordFile = recorder.start(context, "dm_voice")
-            recording = true
-            recordSeconds = 0
-        }.onFailure { snack("تعذّر بدء التسجيل: ${it.message ?: it}") }
-    }
-
-    // إذن الميكروفون: إذن خطر يجب طلبه وقت التشغيل، وبلا طلبه كان التسجيل
-    // يفشل بصمت على أوّل تثبيت.
-    val micPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (granted) beginRecording() else snack("لم يُسمح باستخدام الميكروفون.")
-    }
-
-    fun startRecording() {
-        val granted = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.RECORD_AUDIO,
-        ) == PackageManager.PERMISSION_GRANTED
-        if (granted) beginRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
-    }
+    // نفس مكوّن التسجيل المشترك المستعمل في المجموعة (الإذن والمؤقّت
+    // والقفل والمعاينة) — بادئة الملفّ وحدها تختلف.
+    val voice = rememberVoiceRecorderState(
+        prefix = "dm_voice",
+        onNotice = { snack(it) },
+        onSend = { file, durationMs, waveform ->
+            val name = "رسالة صوتيّة ${voiceNameFmt.format(Date())}.m4a"
+            sendAttachment(
+                file = PickedFile(android.net.Uri.fromFile(file), name, file.length()),
+                type = ChatMessageType.Voice,
+                contentType = "audio/mp4",
+                durationMs = durationMs,
+                waveform = waveform,
+                deleteAfter = file,
+            )
+        },
+    )
 
     LaunchedEffect(pendingUpload) {
         val file = pendingUpload ?: return@LaunchedEffect
@@ -697,6 +677,10 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                                     onLongPress = { actionsFor = it },
                                     onReplyTap = {},
                                     onReactionsTap = {},
+                                    // أوّل استماع = ميكروفون أزرق عند المرسِل.
+                                    onListened = {
+                                        DmRepository.markListened(threadId, it.id)
+                                    },
                                 )
                             }
                         }
@@ -774,42 +758,10 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                 }
             }
             replyTo?.let { ReplyBanner(it) { replyTo = null } }
-            if (recording) {
-                RecordingBar(
-                    seconds = recordSeconds,
-                    onCancel = {
-                        recorder.cancel()
-                        recording = false
-                        recordSeconds = 0
-                    },
-                    onSend = {
-                        val elapsed = recordSeconds
-                        // بلا سقوط إلى الملفّ الخام: null يعني تسجيلاً
-                        // تالفاً رفضه المسجّل، وإرساله يُنتج رسالة ميّتة.
-                        val file = recorder.stop()
-                        recording = false
-                        recordSeconds = 0
-                        if (elapsed < 1) {
-                            snack("التسجيل قصير جدّاً.")
-                            runCatching { file?.delete() }
-                        } else if (file == null) {
-                            snack("تعذّر حفظ التسجيل على هذا الجهاز — أعد المحاولة.")
-                        } else {
-                            val name = "رسالة صوتيّة ${voiceNameFmt.format(Date())}.m4a"
-                            sendAttachment(
-                                PickedFile(
-                                    android.net.Uri.fromFile(file),
-                                    name,
-                                    file.length(),
-                                ),
-                                ChatMessageType.Voice,
-                                "audio/mp4",
-                                durationMs = elapsed * 1000L,
-                                deleteAfter = file,
-                            )
-                        }
-                    },
-                )
+            if (voice.showsBar) {
+                // مقفول أو معاينة فقط؛ أثناء الضغط المطوّل يبقى شريط الإدخال
+                // كما هو (تغيير تخطيطه يزيح الزرّ فيُطلق القفل/الإلغاء زوراً).
+                VoiceRecorderBar(voice)
             } else {
                 InputBar(
                     text = text,
@@ -850,7 +802,7 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                             sending = false
                         }
                     },
-                    onRecord = { startRecording() },
+                    voice = voice,
                 )
             }
         }

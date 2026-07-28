@@ -84,6 +84,8 @@ fun MessageBubble(
     onLongPress: (ChatMessage) -> Unit,
     onReplyTap: (ChatReplyRef) -> Unit,
     onReactionsTap: (ChatMessage) -> Unit,
+    // يُستدعى مرّة واحدة عند أوّل تشغيل لرسالة صوتيّة ليست لي (شارة الاستماع).
+    onListened: ((ChatMessage) -> Unit)? = null,
 ) {
     // رسائل النظام (إن وُجدت مستقبلاً) — بطاقة وسطيّة مميّزة.
     if (msg.senderId == "system") {
@@ -143,7 +145,11 @@ fun MessageBubble(
                 msg.replyTo?.let { ReplyPreview(it, onReplyTap) }
                 // اقتباس «ردّ بشكل خاص» — كان يُخزَّن في الوثيقة ولا يُعرَض.
                 msg.fromGroup?.let { GroupQuotePreview(it) }
-                if (msg.deleted) DeletedBody(msg, members) else BubbleBody(msg)
+                if (msg.deleted) {
+                    DeletedBody(msg, members)
+                } else {
+                    BubbleBody(msg, sender, onListened)
+                }
                 Spacer(Modifier.height(2.dp))
                 BubbleFooter(msg, readByAll)
             }
@@ -277,7 +283,11 @@ private fun DeletedBody(msg: ChatMessage, members: Map<String, ChatMember>) {
 }
 
 @Composable
-private fun BubbleBody(msg: ChatMessage) {
+private fun BubbleBody(
+    msg: ChatMessage,
+    sender: ChatMember?,
+    onListened: ((ChatMessage) -> Unit)?,
+) {
     val att = msg.attachment
     val caption = msg.text.trim()
     Column {
@@ -294,7 +304,26 @@ private fun BubbleBody(msg: ChatMessage) {
                 if (att == null) {
                     MissingAttachment()
                 } else {
-                    AudioBubblePlayer(att, isVoice = msg.type == ChatMessageType.Voice)
+                    val myUid = com.google.firebase.auth.FirebaseAuth
+                        .getInstance().currentUser?.uid.orEmpty()
+                    // رسالتي: تزرقّ الشارة إن استمع إليها أحد غيري.
+                    // رسالة غيري: تزرقّ بعد استماعي أنا.
+                    val listened = if (msg.isMine) {
+                        msg.listenedBy.any { it != myUid }
+                    } else {
+                        myUid.isNotEmpty() && myUid in msg.listenedBy
+                    }
+                    AudioBubblePlayer(
+                        attachment = att,
+                        isVoice = msg.type == ChatMessageType.Voice,
+                        messageId = msg.id,
+                        senderUid = msg.senderId,
+                        senderName = sender?.displayName ?: msg.senderName,
+                        senderPhoto = sender?.displayPhoto ?: msg.senderPhoto,
+                        mine = msg.isMine,
+                        listened = listened,
+                        onListened = onListened?.let { cb -> { cb(msg) } },
+                    )
                 }
 
             ChatMessageType.File -> if (att == null) MissingAttachment() else FileTile(att)

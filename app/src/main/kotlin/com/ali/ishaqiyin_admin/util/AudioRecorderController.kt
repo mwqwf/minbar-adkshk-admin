@@ -4,8 +4,13 @@ import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import java.io.File
+import kotlin.math.sqrt
 
 /**
  * 🎙️ تسجيل صوتي مباشر بصيغة m4a/AAC.
@@ -28,12 +33,80 @@ import java.io.File
  *     سبب العطب أو طراز الجهاز.
  *  3. إعدادات الترميز تسقط تدريجيّاً إلى ما تدعمه الأجهزة الأضعف بدل أن
  *     يفشل التسجيل من أصله.
+ *
+ * ## 🌊 عيّنات السعة (شكل الموجة بنمط واتساب)
+ * أثناء التسجيل تُؤخذ عيّنة من `maxAmplitude` كلّ 100ms على مؤقّت الواجهة:
+ * [amplitudes] للعرض الحيّ أثناء التسجيل، و[waveform] بعد `stop()` للإرسال
+ * مع المرفق. المؤقّت يتوقّف في **كلّ** مسارات الخروج فلا يتسرّب Handler.
  */
 class AudioRecorderController {
     private var recorder: MediaRecorder? = null
     private var outputFile: File? = null
 
     val isRecording: Boolean get() = recorder != null
+
+    // ─── عيّنات السعة ────────────────────────────────────────
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val samples = mutableListOf<Int>()
+
+    // قد يُوقفها خيط غير خيط الواجهة (stop من كوروتين الإرسال).
+    @Volatile
+    private var sampling = false
+
+    private val _amplitudes = MutableStateFlow<List<Int>>(emptyList())
+
+    /** آخر [LIVE_WINDOW] عيّنة (0..100) — للموجة الحيّة أثناء التسجيل. */
+    val amplitudes: StateFlow<List<Int>> = _amplitudes
+
+    private val sampleTick = object : Runnable {
+        override fun run() {
+            if (!sampling) return
+            // maxAmplitude يرمي على بعض الأجهزة إن لم يكن المسجّل نشطاً.
+            val raw = runCatching { recorder?.maxAmplitude ?: 0 }.getOrDefault(0)
+            val level = normalizeAmplitude(raw)
+            synchronized(samples) {
+                // حلقة دائريّة لا سقف صلب: بلوغ السقف كان يوقف الإضافة
+                // فتتجمّد الموجة الحيّة بينما التسجيل مستمرّ.
+                if (samples.size >= MAX_SAMPLES) samples.removeAt(0)
+                samples.add(level)
+                _amplitudes.value = samples.takeLast(LIVE_WINDOW)
+            }
+            handler.postDelayed(this, SAMPLE_INTERVAL_MS)
+        }
+    }
+
+    private fun startSampling() {
+        if (sampling) return
+        sampling = true
+        handler.postDelayed(sampleTick, SAMPLE_INTERVAL_MS)
+    }
+
+    private fun stopSampling() {
+        sampling = false
+        handler.removeCallbacks(sampleTick)
+    }
+
+    /**
+     * شكل الموجة النهائي: 40 قيمة (0..100) بتقسيم كلّ العيّنات إلى 40 دلواً
+     * ومتوسّط كلّ دلو. يبقى صالحاً بعد `stop()` (يُستدعى قبل الإرسال)،
+     * ويعود فارغاً إن لم تُلتقط أيّ عيّنة (تسجيل أقصر من دورة واحدة).
+     */
+    fun waveform(): List<Int> {
+        val s = synchronized(samples) { samples.toList() }
+        if (s.isEmpty()) return emptyList()
+        return List(WAVE_BARS) { i ->
+            val from = i * s.size / WAVE_BARS
+            val to = (i + 1) * s.size / WAVE_BARS
+            val value = if (to > from) {
+                s.subList(from, to).sum() / (to - from)
+            } else {
+                // تسجيل قصير (عيّنات أقلّ من الأعمدة): يُمدَّد بأقرب عيّنة.
+                s[from.coerceAtMost(s.size - 1)]
+            }
+            value.coerceIn(0, 100)
+        }
+    }
 
     /**
      * إعدادات مرتَّبة من الأفضل إلى الأكثر توافقاً. بعض المرمِّزات (خاصّة
@@ -51,6 +124,7 @@ class AudioRecorderController {
 
     fun start(context: Context, prefix: String): File {
         stopQuietly()
+        clearSamples()
         val dir = File(context.cacheDir, "recordings").apply { mkdirs() }
         val file = File(dir, "${prefix}_${System.currentTimeMillis()}.m4a")
         var lastError: Throwable? = null
@@ -72,6 +146,7 @@ class AudioRecorderController {
                 r.start()
                 recorder = r
                 outputFile = file
+                startSampling()
                 return file
             } catch (e: Exception) {
                 lastError = e
@@ -92,10 +167,11 @@ class AudioRecorderController {
             MediaRecorder()
         }
 
-    /** إيقاف مؤقّت (أندرويد 7+). */
+    /** إيقاف مؤقّت (أندرويد 7+) — يعلّق أخذ العيّنات أيضاً فلا تُسجَّل صمتاً. */
     fun pause(): Boolean = runCatching {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             recorder?.pause()
+            stopSampling()
             true
         } else {
             false
@@ -105,6 +181,7 @@ class AudioRecorderController {
     fun resume(): Boolean = runCatching {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             recorder?.resume()
+            startSampling()
             true
         } else {
             false
@@ -116,6 +193,10 @@ class AudioRecorderController {
      * يعيد `null` لأيّ تسجيل تالف — فلا تُرسَل رسالة صوتيّة ميّتة.
      */
     fun stop(): File? {
+        // العيّنات المجمَّعة تبقى كما هي كي يعمل [waveform] بعد الإيقاف —
+        // الذي يُلغى هنا هو المؤقّت والموجة الحيّة فقط.
+        stopSampling()
+        _amplitudes.value = emptyList()
         val r = recorder
         val file = outputFile
         recorder = null
@@ -148,24 +229,54 @@ class AudioRecorderController {
         return file
     }
 
-    /** إلغاء وحذف الملفّ. */
+    /** إلغاء وحذف الملفّ (وإسقاط العيّنات — لا موجة لتسجيل ملغى). */
     fun cancel() {
         stopQuietly()
+        clearSamples()
         runCatching { outputFile?.delete() }
         outputFile = null
     }
 
     private fun stopQuietly() {
+        stopSampling()
+        _amplitudes.value = emptyList()
         val r = recorder ?: return
         recorder = null
         runCatching { r.stop() }
         runCatching { r.release() }
     }
 
+    private fun clearSamples() {
+        synchronized(samples) { samples.clear() }
+        _amplitudes.value = emptyList()
+    }
+
     fun release() = stopQuietly()
+
+    /** تطبيع سعة `MediaRecorder` إلى 0..100 — بجذر النسبة لتوزيع بصري أوضح. */
+    private fun normalizeAmplitude(raw: Int): Int {
+        if (raw <= 0) return 0
+        val ratio = raw.coerceAtMost(MAX_AMPLITUDE).toDouble() / MAX_AMPLITUDE
+        return (sqrt(ratio) * 100).toInt().coerceIn(0, 100)
+    }
 
     companion object {
         private const val TAG = "AudioRecorder"
+
+        /** دورة أخذ العيّنات. */
+        private const val SAMPLE_INTERVAL_MS = 100L
+
+        /** أقصى قيمة يعيدها `MediaRecorder.maxAmplitude` (16-bit PCM). */
+        private const val MAX_AMPLITUDE = 32_767
+
+        /** عدد أعمدة الموجة المرسَلة مع المرفق. */
+        private const val WAVE_BARS = 40
+
+        /** ما يُعرض حيّاً أثناء التسجيل (آخر 6 ثوانٍ). */
+        private const val LIVE_WINDOW = 60
+
+        /** سقف أمان للعيّنات المجمَّعة (≈10 دقائق) فلا تنمو بلا حدّ. */
+        private const val MAX_SAMPLES = 6_000
 
         /**
          * هل هذا الملفّ الصوتي قابل للتشغيل فعلاً؟ يفحص وجود مسار صوتي

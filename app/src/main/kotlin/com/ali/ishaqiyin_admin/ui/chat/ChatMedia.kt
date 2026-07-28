@@ -1,9 +1,12 @@
 package com.ali.ishaqiyin_admin.ui.chat
 
 import android.content.Context
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,24 +32,30 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -61,6 +70,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil3.compose.AsyncImage
+import com.ali.ishaqiyin_admin.data.AppPrefs
 import com.ali.ishaqiyin_admin.data.ChatAttachment
 import com.ali.ishaqiyin_admin.data.ChatMediaStore
 import com.ali.ishaqiyin_admin.data.MediaState
@@ -73,12 +83,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.io.File
 
+/** بادئة مفاتيح معاينة التسجيل الجاري (ملفّ مؤقّت لا يُستأنف). */
+const val PREVIEW_KEY_PREFIX = "preview:"
+
 /**
  * مشغّل صوت مشترك — مشغّل واحد فقط يعمل في أيّ لحظة (مثل واتساب).
  * يشغّل **ملفّاً محليّاً** دائماً (بعد التنزيل) فلا يتأثّر بالشبكة إطلاقاً.
  */
 object SharedAudioPlayer {
     private const val TAG = "SharedAudioPlayer"
+    private const val MAX_SAVED_POSITIONS = 50
     private var player: ExoPlayer? = null
 
     private val _activeKey = MutableStateFlow<String?>(null)
@@ -96,6 +110,12 @@ object SharedAudioPlayer {
     /** سرعة التشغيل (تُطبَّق على المقطع الحالي والتالي — مثل واتساب). */
     private val _speed = MutableStateFlow(1f)
     val speed: StateFlow<Float> = _speed
+
+    /**
+     * موضع كلّ مقطع لم يكتمل — يُستأنف منه عند إعادة تشغيله (نمط واتساب)،
+     * ويُحذف عند الإكمال الطبيعيّ.
+     */
+    private val savedPositions = mutableMapOf<String, Long>()
 
     /**
      * يُستدعى بمفتاح المقطع فور انتهائه — تستعمله شاشة الدردشة لتشغيل
@@ -161,14 +181,46 @@ object SharedAudioPlayer {
                     }
                     if (state == Player.STATE_ENDED) {
                         val finished = _activeKey.value
+                        // ⚠️ الحذف **بعد** stop()، فهي تبدأ بـstashPosition التي
+                        // تعيد كتابة المفتاح (duration تعود TIME_UNSET عند الانتهاء
+                        // فيمرّ شرط الحفظ) — فكان المقطع يُستأنف من نهايته.
                         stop()
-                        if (finished != null) onCompleted?.invoke(finished)
+                        if (finished != null) {
+                            savedPositions.remove(finished)
+                            onCompleted?.invoke(finished)
+                        }
                     }
                 }
             },
         )
+        // سرعة التشغيل المحفوظة من الجلسة السابقة (نمط واتساب).
+        _speed.value = runCatching { AppPrefs.audioSpeed }.getOrDefault(1f)
+        runCatching { created.setPlaybackSpeed(_speed.value) }
         player = created
         return created
+    }
+
+    /**
+     * يحفظ موضع المقطع المغادَر إن لم يكتمل، ويمحوه إن كان في أوّله أو
+     * قارب نهايته — فالاستئناف يفيد المقاطع الطويلة وحدها.
+     */
+    private fun stashPosition() {
+        val key = _activeKey.value ?: return
+        // معاينة تسجيل جارٍ: ملفّها مؤقّت باسم لا يتكرّر ويُحذف بعد الإرسال،
+        // فحفظ موضعها نفاية دائمة لا تُستهلك أبداً.
+        if (key.startsWith(PREVIEW_KEY_PREFIX)) return
+        val p = player ?: return
+        val pos = runCatching { p.currentPosition }.getOrDefault(0L)
+        val dur = runCatching { p.duration }.getOrDefault(0L)
+        if (pos > 1_500L && (dur <= 0L || pos < dur - 1_500L)) {
+            // سقف بسيط كي لا تنمو الخريطة بلا حدّ في جلسة طويلة.
+            if (savedPositions.size >= MAX_SAVED_POSITIONS) {
+                savedPositions.keys.firstOrNull()?.let(savedPositions::remove)
+            }
+            savedPositions[key] = pos
+        } else {
+            savedPositions.remove(key)
+        }
     }
 
     fun playFile(context: Context, key: String, file: File) {
@@ -178,6 +230,8 @@ object SharedAudioPlayer {
             p.play()
             return
         }
+        // المقطع المغادَر يحتفظ بموضعه قبل استبداله.
+        stashPosition()
         _activeKey.value = key
         _positionMs.value = 0
         _durationMs.value = 0
@@ -185,11 +239,17 @@ object SharedAudioPlayer {
         p.setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(file)))
         p.setPlaybackSpeed(_speed.value)
         p.prepare()
+        // استئناف من حيث توقّف المشرف آخر مرّة.
+        savedPositions.remove(key)?.let {
+            runCatching { p.seekTo(it) }
+            _positionMs.value = it
+        }
         p.play()
     }
 
     fun setSpeed(v: Float) {
         _speed.value = v
+        runCatching { AppPrefs.audioSpeed = v }
         runCatching { player?.setPlaybackSpeed(v) }
     }
 
@@ -203,6 +263,7 @@ object SharedAudioPlayer {
     }
 
     fun stop() {
+        stashPosition()
         _activeKey.value = null
         _playing.value = false
         _positionMs.value = 0
@@ -217,12 +278,40 @@ object SharedAudioPlayer {
     }
 }
 
+/** عدد أعمدة الموجة المعروضة (مطابق لما يُسجَّل مع المرفق). */
+private const val WAVE_BARS = 40
+
 /**
- * فقاعة صوت بنمط واتساب: زرّ تنزيل أوّلاً، ثم تشغيل من الملفّ المحلّي مع
- * شريط تقدّم وسرعة تشغيل — ويعمل دون إنترنت بعد التنزيل.
+ * موجة حتميّة للرسائل القديمة التي لا تحمل بيانات موجة: نفس المعرّف يعطي
+ * نفس الشكل دائماً، فلا يتبدّل المنظر عند كلّ إعادة تركيب.
+ */
+private fun fallbackWaveform(seed: String): List<Int> {
+    var h = seed.hashCode().toLong() and 0xFFFFFFFFL
+    if (h == 0L) h = 0x9E3779B9L
+    return List(WAVE_BARS) {
+        h = (h * 6364136223846793005L + 1442695040888963407L) ushr 1
+        (18 + (h ushr 11) % 78L).toInt()
+    }
+}
+
+/**
+ * فقاعة صوت بنمط واتساب: صورة المرسل بشارة ميكروفون، زرّ تشغيل بلا خلفيّة،
+ * موجة قابلة للسحب، ومدّة واحدة (المدّة عند السكون والزمن المنقضي أثناء
+ * التشغيل — رقمان في سطر واحد ينعكسان بصريّاً في RTL). التنزيل أوّلاً ثم
+ * تشغيل من الملفّ المحلّي، فيعمل دون إنترنت بعد التنزيل.
  */
 @Composable
-fun AudioBubblePlayer(attachment: ChatAttachment, isVoice: Boolean) {
+fun AudioBubblePlayer(
+    attachment: ChatAttachment,
+    isVoice: Boolean,
+    messageId: String = "",
+    senderUid: String = "",
+    senderName: String = "",
+    senderPhoto: String = "",
+    mine: Boolean = false,
+    listened: Boolean = false,
+    onListened: (() -> Unit)? = null,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val key = remember(attachment) { ChatMediaStore.keyOf(attachment) }
@@ -246,15 +335,49 @@ fun AudioBubblePlayer(attachment: ChatAttachment, isVoice: Boolean) {
     val fallbackDuration = attachment.durationMs ?: 0L
     val total = if (active && durationMs > 0) durationMs else fallbackDuration
     val position = if (active) positionMs else 0L
+    val progress = if (total > 0) (position.toFloat() / total).coerceIn(0f, 1f) else 0f
+
+    // موجة المرفق إن وُجدت، وإلّا موجة حتميّة (رسائل ما قبل الميزة).
+    val bars = remember(attachment, messageId) {
+        attachment.waveform?.takeIf { it.isNotEmpty() }
+            ?: fallbackWaveform(messageId.ifEmpty { attachment.url })
+    }
+
+    // شارة الاستماع تُسجَّل مرّة واحدة عند أوّل تشغيل فعليّ لرسالة ليست لي.
+    // مقيَّدة بالرسائل الصوتيّة: الشارة لا تُرسم أصلاً لمرفقات الصوت العامّة،
+    // فكتابتها لها ضربٌ في Firestore بلا أيّ أثر مرئيّ.
+    var reported by remember(messageId) { mutableStateOf(false) }
+    fun reportListened() {
+        if (isVoice && !mine && !listened && !reported) {
+            reported = true
+            onListened?.invoke()
+        }
+    }
 
     Row(
-        Modifier.width(236.dp),
+        Modifier.width(250.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 1) صورة المرسل بشارة ميكروفون — تحلّ محلّها رقاقة السرعة أثناء
+        //    التشغيل (سلوك واتساب الحرفيّ).
+        Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+            when {
+                active -> SpeedChip(speed)
+                isVoice -> VoiceAvatar(senderUid, senderName, senderPhoto, listened)
+                // ملفّ صوتيّ عامّ: نوتة موسيقيّة بلا صورة مرسل.
+                else -> Icon(
+                    Icons.Filled.MusicNote,
+                    contentDescription = null,
+                    tint = ChatColors.accentDark,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+        }
+        Spacer(Modifier.width(6.dp))
+        // 2) زرّ تشغيل/إيقاف بلا خلفيّة دائريّة.
         Box(
             Modifier
-                .size(40.dp)
-                .background(ChatColors.accentDark, CircleShape)
+                .size(38.dp)
                 .clickable {
                     scope.launch {
                         SharedAudioPlayer.clearError()
@@ -262,15 +385,22 @@ fun AudioBubblePlayer(attachment: ChatAttachment, isVoice: Boolean) {
                             status.state == MediaState.Downloading -> Unit
                             status.state == MediaState.Failed -> {
                                 val f = ChatMediaStore.retry(attachment)
-                                if (f != null) SharedAudioPlayer.playFile(context, key, f)
+                                if (f != null) {
+                                    reportListened()
+                                    SharedAudioPlayer.playFile(context, key, f)
+                                }
                             }
                             !status.isReady -> {
                                 val f = ChatMediaStore.download(attachment)
-                                if (f != null) SharedAudioPlayer.playFile(context, key, f)
+                                if (f != null) {
+                                    reportListened()
+                                    SharedAudioPlayer.playFile(context, key, f)
+                                }
                             }
 
                             active && playing -> SharedAudioPlayer.pause()
                             else -> status.file?.let {
+                                reportListened()
                                 SharedAudioPlayer.playFile(context, key, it)
                             }
                         }
@@ -282,8 +412,8 @@ fun AudioBubblePlayer(attachment: ChatAttachment, isVoice: Boolean) {
                 CircularProgressIndicator(
                     progress = { (status.progress / 100).toFloat() },
                     strokeWidth = 2.4.dp,
-                    color = Color.White,
-                    modifier = Modifier.size(22.dp),
+                    color = ChatColors.accentDark,
+                    modifier = Modifier.size(24.dp),
                 )
             } else {
                 Icon(
@@ -293,66 +423,153 @@ fun AudioBubblePlayer(attachment: ChatAttachment, isVoice: Boolean) {
                         else -> Icons.Filled.PlayArrow
                     },
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = ChatColors.accentDark,
+                    modifier = Modifier.size(34.dp),
                 )
             }
         }
-        Spacer(Modifier.size(8.dp))
+        Spacer(Modifier.width(4.dp))
         Column(Modifier.weight(1f)) {
-            Slider(
-                value = if (total > 0) position.toFloat().coerceIn(0f, total.toFloat()) else 0f,
-                onValueChange = { if (active) SharedAudioPlayer.seekTo(it.toLong()) },
-                valueRange = 0f..(if (total > 0) total.toFloat() else 1f),
-                enabled = active,
-                colors = SliderDefaults.colors(
-                    activeTrackColor = ChatColors.accent,
-                    inactiveTrackColor = ChatColors.border,
-                    thumbColor = ChatColors.accent,
-                ),
-                modifier = Modifier.height(24.dp),
+            // 3) الموجة بديلة الشريط: نقر/سحب = تقديم داخل المقطع النشط.
+            WaveformSeekBar(
+                bars = bars,
+                progress = progress,
+                played = if (mine) ChatColors.accentDark else ChatColors.accent,
+                rest = ChatColors.border,
+                enabled = active && total > 0,
+                onSeek = { fraction -> SharedAudioPlayer.seekTo((fraction * total).toLong()) },
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // خطأ التشغيل يخصّ المقطع النشط وحده؛ يُعرض مكان سطر
-                // الحالة بدل أن يبقى الفشل صامتاً بلا تفسير.
-                val showError = playbackError != null && activeKey == key
-                Text(
-                    if (showError) {
-                        playbackError.orEmpty()
-                    } else {
-                        statusLine(status, position, total, attachment)
-                    },
-                    fontSize = 10.5.sp,
-                    color = if (showError) ChatColors.rose else ChatColors.textMuted,
-                )
-                Spacer(Modifier.weight(1f))
-                if (active) {
-                    Box(
-                        Modifier
-                            .background(ChatColors.surfaceAlt, RoundedCornerShape(8.dp))
-                            .clickable {
-                                val steps = listOf(1f, 1.5f, 2f)
-                                val next = steps[(steps.indexOf(speed) + 1) % steps.size]
-                                SharedAudioPlayer.setSpeed(next)
-                            }
-                            .padding(horizontal = 6.dp, vertical = 1.dp),
-                    ) {
-                        Text(
-                            "${if (speed % 1f == 0f) speed.toInt().toString() else speed}×",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = ChatColors.accentDark,
-                        )
-                    }
-                }
-            }
+            Spacer(Modifier.height(3.dp))
+            // 4) سطر الحالة: رقم واحد لا رقمان (يزول التباس اتجاه RTL).
+            //    خطأ التشغيل يخصّ المقطع النشط وحده فيُعرض مكانه.
+            val showError = playbackError != null && activeKey == key
+            Text(
+                if (showError) {
+                    playbackError.orEmpty()
+                } else {
+                    statusLine(status, position, total, attachment)
+                },
+                fontSize = 10.5.sp,
+                color = if (showError) ChatColors.rose else ChatColors.textMuted,
+            )
         }
-        Icon(
-            if (isVoice) Icons.Filled.Mic else Icons.Filled.MusicNote,
-            contentDescription = null,
-            tint = ChatColors.textMuted,
-            modifier = Modifier.size(18.dp),
+    }
+}
+
+/** صورة المرسل الدائريّة بشارة ميكروفون (تزرقّ بعد الاستماع). */
+@Composable
+private fun VoiceAvatar(uid: String, name: String, photo: String, listened: Boolean) {
+    Box(Modifier.size(44.dp)) {
+        MemberAvatar(uid = uid, name = name, photo = photo, radius = 20)
+        Box(
+            Modifier
+                .align(Alignment.BottomEnd)
+                .size(16.dp)
+                .background(ChatColors.surface, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Mic,
+                contentDescription = null,
+                tint = if (listened) ChatColors.readBlue else ChatColors.textMuted,
+                modifier = Modifier.size(11.dp),
+            )
+        }
+    }
+}
+
+/** رقاقة سرعة التشغيل 1×/1.5×/2× (تحلّ محلّ الصورة أثناء التشغيل). */
+@Composable
+private fun SpeedChip(speed: Float) {
+    Box(
+        Modifier
+            .background(ChatColors.surfaceAlt, RoundedCornerShape(10.dp))
+            .clickable {
+                val steps = listOf(1f, 1.5f, 2f)
+                val next = steps[(steps.indexOf(speed) + 1) % steps.size]
+                SharedAudioPlayer.setSpeed(next)
+            }
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+    ) {
+        Text(
+            "${if (speed % 1f == 0f) speed.toInt().toString() else speed}×",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = ChatColors.accentDark,
         )
     }
+}
+
+/**
+ * موجة صوتيّة قابلة للسحب: أعمدة بزوايا دائريّة، المسموع منها بلون بارز،
+ * ونقطة سحب عند موضع التقدّم. مرآتيّة في RTL كي يسير التقدّم يميناً←يساراً.
+ */
+@Composable
+private fun WaveformSeekBar(
+    bars: List<Int>,
+    progress: Float,
+    played: Color,
+    rest: Color,
+    enabled: Boolean,
+    onSeek: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    Canvas(
+        modifier
+            .fillMaxWidth()
+            .height(26.dp)
+            .pointerInput(enabled, rtl) {
+                if (!enabled) return@pointerInput
+                detectTapGestures { offset ->
+                    val w = size.width.toFloat()
+                    if (w > 0f) onSeek(seekFraction(offset.x, w, rtl))
+                }
+            }
+            .pointerInput(enabled, rtl) {
+                if (!enabled) return@pointerInput
+                detectHorizontalDragGestures { change, _ ->
+                    val w = size.width.toFloat()
+                    if (w > 0f) onSeek(seekFraction(change.position.x, w, rtl))
+                }
+            },
+    ) {
+        val count = bars.size.coerceAtLeast(1)
+        val gap = 2.dp.toPx()
+        val barWidth = ((size.width - gap * (count - 1)) / count).coerceAtLeast(1.5f)
+        val minHeight = 3.dp.toPx()
+        val playedBars = (progress * count).toInt()
+        bars.forEachIndexed { i, value ->
+            val ratio = value.coerceIn(0, 100) / 100f
+            val h = (size.height * (0.16f + 0.84f * ratio)).coerceAtLeast(minHeight)
+            val left = if (rtl) {
+                size.width - (i + 1) * barWidth - i * gap
+            } else {
+                i * (barWidth + gap)
+            }
+            drawRoundRect(
+                color = if (i < playedBars) played else rest,
+                topLeft = Offset(left, (size.height - h) / 2f),
+                size = Size(barWidth, h),
+                cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
+            )
+        }
+        if (enabled) {
+            val r = 5.dp.toPx()
+            val x = if (rtl) size.width - progress * size.width else progress * size.width
+            drawCircle(
+                color = played,
+                radius = r,
+                center = Offset(x.coerceIn(r, (size.width - r).coerceAtLeast(r)), size.height / 2f),
+            )
+        }
+    }
+}
+
+/** موضع النقر/السحب كنسبة 0..1 مع مراعاة اتجاه الواجهة. */
+private fun seekFraction(x: Float, width: Float, rtl: Boolean): Float {
+    val f = (x / width).coerceIn(0f, 1f)
+    return if (rtl) 1f - f else f
 }
 
 private fun fmt(ms: Long): String {
@@ -376,8 +593,8 @@ private fun statusLine(
         "اضغط للتنزيل"
     }
 
-    total > 0 -> "${fmt(position)} / ${fmt(total)}"
-    else -> fmt(position)
+    // رقم واحد فقط: الزمن المنقضي أثناء التشغيل، والمدّة عند السكون.
+    else -> fmt(if (position > 0L) position else total)
 }
 
 /**

@@ -10,6 +10,7 @@ object AppPrefs {
     private const val FILE = "minbar_admin_prefs"
     private const val KEY_CHAT_MUTED = "admin_chat_muted_v1"
     private const val KEY_AUTO_DOWNLOAD = "chat_auto_download_v1"
+    private const val KEY_AUDIO_SPEED = "chat_audio_speed_v1"
 
     private lateinit var appContext: Context
 
@@ -30,4 +31,9 @@ object AppPrefs {
     var autoDownloadMedia: Boolean
         get() = prefs.getBoolean(KEY_AUTO_DOWNLOAD, true)
         set(value) = prefs.edit().putBoolean(KEY_AUTO_DOWNLOAD, value).apply()
+
+    /** سرعة تشغيل الصوتيّات المختارة (1× / 1.5× / 2×) — تُستعاد بين الجلسات. */
+    var audioSpeed: Float
+        get() = prefs.getFloat(KEY_AUDIO_SPEED, 1f)
+        set(value) = prefs.edit().putFloat(KEY_AUDIO_SPEED, value).apply()
 }

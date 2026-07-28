@@ -188,7 +188,7 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly([
           'senderId', 'senderName', 'senderPhoto', 'type', 'text', 'att',
           'replyTo', 'sentAtMs', 'createdAt', 'deleted', 'deletedBy',
-          'hiddenFor', 'reactions'
+          'hiddenFor', 'reactions', 'listenedBy'
         ])
         && request.resource.data.senderId == request.auth.uid
         && request.resource.data.senderName is string
@@ -216,6 +216,16 @@ service cloud.firestore {
           && request.resource.data.reactions is map
           && request.resource.data.reactions.diff(resource.data.reactions)
             .affectedKeys().hasOnly([request.auth.uid])
+        )
+        // 🎧 تعليم رسالة صوتيّة «مسموعة»: إضافة معرّفي وحدي (arrayUnion).
+        // get(..., []) لأنّ الرسائل الأقدم لا تحمل الحقل إطلاقاً.
+        || (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['listenedBy'])
+          && request.resource.data.listenedBy is list
+          && request.resource.data.listenedBy.hasAll(resource.data.get('listenedBy', []))
+          && request.resource.data.listenedBy.size()
+            == resource.data.get('listenedBy', []).size() + 1
+          && request.auth.uid in request.resource.data.listenedBy
         )
         || (
           (resource.data.senderId == request.auth.uid || isOwner() || isChatModerator())
@@ -308,6 +318,17 @@ service cloud.firestore {
               .hasOnly(['reactions'])
             && request.resource.data.reactions.diff(resource.data.reactions)
               .affectedKeys().hasOnly([request.auth.uid])
+          )
+          // 🎧 تعليم رسالة صوتيّة «مسموعة» (نظير قاعدة المجموعة تماماً).
+          || (
+            request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['listenedBy'])
+            && request.resource.data.listenedBy is list
+            && request.resource.data.listenedBy
+              .hasAll(resource.data.get('listenedBy', []))
+            && request.resource.data.listenedBy.size()
+              == resource.data.get('listenedBy', []).size() + 1
+            && request.auth.uid in request.resource.data.listenedBy
           )
           || (
             // الحذف عند الطرفين لصاحب الرسالة وحده.

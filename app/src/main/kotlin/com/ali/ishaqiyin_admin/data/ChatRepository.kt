@@ -91,6 +91,12 @@ data class ChatAttachment(
     val contentType: String,
     /** للرسائل الصوتيّة. */
     val durationMs: Long? = null,
+    /**
+     * 🌊 شكل موجة الرسالة الصوتيّة: حتى 40 قيمة في المدى 0..100، تُلتقط من
+     * `MediaRecorder.maxAmplitude` أثناء التسجيل. `null` للرسائل القديمة —
+     * الواجهة تولّد لها موجة حتميّة من معرّف الرسالة.
+     */
+    val waveform: List<Int>? = null,
 ) {
     fun toMap(): Map<String, Any?> = buildMap {
         put("url", url)
@@ -99,6 +105,7 @@ data class ChatAttachment(
         put("size", size)
         put("contentType", contentType)
         if (durationMs != null) put("durationMs", durationMs)
+        if (!waveform.isNullOrEmpty()) put("waveform", waveform)
     }
 
     companion object {
@@ -106,6 +113,10 @@ data class ChatAttachment(
             if (m !is Map<*, *>) return null
             val url = str(m["url"])
             if (url.isEmpty()) return null
+            // Firestore يعيد الأعداد كـ Long — نطبّعها ونقصّها إلى المدى 0..100.
+            val wave = (m["waveform"] as? List<*>)
+                ?.mapNotNull { (it as? Number)?.toInt()?.coerceIn(0, 100) }
+                ?.takeIf { it.isNotEmpty() }
             return ChatAttachment(
                 url = url,
                 path = str(m["path"]),
@@ -113,6 +124,7 @@ data class ChatAttachment(
                 size = (m["size"] as? Number)?.toLong() ?: 0L,
                 contentType = str(m["contentType"]).ifEmpty { "application/octet-stream" },
                 durationMs = (m["durationMs"] as? Number)?.toLong(),
+                waveform = wave,
             )
         }
     }
@@ -170,6 +182,11 @@ data class ChatMessage(
     val reactions: Map<String, String>,
     /** كتابة محليّة لم يؤكّدها الخادم بعد. */
     val pending: Boolean,
+    /**
+     * 🎧 من استمع إلى هذه الرسالة الصوتيّة (نمط واتساب: الميكروفون يزرقّ عند
+     * المرسِل). يُملأ بـ`arrayUnion` عند أوّل تشغيل، وغائب في الرسائل القديمة.
+     */
+    val listenedBy: List<String> = emptyList(),
 ) {
     val isMine: Boolean get() = senderId == FirebaseAuth.getInstance().currentUser?.uid
 
@@ -221,6 +238,7 @@ data class ChatMessage(
                 hiddenFor = (d["hiddenFor"] as? List<*>)?.map { str(it) } ?: emptyList(),
                 reactions = reactions,
                 pending = doc.metadata.hasPendingWrites(),
+                listenedBy = (d["listenedBy"] as? List<*>)?.map { str(it) } ?: emptyList(),
             )
         }
     }
@@ -480,6 +498,7 @@ object ChatRepository {
         type: ChatMessageType,
         caption: String = "",
         durationMs: Long? = null,
+        waveform: List<Int>? = null,
         replyTo: ChatReplyRef? = null,
         onProgress: ((Double) -> Unit)? = null,
         isAborted: (() -> Boolean)? = null,
@@ -503,6 +522,7 @@ object ChatRepository {
                     size = up.size,
                     contentType = up.contentType,
                     durationMs = durationMs,
+                    waveform = waveform,
                 ).toMap(),
                 "replyTo" to replyTo?.toMap(),
                 "sentAtMs" to System.currentTimeMillis(),
@@ -608,6 +628,18 @@ object ChatRepository {
             "reactions.$uid",
             if (emoji.isNullOrEmpty()) FieldValue.delete() else emoji,
         )
+    }
+
+    // ─── الاستماع للرسائل الصوتيّة ───────────────────────────
+
+    /**
+     * تعليم رسالة صوتيّة «مسموعة» عند أوّل تشغيل (يزرقّ ميكروفونها عند
+     * المرسِل). بلا انتظار — إشارة تجميليّة يجب ألّا تؤخّر التشغيل، وتُعاد
+     * تلقائيّاً عند عودة الشبكة كبقيّة كتابات Firestore.
+     */
+    fun markListened(messageId: String) {
+        if (uid.isEmpty()) return
+        messages.document(messageId).update("listenedBy", FieldValue.arrayUnion(uid))
     }
 
     // ─── هويّة المجموعة ──────────────────────────────────────

@@ -222,6 +222,7 @@ object DmRepository {
         type: ChatMessageType,
         caption: String = "",
         durationMs: Long? = null,
+        waveform: List<Int>? = null,
         replyTo: ChatReplyRef? = null,
         fromGroup: ChatReplyRef? = null,
         onProgress: ((Double) -> Unit)? = null,
@@ -246,6 +247,7 @@ object DmRepository {
                     size = up.size,
                     contentType = up.contentType,
                     durationMs = durationMs,
+                    waveform = waveform,
                 ).toMap(),
                 "replyTo" to replyTo?.toMap(),
                 // اقتباس المجموعة يبقى مع المرفق أيضاً («ردّ بشكل خاص» بمرفق).
@@ -368,6 +370,15 @@ object DmRepository {
             "reactions.$uid",
             if (emoji.isNullOrEmpty()) FieldValue.delete() else emoji,
         )
+    }
+
+    /**
+     * تعليم رسالة صوتيّة «مسموعة» عند أوّل تشغيل — نظير `markListened` في
+     * المجموعة (بلا انتظار، إشارة تجميليّة لا تؤخّر التشغيل).
+     */
+    fun markListened(threadId: String, messageId: String) {
+        if (uid.isEmpty()) return
+        msgs(threadId).document(messageId).update("listenedBy", FieldValue.arrayUnion(uid))
     }
 
     fun markRead(threadId: String) {
