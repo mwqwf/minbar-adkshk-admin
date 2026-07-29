@@ -21,6 +21,20 @@ object AppConfig {
         "502388954405-gak0aso996p37run9ohovjbinv31r3vk.apps.googleusercontent.com"
 
     val googleSignInConfigured: Boolean get() = GOOGLE_SERVER_CLIENT_ID.isNotEmpty()
+
+    /**
+     * خوادم ICE للمكالمات الصوتيّة في الخاص (WebRTC).
+     *
+     * ⚠️ قيد معروف: STUN وحده يكشف العنوان العامّ ولا يمرّر الصوت. خلف
+     * NAT صارم (symmetric NAT، بعض شبكات الجوّال ومقاسم الشركات) يفشل
+     * الاتّصال المباشر وتحتاج المكالمة خادم TURN لتمرير الصوت — وهو خدمة
+     * مدفوعة، فإضافته قرار مالك لاحق. يُضاف هنا بالصيغة نفسها مع
+     * اسم مستخدم وكلمة مرور عبر IceServer.builder(...).
+     */
+    val ICE_SERVERS = listOf("stun:stun.l.google.com:19302")
+
+    /** مهلة الرنين قبل اعتبار المكالمة فائتة (نمط واتساب). */
+    const val CALL_RING_TIMEOUT_MS = 45_000L
 }
 
 /** إعداد Firebase لمشروع التطبيق نفسه (mxqp-8d1e8) بحزمة اللوحة. */

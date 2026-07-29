@@ -20,6 +20,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BrokenImage
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.automirrored.filled.CallMissed
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.DownloadForOffline
@@ -326,9 +328,17 @@ private fun BubbleBody(
                     )
                 }
 
+            // 📞 سجلّ مكالمة صوتيّة (نمط واتساب): الفائتة/المرفوضة بالوردي.
+            ChatMessageType.Call -> CallLogBody(msg.text)
+
             ChatMessageType.File -> if (att == null) MissingAttachment() else FileTile(att)
         }
-        if (msg.type != ChatMessageType.Text && caption.isNotEmpty()) {
+        // سجلّ المكالمة نصّه هو المحتوى نفسه — لا يُكرَّر كتعليق مرفق.
+        if (
+            msg.type != ChatMessageType.Text &&
+            msg.type != ChatMessageType.Call &&
+            caption.isNotEmpty()
+        ) {
             Spacer(Modifier.height(6.dp))
             // تعليق المرفق يدعم الروابط أيضاً.
             ChatLinkText(caption, style = TextStyle(fontSize = 14.sp, lineHeight = 20.sp))
@@ -339,6 +349,32 @@ private fun BubbleBody(
 @Composable
 private fun MissingAttachment() {
     Text("مرفق غير متاح", color = ChatColors.textMuted, fontSize = 12.sp)
+}
+
+/**
+ * 📞 فقاعة سجلّ مكالمة: أيقونة هاتف + نصّ الرسالة كما كتبه المحرّك
+ * («مكالمة صوتيّة — 4:32» / «فائتة» / «مرفوضة»)، والفائتة أو المرفوضة
+ * بلون [ChatColors.rose] (نمط واتساب).
+ */
+@Composable
+private fun CallLogBody(text: String) {
+    val unanswered = text.contains("فائتة") || text.contains("مرفوضة")
+    val tint = if (unanswered) ChatColors.rose else ChatColors.accentDark
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            if (unanswered) Icons.AutoMirrored.Filled.CallMissed else Icons.Filled.Call,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(17.dp),
+        )
+        Spacer(Modifier.width(7.dp))
+        Text(
+            text.ifBlank { "مكالمة صوتيّة" },
+            color = tint,
+            fontSize = 13.5.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
 }
 
 @Composable

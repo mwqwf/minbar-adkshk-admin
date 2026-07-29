@@ -1,8 +1,11 @@
 package com.ali.ishaqiyin_admin
 
 import android.app.Application
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import com.ali.ishaqiyin_admin.core.FirebaseConfig
 import com.ali.ishaqiyin_admin.data.AdminChannels
@@ -101,6 +104,26 @@ class AdminApplication : Application() {
                     getString(R.string.admin_urgent_channel_name),
                     NotificationManager.IMPORTANCE_HIGH,
                 ).apply { description = getString(R.string.admin_urgent_channel_desc) },
+                // 📞 قناة المكالمات: أهميّة قصوى + نغمة رنين النظام واهتزاز،
+                // وإلّا وصلت المكالمة الواردة صامتة فلا يراها المشرف.
+                NotificationChannel(
+                    AdminChannels.CALLS,
+                    "مكالمات الإدارة",
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = "مكالمات صوتيّة واردة من المشرفين"
+                    setSound(
+                        RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build(),
+                    )
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 700, 700, 700, 700)
+                    setBypassDnd(true)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                },
             ),
         )
     }

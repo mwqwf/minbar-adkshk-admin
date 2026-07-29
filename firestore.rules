@@ -299,7 +299,7 @@ service cloud.firestore {
         allow create: if isDmMember()
           && request.resource.data.senderId == request.auth.uid
           && request.resource.data.type in
-            ['text', 'image', 'video', 'audio', 'voice', 'file']
+            ['text', 'image', 'video', 'audio', 'voice', 'file', 'call']
           && request.resource.data.text is string
           && request.resource.data.text.size() <= 5000
           && request.resource.data.sentAtMs is int
@@ -339,6 +339,138 @@ service cloud.firestore {
           )
         );
         allow delete: if false;
+      }
+    }
+
+    // ─── المكالمات الصوتيّة بين المشرفين (إشارات WebRTC) ───────────────
+    // وثيقة لكلّ مكالمة + مجموعتا ICE candidates. لا يصل إليها إلّا طرفاها
+    // وكلاهما مشرف معتمَد، والحذف ممنوع تماماً (سجلّ المكالمات).
+    match /admin_calls/{callId} {
+      // ⚠️ تُعرَّف داخل الكتلة كي يكون callId في نطاقها (نظير dmMembers).
+      function callData() {
+        return get(/databases/$(database)/documents/admin_calls/$(callId))
+          .data;
+      }
+      function callMembers() {
+        return callData().members;
+      }
+      function isCallMember() {
+        return canManageContent()
+          && request.auth.uid in callMembers();
+      }
+
+      allow read: if canManageContent()
+        && request.auth.uid in resource.data.members;
+      // إنشاء المكالمة: المُنشئ هو المتّصل، وطرفاها اثنان كلاهما في members،
+      // وتبدأ رنيناً دائماً (لا يجوز إنشاء مكالمة «مقبولة» ابتداءً).
+      allow create: if canManageContent()
+        && request.resource.data.keys().hasOnly([
+          'members', 'callerId', 'callerName', 'callerPhoto',
+          'calleeId', 'calleeName', 'status', 'createdAtMs', 'createdAt', 'offer',
+        ])
+        && request.resource.data.members is list
+        && request.resource.data.members.size() == 2
+        && request.resource.data.callerId is string
+        && request.resource.data.calleeId is string
+        && request.resource.data.callerId != request.resource.data.calleeId
+        && request.resource.data.members.hasAll([
+          request.resource.data.callerId,
+          request.resource.data.calleeId,
+        ])
+        && request.auth.uid == request.resource.data.callerId
+        && request.resource.data.callerName is string
+        && request.resource.data.callerName.size() <= 100
+        && request.resource.data.callerPhoto is string
+        && request.resource.data.callerPhoto.size() <= 2048
+        && request.resource.data.calleeName is string
+        && request.resource.data.calleeName.size() <= 100
+        && request.resource.data.status == 'ringing'
+        && request.resource.data.createdAtMs is int
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.offer is map
+        && request.resource.data.offer.keys().hasOnly(['type', 'sdp'])
+        && request.resource.data.offer.type == 'offer'
+        && request.resource.data.offer.sdp is string
+        && request.resource.data.offer.sdp.size() <= 500000;
+      /** الحالات النهائيّة: لا تحديث بعدها إطلاقاً. */
+      function callIsFinal() {
+        return resource.data.status in ['declined', 'ended', 'missed', 'busy'];
+      }
+      function callTouched() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+
+      allow update: if canManageContent()
+        && request.auth.uid in resource.data.members
+        && !callIsFinal()
+        && (
+          // الجواب والقبول عمليّة ذريّة يملكها المستقبِل وحده.
+          (
+            resource.data.status == 'ringing'
+            && request.auth.uid == resource.data.calleeId
+            && callTouched().hasOnly(['answer', 'status', 'answeredAtMs'])
+            && request.resource.data.status == 'accepted'
+            && request.resource.data.answer is map
+            && request.resource.data.answer.keys().hasOnly(['type', 'sdp'])
+            && request.resource.data.answer.type == 'answer'
+            && request.resource.data.answer.sdp is string
+            && request.resource.data.answer.sdp.size() <= 500000
+            && request.resource.data.answeredAtMs is int
+          )
+          // الرفض والانشغال للمستقبِل فقط، والفائتة للمتّصل فقط.
+          || (
+            resource.data.status == 'ringing'
+            && request.auth.uid == resource.data.calleeId
+            && request.resource.data.status in ['declined', 'busy']
+            && callTouched().hasOnly(['status', 'endedAtMs', 'endedBy'])
+            && request.resource.data.endedAtMs is int
+            && request.resource.data.endedBy == request.auth.uid
+          )
+          || (
+            resource.data.status == 'ringing'
+            && request.auth.uid == resource.data.callerId
+            && request.resource.data.status == 'missed'
+            && callTouched().hasOnly(['status', 'endedAtMs', 'endedBy'])
+            && request.resource.data.endedAtMs is int
+            && request.resource.data.endedBy == request.auth.uid
+          )
+          // أيّ طرف يستطيع إنهاء الرنين أو المكالمة المقبولة.
+          || (
+            resource.data.status in ['ringing', 'accepted']
+            && request.resource.data.status == 'ended'
+            && callTouched().hasOnly(['status', 'endedAtMs', 'endedBy'])
+            && request.resource.data.endedAtMs is int
+            && request.resource.data.endedBy == request.auth.uid
+          )
+        );
+      allow delete: if false;
+
+      match /callerCandidates/{candidateId} {
+        allow read: if isCallMember();
+        allow create: if isCallMember()
+          && request.auth.uid == callData().callerId
+          && request.resource.data.keys().hasOnly([
+            'sdpMid', 'sdpMLineIndex', 'candidate', 'createdAtMs',
+          ])
+          && request.resource.data.sdpMLineIndex is int
+          && request.resource.data.candidate is string
+          && request.resource.data.candidate.size() <= 5000
+          && request.resource.data.createdAtMs is int;
+        allow update, delete: if false;
+      }
+
+      match /calleeCandidates/{candidateId} {
+        allow read: if isCallMember();
+        allow create: if isCallMember()
+          && request.auth.uid == callData().calleeId
+          && request.resource.data.keys().hasOnly([
+            'sdpMid', 'sdpMLineIndex', 'candidate', 'createdAtMs',
+          ])
+          && request.resource.data.sdpMLineIndex is int
+          && request.resource.data.candidate is string
+          && request.resource.data.candidate.size() <= 5000
+          && request.resource.data.createdAtMs is int;
+        allow update, delete: if false;
       }
     }
 

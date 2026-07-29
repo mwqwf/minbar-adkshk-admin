@@ -50,8 +50,12 @@ const val TYPING_WINDOW_MS = 6_000L
 /** التفاعلات السريعة (مطابقة لواتساب). */
 val QUICK_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
 
-/** نوع الرسالة — يحدّد شكل الفقاعة في الواجهة. */
-enum class ChatMessageType { Text, Image, Video, Audio, Voice, File }
+/**
+ * نوع الرسالة — يحدّد شكل الفقاعة في الواجهة.
+ * `Call` سجلّ مكالمة صوتيّة في المحادثة الخاصّة (نمط واتساب): رسالة نصّيّة
+ * بلا مرفق تكتبها `CallRepository.logCallMessage` عند انتهاء المكالمة.
+ */
+enum class ChatMessageType { Text, Image, Video, Audio, Voice, File, Call }
 
 fun chatTypeFromString(s: String?): ChatMessageType = when (s) {
     "image" -> ChatMessageType.Image
@@ -59,6 +63,7 @@ fun chatTypeFromString(s: String?): ChatMessageType = when (s) {
     "audio" -> ChatMessageType.Audio
     "voice" -> ChatMessageType.Voice
     "file" -> ChatMessageType.File
+    "call" -> ChatMessageType.Call
     else -> ChatMessageType.Text
 }
 
@@ -69,6 +74,7 @@ fun chatTypeToString(t: ChatMessageType): String = when (t) {
     ChatMessageType.Audio -> "audio"
     ChatMessageType.Voice -> "voice"
     ChatMessageType.File -> "file"
+    ChatMessageType.Call -> "call"
 }
 
 /** تسمية عربيّة مختصرة للنوع (تظهر في معاينة الردّ/التثبيت). */
@@ -79,6 +85,7 @@ fun chatTypeLabel(t: ChatMessageType): String = when (t) {
     ChatMessageType.Audio -> "🎵 مقطع صوتي"
     ChatMessageType.Voice -> "🎙️ رسالة صوتيّة"
     ChatMessageType.File -> "📎 ملفّ"
+    ChatMessageType.Call -> "📞 مكالمة صوتيّة"
 }
 
 /** مرفق رسالة (صورة/فيديو/صوت/ملفّ) مرفوع إلى Storage. */

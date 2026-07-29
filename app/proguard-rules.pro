@@ -5,3 +5,9 @@
 -keep class com.ali.ishaqiyin_admin.data.AdminMessagingService { *; }
 -keepattributes Signature
 -keepattributes *Annotation*
+
+# WebRTC (io.getstream:stream-webrtc-android): مكتبة org.webrtc تستدعي أصنافها
+# وتوابعها من كود أصليّ عبر JNI، فلا يراها R8 مستعمَلة ويحذفها أو يعيد
+# تسميتها — فتفشل المكالمات في نسخة release وحدها بصمت تامّ.
+-keep class org.webrtc.** { *; }
+-dontwarn org.webrtc.**

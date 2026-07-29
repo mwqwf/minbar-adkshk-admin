@@ -12,6 +12,15 @@
     <!-- مواصلة رفع الدروس بعد مغادرة الشاشة أو إغلاق التطبيق -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- المكالمات الصوتيّة في المحادثات الخاصّة بين المشرفين (WebRTC):
+         الخدمة الأماميّة تبقى حيّة أثناء المكالمة، وتوجيه الصوت يحتاج
+         MODIFY_AUDIO_SETTINGS، وسمّاعة البلوتوث تحتاج BLUETOOTH_CONNECT
+         على API 31+، وشاشة الرنين فوق القفل تحتاج USE_FULL_SCREEN_INTENT. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:name=".AdminApplication"
@@ -49,11 +58,29 @@
             </intent-filter>
         </activity>
 
+        <!-- شاشة المكالمة: تظهر فوق شاشة القفل وتوقظ الشاشة عند الرنين،
+             ولا تُترك أثراً في «الأخيرة» بعد انتهاء المكالمة. -->
+        <activity
+            android:name=".call.CallActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.MinbarAdmin" />
+
         <!-- رفع الدروس يستمرّ في الخلفية عبر WorkManager. -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
+
+        <!-- دورة حياة WebRTC والصوت أثناء المكالمة. -->
+        <service
+            android:name=".call.CallService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
         <service
             android:name=".data.AdminMessagingService"

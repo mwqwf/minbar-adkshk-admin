@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -66,6 +67,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ali.ishaqiyin_admin.call.CallActivity
 import com.ali.ishaqiyin_admin.data.ChatMediaStore
 import com.ali.ishaqiyin_admin.data.ChatMessage
 import com.ali.ishaqiyin_admin.data.ChatMessageType
@@ -501,6 +503,27 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                                 other?.isOnline == true -> ChatColors.online
                                 else -> ChatColors.textMuted
                             },
+                        )
+                    }
+                    // 📞 مكالمة صوتيّة مع هذا المشرف (شاشة مستقلّة تدير
+                    // الإذن والإشارات، فلا تتأثّر هذه الشاشة بشيء).
+                    IconButton(
+                        onClick = {
+                            context.startActivity(
+                                CallActivity.outgoingIntent(
+                                    context = context,
+                                    peerUid = otherUid,
+                                    peerName = other?.displayName ?: otherName,
+                                    peerPhoto = other?.displayPhoto.orEmpty(),
+                                ),
+                            )
+                        },
+                    ) {
+                        Icon(
+                            Icons.Filled.Call,
+                            contentDescription = "مكالمة صوتيّة",
+                            tint = ChatColors.accent,
+                            modifier = Modifier.size(20.dp),
                         )
                     }
                     IconButton(

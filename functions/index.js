@@ -1668,6 +1668,9 @@ exports.onAdminDmMessageCreated = functions.firestore
   .onCreate(async (snap, context) => {
     const value = snap.data() || {};
     if (value.deleted === true) return null;
+    // سجلّ المكالمة رسالةٌ في الثريد لكنّه ليس «رسالة خاصّة» — إشعاره يصل
+    // بعد كلّ مكالمة (حتى الفائتة) فيبدو تكراراً مربكاً بلا فائدة.
+    if (cleanString(value.type, 20) === "call") return null;
     const senderId = cleanString(value.senderId, 180);
     const senderName = cleanString(value.senderName || "مشرف", 100);
     const threadId = cleanString(context.params.threadId, 400);
@@ -2451,6 +2454,107 @@ exports.onCodeVerifyRequested = functions.firestore
     } catch (error) {
       console.error("onCodeVerifyRequested failed", error);
       await snap.ref.update({ result: "error" }).catch(() => {});
+    }
+    return null;
+  });
+
+// ─── المكالمات الصوتيّة بين المشرفين (تنبيه data-only) ──────────────
+//
+// ⚠️ لا تستعمل sendToAdminTargets هنا إطلاقاً: هو يُدرج كتلة notification
+// وقناة admin_alerts، فيرسم النظام الإشعار بنفسه في الخلفية ولا يعمل كود
+// المكالمة (onMessageReceived) أصلاً. المكالمة تحتاج رسالة data-only
+// بأولوية عالية كي يستيقظ الجهاز ويعرض شاشة الرنين هو.
+//
+// وكتم الدردشة (chatMuted) لا يُطبَّق هنا عمداً: الكتم للرسائل لا للمكالمات.
+async function sendCallPush(targetUid, data) {
+  const target = cleanString(targetUid, 180);
+  if (!target) return { successCount: 0, failureCount: 0 };
+  const targets = (await activeAdminTokens(false)).filter(
+    (item) => item.uid === target,
+  );
+  if (!targets.length) return { successCount: 0, failureCount: 0 };
+  let successCount = 0;
+  let failureCount = 0;
+  for (let offset = 0; offset < targets.length; offset += 500) {
+    const chunk = targets.slice(offset, offset + 500);
+    const response = await admin.messaging().sendEachForMulticast({
+      tokens: chunk.map((item) => item.token),
+      data: safeData(data),
+      android: { priority: "high" },
+    });
+    successCount += response.successCount;
+    failureCount += response.failureCount;
+    const removals = [];
+    response.responses.forEach((item, index) => {
+      const code = item.error && item.error.code || "";
+      if (code.includes("registration-token-not-registered")
+          || code.includes("invalid-registration-token")) {
+        removals.push(chunk[index].ref.delete());
+      }
+    });
+    await Promise.all(removals);
+  }
+  return { successCount, failureCount };
+}
+
+// الحالات التي تُسقط شاشة الرنين عند الطرفين.
+const CALL_CANCEL_STATUSES = ["declined", "ended", "missed", "busy"];
+
+exports.onAdminCallCreated = functions.firestore
+  .document("admin_calls/{callId}")
+  .onCreate(async (snap, context) => {
+    const value = snap.data() || {};
+    if (cleanString(value.status, 20) !== "ringing") return null;
+    const calleeId = cleanString(value.calleeId, 180);
+    if (!calleeId) return null;
+    try {
+      await sendCallPush(calleeId, {
+        type: "admin_call",
+        action: "incoming",
+        callId: cleanString(context.params.callId, 200),
+        callerId: cleanString(value.callerId, 180),
+        callerName: cleanString(value.callerName || "مشرف", 100),
+        callerPhoto: cleanString(value.callerPhoto, 2048),
+      });
+    } catch (error) {
+      console.error("onAdminCallCreated failed", error);
+    }
+    return null;
+  });
+
+exports.onAdminCallUpdated = functions.firestore
+  .document("admin_calls/{callId}")
+  .onUpdate(async (change, context) => {
+    const before = change.before.data() || {};
+    const after = change.after.data() || {};
+    const beforeStatus = cleanString(before.status, 20);
+    const afterStatus = cleanString(after.status, 20);
+    if (beforeStatus === afterStatus) return null;
+    const accepted = afterStatus === "accepted";
+    if (!accepted && !CALL_CANCEL_STATUSES.includes(afterStatus)) return null;
+
+    const callId = cleanString(context.params.callId, 200);
+    // عند القبول نوقف رنين أجهزة المستقبِل الأخرى فقط؛ المتّصل يبقى في
+    // المكالمة. أمّا النهاية فتسقط الشاشة عند الطرفين.
+    const members = accepted
+      ? [after.calleeId]
+      : (Array.isArray(after.members) ? after.members : [])
+        .concat([after.callerId, after.calleeId]);
+    const targets = [];
+    members.forEach((raw) => {
+      const uid = cleanString(raw, 180);
+      if (uid && !targets.includes(uid)) targets.push(uid);
+    });
+    if (!targets.length) return null;
+
+    try {
+      await Promise.all(targets.map((uid) => sendCallPush(uid, {
+        type: "admin_call",
+        action: "cancel",
+        callId,
+      })));
+    } catch (error) {
+      console.error("onAdminCallUpdated failed", error);
     }
     return null;
   });

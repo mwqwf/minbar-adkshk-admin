@@ -159,7 +159,13 @@ dependencies {
     // تسجيل الدخول بـ Google (بديل google_sign_in) عبر Credential Manager.
     implementation("androidx.credentials:credentials:1.5.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
+
+    // المكالمات الصوتيّة في الخاص (WebRTC): حزمة الأصناف org.webrtc.* — وهي
+    // النسخة الحيّة الوحيدة من WebRTC لأندرويد على Maven Central بعد موت
+    // org.webrtc:google-webrtc مع JCenter.
+    implementation("io.getstream:stream-webrtc-android:1.3.8")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
