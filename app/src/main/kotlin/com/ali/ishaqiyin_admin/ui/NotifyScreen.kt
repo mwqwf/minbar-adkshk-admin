@@ -12,8 +12,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.Message
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -30,23 +30,31 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.google.firebase.functions.FirebaseFunctions
+import com.ali.ishaqiyin_admin.data.AdminNotificationService
+import com.ali.ishaqiyin_admin.data.NotificationSendException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 
 /**
  * شاشة «إرسال إشعار» — نظير لوحة الإشعارات في نبراس.
  * تستدعي دالة سحابية ترسل دفعاً عبر FCM لكل مستخدمي تطبيق «منبر ادكصهك».
+ *
+ * الإرسال كلّه في [AdminNotificationService.sendBroadcast]: هي وحدها التي
+ * تكلّم الخادم وتترجم كل فشل إلى عربية. الشاشة لا تعرض أبداً نصّ استثناء
+ * خاماً (كان يظهر «تعذّر إرسال الإشعار: INTERNAL» — عربية مختلطة بإنجليزية).
  */
 @Composable
 fun NotifyScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
+    var title by remember { mutableStateOf("") }
     var body by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
 
-    val canSend = body.trim().isNotEmpty() && body.trim().length <= 500 && !sending
+    // الخادم يقبل العنوان أو النص (أحدهما يكفي)، ويرفض الطلب إن خلا الاثنان.
+    val hasContent = title.trim().isNotEmpty() || body.trim().isNotEmpty()
+    val canSend = hasContent && !sending
 
     AdminScaffold(title = "إرسال إشعار", onBack = onBack) { padding ->
         Column(
@@ -70,21 +78,43 @@ fun NotifyScreen(onBack: () -> Unit) {
             }
             Spacer(Modifier.height(16.dp))
             AdminTextField(
+                value = title,
+                onValueChange = {
+                    if (it.length <= AdminNotificationService.TITLE_MAX) title = it
+                },
+                label = "العنوان (اختياري)",
+                enabled = !sending,
+                leadingIcon = { Icon(Icons.Filled.Title, contentDescription = null) },
+            )
+            Spacer(Modifier.height(14.dp))
+            AdminTextField(
                 value = body,
-                onValueChange = { if (it.length <= 500) body = it },
+                onValueChange = {
+                    if (it.length <= AdminNotificationService.BODY_MAX) body = it
+                },
                 label = "نص الإشعار",
+                enabled = !sending,
                 singleLine = false,
                 minLines = 4,
                 maxLines = 6,
                 leadingIcon = { Icon(Icons.AutoMirrored.Filled.Message, contentDescription = null) },
             )
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "${body.length}/${AdminNotificationService.BODY_MAX}",
+                fontSize = 12.sp,
+                color = kMuted,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.End,
+            )
+            Spacer(Modifier.height(12.dp))
             if (message.isNotEmpty()) {
                 Text(
                     message,
                     textAlign = TextAlign.Center,
                     color = if (isError) kDanger else kGreen,
                     fontWeight = FontWeight.SemiBold,
+                    lineHeight = 22.sp,
                     modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
                 )
             }
@@ -96,35 +126,30 @@ fun NotifyScreen(onBack: () -> Unit) {
                     isError = false
                     scope.launch {
                         try {
-                            val response = FirebaseFunctions.getInstance()
-                                .getHttpsCallable("sendNotification")
-                                .call(
-                                    mapOf(
-                                        "body" to body.trim(),
-                                    ),
-                                ).await()
-                            val data = response.getData()
-                            if (data is Map<*, *> && data["success"] == false) {
-                                error((data["error"] ?: "رفض الخادم الإرسال").toString())
-                            }
-                            val sent = (data as? Map<*, *>)?.get("sent") as? Number
-                            val failed = (data as? Map<*, *>)?.get("failed") as? Number
+                            val outcome = AdminNotificationService.sendBroadcast(title, body)
                             sending = false
+                            title = ""
                             body = ""
-                            message = if (sent == null) {
-                                "أكّد الخادم استلام الإشعار وإرساله."
-                            } else {
-                                "أكّد الخادم الإرسال إلى ${sent.toInt()} جهاز" +
-                                    if ((failed?.toInt() ?: 0) > 0) {
-                                        "، وتعذّر على ${failed?.toInt()}."
-                                    } else {
-                                        "."
-                                    }
+                            isError = false
+                            val sent = outcome.sent
+                            val failed = outcome.failed ?: 0
+                            message = when {
+                                sent == null ->
+                                    "تم إرسال الإشعار إلى كل مستخدمي التطبيق."
+                                failed > 0 ->
+                                    "تم الإرسال إلى $sent جهاز، وتعذّر على $failed."
+                                else ->
+                                    "تم الإرسال إلى $sent جهاز."
                             }
+                        } catch (e: CancellationException) {
+                            sending = false
+                            throw e
                         } catch (e: Exception) {
                             sending = false
                             isError = true
-                            message = "تعذّر إرسال الإشعار: ${e.message ?: e}"
+                            // رسالة عربية مضمونة: لا يُعرض e.message الخام أبداً.
+                            message = (e as? NotificationSendException)?.message
+                                ?: "تعذّر إرسال الإشعار. تحقّق من الاتصال ثم أعد المحاولة."
                         }
                     }
                 },

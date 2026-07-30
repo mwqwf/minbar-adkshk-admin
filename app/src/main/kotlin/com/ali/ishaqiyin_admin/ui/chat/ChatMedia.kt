@@ -437,6 +437,7 @@ fun AudioBubblePlayer(
                 played = if (mine) ChatColors.accentDark else ChatColors.accent,
                 rest = ChatColors.border,
                 enabled = active && total > 0,
+                playing = active && playing,
                 onSeek = { fraction -> SharedAudioPlayer.seekTo((fraction * total).toLong()) },
             )
             Spacer(Modifier.height(3.dp))
@@ -472,7 +473,9 @@ private fun VoiceAvatar(uid: String, name: String, photo: String, listened: Bool
                 Icons.Filled.Mic,
                 contentDescription = null,
                 tint = if (listened) ChatColors.readBlue else ChatColors.textMuted,
-                modifier = Modifier.size(11.dp),
+                // 12dp لا 11: أزرق واتساب أفتح من الأزرق السابق، فيحتاج
+                // مساحة مصمتة أكبر قليلاً ليبقى واضحاً على الدائرة البيضاء.
+                modifier = Modifier.size(12.dp),
             )
         }
     }
@@ -501,8 +504,13 @@ private fun SpeedChip(speed: Float) {
 }
 
 /**
- * موجة صوتيّة قابلة للسحب: أعمدة بزوايا دائريّة، المسموع منها بلون بارز،
- * ونقطة سحب عند موضع التقدّم. مرآتيّة في RTL كي يسير التقدّم يميناً←يساراً.
+ * موجة صوتيّة قابلة للسحب بنمط واتساب الحديث: أعمدة نحيفة بفجوات واضحة
+ * وزوايا دائريّة، المسموع منها بلون بارز، والعمود الجاري أثناء التشغيل
+ * ([playing]) أعلى قليلاً وبعتامة كاملة فيبدو كمؤشّر حيّ. ونقطة سحب عند
+ * موضع التقدّم. مرآتيّة في RTL كي يسير التقدّم يميناً←يساراً.
+ *
+ * عند اكتمال التشغيل يعود [progress] إلى صفر (المشغّل يفرّغ مقطعه النشط)،
+ * فترجع الموجة كاملةً بلون واحد لا نصف ملوّنة.
  */
 @Composable
 private fun WaveformSeekBar(
@@ -511,6 +519,7 @@ private fun WaveformSeekBar(
     played: Color,
     rest: Color,
     enabled: Boolean,
+    playing: Boolean,
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -535,27 +544,37 @@ private fun WaveformSeekBar(
             },
     ) {
         val count = bars.size.coerceAtLeast(1)
-        val gap = 2.dp.toPx()
-        val barWidth = ((size.width - gap * (count - 1)) / count).coerceAtLeast(1.5f)
+        // أعمدة أنحف وفجوة أوسع = مظهر واتساب الحديث (كانت 2dp/2dp فبدت
+        // الموجة كتلة مصمتة على الشاشات الضيّقة).
+        val gap = 2.5.dp.toPx()
+        val barWidth = ((size.width - gap * (count - 1)) / count).coerceAtLeast(1.dp.toPx())
         val minHeight = 3.dp.toPx()
         val playedBars = (progress * count).toInt()
+        // العمود الجاري أثناء التشغيل وحده: لا يُبرَز عند السكون كي لا يبدو
+        // عموداً شاذّاً في موجة ساكنة.
+        val cursor = if (playing) playedBars.coerceIn(0, count - 1) else -1
         bars.forEachIndexed { i, value ->
             val ratio = value.coerceIn(0, 100) / 100f
-            val h = (size.height * (0.16f + 0.84f * ratio)).coerceAtLeast(minHeight)
+            // النسبة تُسقَّف بـ1 قبل الضرب في الارتفاع، فلا يتجاوز العمود
+            // المبرَز حدود اللوحة (Canvas لا يقصّ ما يخرج عنها).
+            val boost = if (i == cursor) 1.18f else 1f
+            val fraction = ((0.16f + 0.84f * ratio) * boost).coerceAtMost(1f)
+            val h = (size.height * fraction).coerceAtLeast(minHeight)
             val left = if (rtl) {
                 size.width - (i + 1) * barWidth - i * gap
             } else {
                 i * (barWidth + gap)
             }
             drawRoundRect(
-                color = if (i < playedBars) played else rest,
+                color = if (i < playedBars || i == cursor) played else rest,
                 topLeft = Offset(left, (size.height - h) / 2f),
                 size = Size(barWidth, h),
                 cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
+                alpha = if (cursor >= 0 && i != cursor) 0.85f else 1f,
             )
         }
         if (enabled) {
-            val r = 5.dp.toPx()
+            val r = 4.5.dp.toPx()
             val x = if (rtl) size.width - progress * size.width else progress * size.width
             drawCircle(
                 color = played,

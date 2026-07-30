@@ -1,13 +1,19 @@
 package com.ali.ishaqiyin_admin.data
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -32,6 +38,12 @@ import kotlin.coroutines.resumeWithException
 /** قناة إشعار تقدّم الرفع (منخفضة الأهميّة — لا تُصدر صوتاً). */
 private const val UPLOAD_CHANNEL = "admin_uploads"
 private const val UPLOAD_NOTIFICATION_ID = 4711
+
+/**
+ * أساس معرّفات إشعارات الاكتمال — بعيد عن [UPLOAD_NOTIFICATION_ID] فلا
+ * يمحو إشعارُ اكتمالٍ إشعارَ التقدّم الجاري.
+ */
+private const val DONE_NOTIFICATION_BASE = 500_000
 
 /**
  * 📤 عامل رفع الدروس — يعالج الطابور **تسلسليّاً بالدور** فيصل أوّل درس
@@ -92,6 +104,9 @@ class LessonUploadWorker(
                 )
                 UploadQueue.remove(item.id)
                 UploadQueue.setProgress(null)
+                // إشعار الاكتمال: المشرف أغلق الشاشة غالباً، فبلا هذا لا
+                // يعرف أنّ درسه وصل إلّا بالعودة إلى اللوحة.
+                notifyUploadDone(item)
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 // إيقاف WorkManager (فقدان قيد الشبكة/انتهاء مهلة الخدمة
                 // الأماميّة) ليس فشلاً للدرس: لا يُحسب من المحاولات ولا
@@ -225,6 +240,56 @@ class LessonUploadWorker(
                 NotificationManager.IMPORTANCE_LOW,
             ),
         )
+    }
+
+    /**
+     * 🔔 إشعار «اكتمل رفع: <العنوان>» على قناة تنبيهات الإدارة نفسها التي
+     * ينشئها AdminApplication (admin_alerts).
+     *
+     * مستقلّ عن إشعار التقدّم: ذاك مُلازم (ongoing) ويختفي بانتهاء العامل،
+     * فلولا هذا لم يبقَ للمشرف أثر يخبره بالاكتمال. ومعرّفه مشتقّ من معرّف
+     * العنصر كي لا يمحو إشعارُ درسٍ إشعارَ الذي قبله.
+     */
+    private fun notifyUploadDone(item: PendingUpload) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                applicationContext,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        val name = item.title.ifBlank { item.fileName }
+        val text = "اكتمل رفع: $name"
+        val remaining = UploadQueue.liveCount()
+        val builder = NotificationCompat.Builder(applicationContext, AdminChannels.ALERTS)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("اكتمل رفع الدرس")
+            .setContentText(text)
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    if (remaining > 0) "$text\nبقي $remaining في طابور الرفع." else text,
+                ),
+            )
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+        applicationContext.packageManager
+            .getLaunchIntentForPackage(applicationContext.packageName)
+            ?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP) }
+            ?.let { intent ->
+                builder.setContentIntent(
+                    PendingIntent.getActivity(
+                        applicationContext,
+                        item.id.hashCode(),
+                        intent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                    ),
+                )
+            }
+        runCatching {
+            NotificationManagerCompat.from(applicationContext)
+                .notify(DONE_NOTIFICATION_BASE + (item.id.hashCode() and 0xFFFF), builder.build())
+        }
     }
 
     private fun foregroundInfo(title: String?, percent: Int): ForegroundInfo {

@@ -104,9 +104,10 @@ enum class VoicePhase {
  * 🎙️ حالة تسجيل الرسائل الصوتيّة — مصدر واحد لشاشتَي المجموعة والخاصّ
  * (كان المنطق مكرّراً حرفيّاً فيهما فيتباعد سلوكهما مع كلّ إصلاح).
  *
- * تُنشأ عبر [rememberVoiceRecorderState] وتُقاد من إيماءة واحدة على زرّ
- * الميكروفون: ضغط مطوّل = بدء، سحب جانبيّ = إلغاء، سحب للأعلى = قفل،
- * وإفلات = إرسال.
+ * تُنشأ عبر [rememberVoiceRecorderState] وتُقاد من زرّ الميكروفون بإيماءتين
+ * متعايشتين كما في واتساب الحديث: **نقرة قصيرة** = بدء تسجيل مقفول فوراً،
+ * و**ضغط مطوّل** = تسجيل ما دام الإصبع (سحب جانبيّ = إلغاء، سحب للأعلى =
+ * قفل، وإفلات = إرسال).
  */
 @Stable
 class VoiceRecorderState internal constructor(
@@ -175,8 +176,10 @@ class VoiceRecorderState internal constructor(
     }
 
     /**
-     * بدء التسجيل بعد ثبوت الضغط المطوّل. إذن الميكروفون خطر ويجب طلبه
-     * وقت التشغيل — وبلا طلبه كان التسجيل يفشل بصمت على أوّل تثبيت.
+     * بدء التسجيل (بعد ثبوت الضغط المطوّل، أو فوراً عند النقرة القصيرة عبر
+     * [beginLocked]). إذن الميكروفون خطر ويجب طلبه وقت التشغيل — وبلا طلبه
+     * كان التسجيل يفشل بصمت على أوّل تثبيت. ويُرفض أيّ بدء ثانٍ فوق تسجيل
+     * جارٍ (`phase != Idle`).
      */
     internal fun beginHold(): Boolean {
         if (phase != VoicePhase.Idle) return false
@@ -213,6 +216,18 @@ class VoiceRecorderState internal constructor(
         dragX = 0f
         dragY = 0f
         phase = VoicePhase.Locked
+    }
+
+    /**
+     * نقرة واحدة على الميكروفون = تسجيل فوريّ **مقفول** (سلوك واتساب
+     * الحديث): يبدأ التسجيل ويستمرّ بعد رفع الإصبع، وتُدار بقيّته من أزرار
+     * شريط التسجيل (حذف/إيقاف مؤقّت/إنهاء/إرسال). يمرّ بـ[beginHold] فيرث
+     * منها طلب إذن الميكروفون ومنع التسجيل المتزامن.
+     */
+    internal fun beginLocked(): Boolean {
+        if (!beginHold()) return false
+        lock()
+        return true
     }
 
     /** إفلات الإصبع = إرسال (ما لم يكن مقفولاً أو ملغى). */
@@ -385,7 +400,7 @@ fun rememberVoiceRecorderState(
     ) { granted ->
         onNotice(
             if (granted) {
-                "تمّ السماح — اضغط مع الاستمرار على الميكروفون للتسجيل."
+                "تمّ السماح — اضغط على الميكروفون لبدء التسجيل."
             } else {
                 "لم يُسمح باستخدام الميكروفون."
             },
@@ -412,8 +427,11 @@ fun rememberVoiceRecorderState(
 }
 
 /**
- * إيماءة واحدة تدير التسجيل كلّه: ضغط مطوّل = بدء، سحب جانبيّ (بقيمته
- * المطلقة فيصحّ في RTL) = إلغاء، سحب للأعلى = قفل، وإفلات = إرسال.
+ * إيماءتان تتعايشان على زرّ الميكروفون كما في واتساب الحديث:
+ * - **نقرة قصيرة** (انتهت قبل مهلة الضغط المطوّل) = بدء التسجيل فوراً في
+ *   الوضع المقفول، فيرفع المستخدم إصبعه ويستمرّ التسجيل في شريطه.
+ * - **ضغط مطوّل** = تسجيل ما دام الإصبع: سحب جانبيّ (بقيمته المطلقة فيصحّ
+ *   في RTL) = إلغاء، سحب للأعلى = قفل، وإفلات = إرسال.
  */
 private fun Modifier.voiceHoldGesture(
     state: VoiceRecorderState,
@@ -427,8 +445,12 @@ private fun Modifier.voiceHoldGesture(
             if (waitForUpOrCancellation() != null) released = true
         } == null
         if (!longPressed) {
-            // نقرة قصيرة: نُرشد بدل الصمت (الزرّ لم يعد يعمل بالنقر).
-            if (released) state.onNotice("اضغط مع الاستمرار للتسجيل، واسحب للأعلى للقفل.")
+            // نقرة قصيرة = تسجيل فوريّ مقفول (واتساب الحديث). شرط [released]
+            // يستثني الإيماءة الملغاة (تمرير/سحب ابتلعه أبٌ) فلا تبدأ تسجيلاً
+            // لم يطلبه أحد.
+            if (released && state.beginLocked()) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            }
             return@awaitEachGesture
         }
         if (!state.beginHold()) return@awaitEachGesture
@@ -471,7 +493,10 @@ private fun Modifier.voiceHoldGesture(
     }
 }
 
-/** زرّ الميكروفون (اضغط-مع-الاستمرار) — يحلّ محلّ زرّ الإرسال بلا نصّ. */
+/**
+ * زرّ الميكروفون — يحلّ محلّ زرّ الإرسال بلا نصّ. نقرة = تسجيل فوريّ مقفول،
+ * وضغط مطوّل = تسجيل بالإصبع مع السحب للإلغاء/القفل (واتساب الحديث).
+ */
 @Composable
 fun VoiceMicButton(state: VoiceRecorderState, modifier: Modifier = Modifier) {
     val haptic = LocalHapticFeedback.current
@@ -489,7 +514,7 @@ fun VoiceMicButton(state: VoiceRecorderState, modifier: Modifier = Modifier) {
         Box(contentAlignment = Alignment.Center) {
             Icon(
                 Icons.Filled.Mic,
-                contentDescription = "تسجيل رسالة صوتيّة",
+                contentDescription = "تسجيل رسالة صوتيّة — اضغط للبدء",
                 tint = Color.White,
                 modifier = Modifier.size(20.dp),
             )

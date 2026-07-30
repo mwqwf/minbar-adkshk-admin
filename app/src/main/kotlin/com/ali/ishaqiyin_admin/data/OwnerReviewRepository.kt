@@ -65,6 +65,9 @@ data class SuspiciousLessonReview(
     }
 }
 
+/** حصيلة الاعتماد الجماعي: كم مراجعة حُسمت، وكم منها لدرس لم يعد موجوداً. */
+data class BulkVerifyResult(val verified: Int, val missingLessons: Int)
+
 object OwnerReviewRepository {
     private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
     private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
@@ -80,14 +83,44 @@ object OwnerReviewRepository {
                 )
         }
 
+    /**
+     * ⚠️ المفتاح الذي تعيده الدالة اسمه `suspicious`؛ قراءة `flagged` وحدها
+     * كانت تُرجع صفراً دائماً فتقول الشاشة «لم تُكتشف نتائج» بعد كل فحص.
+     */
     suspend fun scanAll(): Int {
         val result = functions.getHttpsCallable("scanSuspiciousLessons").call().await()
         val data = result.getData()
         if (data is Map<*, *>) {
-            val value = data["flagged"] ?: data["created"] ?: data["count"]
+            val value = data["suspicious"] ?: data["flagged"]
+                ?: data["created"] ?: data["count"]
             return (value as? Number)?.toInt() ?: 0
         }
         return 0
+    }
+
+    /**
+     * اعتماد جماعي لكل ما يعرضه المالك على الشاشة — نداء واحد لكل 400 عنصر
+     * بدل نداء لكل درس. الحذف لا جماعيّ له بقصد: قرار لا رجعة فيه.
+     * [onProgress] يتلقّى (المنجز، الإجمالي) لتحريك شريط التقدّم.
+     */
+    suspend fun bulkVerify(
+        reviewIds: List<String>,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+    ): BulkVerifyResult {
+        val ids = reviewIds.filter { it.isNotEmpty() }.distinct()
+        if (ids.isEmpty()) return BulkVerifyResult(0, 0)
+        var verified = 0
+        var missing = 0
+        ids.chunked(400).forEach { chunk ->
+            val result = functions.getHttpsCallable("bulkResolveSuspiciousLessons")
+                .call(mapOf("action" to "verified", "reviewIds" to chunk))
+                .await()
+            val data = result.getData() as? Map<*, *>
+            verified += (data?.get("verified") as? Number)?.toInt() ?: chunk.size
+            missing += (data?.get("missingLessons") as? Number)?.toInt() ?: 0
+            onProgress(verified, ids.size)
+        }
+        return BulkVerifyResult(verified, missing)
     }
 
     suspend fun resolve(review: SuspiciousLessonReview, action: String) {

@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
@@ -29,6 +30,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,23 +48,42 @@ import com.ali.ishaqiyin_admin.data.LessonUploadWorker
 import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.ali.ishaqiyin_admin.data.UploadQueue
 import com.ali.ishaqiyin_admin.data.formatBytes
+import kotlinx.coroutines.delay
 
 /**
  * 📤 شريط طابور الرفع — يظهر وحده متى كان هناك درس قيد الرفع أو بانتظار
  * الشبكة، ويختفي وحده عند الفراغ. النقر يفتح تفاصيل الطابور.
+ *
+ * يعرض أيضاً **تأكيداً فوريّاً لكلّ إضافة** (اسم الملفّ وموقعه في الدور)،
+ * لا للإضافة الأولى فقط: `atMs` في [com.ali.ishaqiyin_admin.data.JustEnqueued]
+ * يتغيّر مع كلّ إدراج فيُعاد إظهار التأكيد ولو تطابق العنوان.
  */
 @Composable
 fun UploadQueueBanner(modifier: Modifier = Modifier) {
     val items by UploadQueue.items.collectAsState()
     val progress by UploadQueue.progress.collectAsState()
     val online by NetworkMonitor.online.collectAsState()
+    val justAdded by UploadQueue.justEnqueued.collectAsState()
     var showSheet by remember { mutableStateOf(false) }
+
+    // انزواء التأكيد وحده بعد لحظات — بلا زرّ إغلاق يدويّ.
+    LaunchedEffect(justAdded?.id, justAdded?.atMs) {
+        val added = justAdded ?: return@LaunchedEffect
+        delay(CONFIRM_VISIBLE_MS)
+        UploadQueue.clearJustEnqueued(added.id)
+    }
 
     if (items.isEmpty()) return
 
     val waiting = !online || progress?.waitingForNetwork == true
     val current = progress
     val accent = if (waiting) kOrange else kTeal
+    // موقع ما يُرفع الآن في الدور — يبقى «1 من ن» ما لم يبدأ رفع بعد.
+    val activePosition = current?.id
+        ?.let { id -> items.indexOfFirst { it.id == id } }
+        ?.takeIf { it >= 0 }
+        ?.plus(1)
+        ?: 1
 
     Box(
         modifier
@@ -107,8 +128,9 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                             .background(accent, CircleShape)
                             .padding(horizontal = 8.dp, vertical = 2.dp),
                     ) {
+                        // «س من ص» لا العدد وحده: يعرف المشرف أين وصل الدور.
                         Text(
-                            "${items.size}",
+                            "$activePosition من ${items.size}",
                             color = Color.White,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
@@ -132,11 +154,50 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                     trackColor = accent.copy(alpha = 0.2f),
                 )
             }
+            justAdded?.let { added ->
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(kGreen.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Filled.CheckCircle,
+                        contentDescription = null,
+                        tint = kGreen,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "أُضيف إلى الطابور: ${added.fileName}",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = kGreen,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "الترتيب ${added.position} من ${added.total} — " +
+                                "تابع إضافة درس آخر، الرفع يكمل وحده.",
+                            fontSize = 10.5.sp,
+                            color = kMuted,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
         }
     }
 
     if (showSheet) UploadQueueSheet(onDismiss = { showSheet = false })
 }
+
+/** مدّة بقاء تأكيد الإضافة ظاهراً قبل أن ينزوي وحده. */
+private const val CONFIRM_VISIBLE_MS = 6_000L
 
 /** تفاصيل الطابور: ترتيب الرفع، حالة كلّ درس، وإلغاء أو إعادة محاولة. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -162,7 +223,9 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
             Spacer(Modifier.height(4.dp))
             Text(
                 "تُرفع بالترتيب المعروض، وأوّل درس أُضيف هو أوّل ما يظهر في " +
-                    "التطبيق العام. يمكنك إغلاق التطبيق — يكمل الرفع وحده.",
+                    "التطبيق العام. أضف درساً جديداً ولو كان السابق قيد الرفع، " +
+                    "وأغلق الشاشة أو التطبيق إن شئت — الرفع يكمل في الخلفية " +
+                    "ويصلك إشعار عند اكتمال كلّ درس.",
                 fontSize = 11.5.sp,
                 color = kMuted,
                 lineHeight = 18.sp,

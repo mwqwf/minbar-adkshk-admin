@@ -1711,35 +1711,99 @@ exports.onAdminDmMessageCreated = functions.firestore
 
 // ─── نظام المراجعة السرية للدروس المشبوهة (للمالك فقط) ─────────────
 //
-// مبدأ التشخيص: «لا إهمال ولا حساسية مفرطة».
-//   • كل سبب يُكتب بالعربية مع الدليل (العبارة الملتقطة وموضعها وسياقها).
-//   • الأنماط تطابق كلمات كاملة (\b الإنجليزية لا تعمل مع العربية، لذا
-//     نستخدم lookaround على حروف/أرقام يونيكود) — «اقتل» لا تلتقط «اقتلعت».
-//   • درجتان: قاطعة (score ≥ 4) تفتح مراجعة وتنبّه المالك وحدها، وسياقية
-//     (score ≤ 3) لا تكفي وحدها — تحتاج قرينة أخرى لبلوغ عتبة التنبيه.
-//   • كون الدرس من إنشاء مشرف ليس شبهة إطلاقاً (هذا عملهم الطبيعي).
-//   • السوابق العربية تلتصق بالكلمة (والمخدرات، بالسلاح، فاقتلوا) — نسمح
-//     بها اختيارياً قبل الجذر كي لا تفلت، مع بقاء حد الكلمة قبلها وبعدها.
-const wholeWord = (alternatives) =>
-  new RegExp(
-    `(?<![\\p{L}\\p{N}])(?:و|ف)?(?:بال|كال|لل|ال|ب|ك|ل)?(?:${alternatives})(?![\\p{L}\\p{N}])`,
-    "iu",
-  );
+// أُعيدت معايرته بعد بلاغ المالك (2026-07-30): «الفحص الشامل يُظهر 67 درساً
+// مشبوهاً ولا شيء فيها فعلاً». سبب ذلك أن المعايير القديمة كانت تُطابق
+// **مفردات** لا **سياقات**، وتخلط بين إشارة محتوى وإشارة سلامة بيانات:
+//   • «القاعدة» كانت في قائمة التنظيمات بدرجة 5، وwholeWord يسمح بسابقة
+//     «ال» — فكل درس اسمه «القاعدة الفقهية» أو «القاعدة الأولى» من سلسلة
+//     «القواعد الأربع» يُفتح له بلاغ خطورة عالية. أكبر مصدر للضجيج.
+//   • «سفك الدماء» بدرجة 4 = عتبة التنبيه تماماً، وهي عبارة خطبٍ تُحرّمه.
+//   • ألفاظ «القتل/سلاح/مخدرات/تكفير» هي موضوع الدروس الفقهية نفسه، وكانت
+//     تكفي درجتها (3) لتجاوز العتبة مع أيّ ملاحظة إدارية عابرة (تكرار عنوان).
+//
+// المبدأ الجديد — فئتان لا فئة واحدة:
+//   1) إشارات محتوى/أمان: هي وحدها ما يجوز أن يفتح مراجعة بذاته، وتُطابَق
+//      في سياق لا كمفردة (تنظيم القاعدة ≠ القاعدة، صنع قنبلة ≠ قنبلة).
+//   2) إشارات سلامة بيانات (رابط ناقص، قسم محذوف، تكرار ملف…): لا تفتح
+//      مراجعة بمفردها أبداً؛ تحتاج قرينتين مستقلّتين ومجموعاً عالياً.
+// وحُذف ما لا معنى له في مكتبة دروس صوتية: كشف «القرصنة»، وكشف «معلومات
+// الاتصال» (نمطه `(?:\+?\d[\s-]?){9,}` كان يلتقط أيّ تاريخين أو ترقيم دروس).
 
-const SUSPICIOUS_PATTERNS = [
-  // قاطعة — تكفي وحدها لفتح المراجعة وتنبيه المالك.
-  { pattern: wholeWord("داعش|القاعدة|تفجير|قنبلة|عبوة\\s+ناسفة"), reason: "إشارة محتملة إلى محتوى متطرف أو متفجرات", score: 5 },
-  { pattern: /<script|javascript:|data:text\/html/iu, reason: "شفرة أو رابط غير آمن داخل البيانات", score: 5 },
-  { pattern: wholeWord("كافر\\s+يستحق|مرتد\\s+يستحق|سفك\\s+الدماء?"), reason: "عبارة تحريض أو تكفير صريحة", score: 4 },
-  // سياقية — ترد كثيراً في المحتوى الديني والتعليمي المشروع (أحكام، سيرة،
-  // تحذير من المخدرات…)، فلا تفتح مراجعة إلا مع قرينة أخرى.
-  { pattern: wholeWord("اقتل|اقتلوا|القتل|اغتيال|تحريض"), reason: "لفظ متصل بالعنف قد يكون في سياق مشروع", score: 3 },
-  { pattern: wholeWord("تكفير|سلاح|أسلحة|مخدرات|تهريب"), reason: "لفظ متصل بنشاط خطر قد يكون في سياق مشروع", score: 3 },
-  { pattern: wholeWord("مقرصن|مقرصنة|نسخة\\s+مسروقة"), reason: "مشكلة حقوق نشر محتملة", score: 3 },
+/// حدّ كلمة عربي/لاتيني (\b اللاتينية لا تعمل مع العربية). بلا سماح بأيّ
+/// سابقة ملتصقة: العبارات أدناه مركّبة، والسماح بسابقة «ال» هو ما جعل
+/// «القاعدة» تُطابق اسم التنظيم أصلاً.
+const phrase = (alternatives) =>
+  new RegExp(`(?<![\\p{L}\\p{N}])(?:${alternatives})(?![\\p{L}\\p{N}])`, "iu");
+
+// إشارات المحتوى: قاطعة بدرجة 5 (تفتح مراجعة وحدها)، ومرجّحة بدرجة 4
+// (تحتاج قرينة أخرى) — لأن صيغة الأمر قد ترد داخل نقل نصّ أو ردٍّ عليه.
+const CONTENT_PATTERNS = [
+  {
+    pattern: /<script|javascript:|data:text\/html|<iframe/iu,
+    reason: "شفرة أو رابط غير آمن داخل البيانات",
+    score: 5,
+  },
+  {
+    // أسماء التنظيمات في سياقها المركّب وحده.
+    pattern: phrase(
+      "داعش|تنظيم\\s+القاعدة|تنظيم\\s+الدولة|جبهة\\s+النصرة|"
+      + "الدولة\\s+الإسلامية\\s+في\\s+العراق",
+    ),
+    reason: "إشارة صريحة إلى تنظيم متطرف",
+    score: 5,
+  },
+  {
+    // تعليمات تصنيع لا مجرّد ذكر: «قنبلة» و«تفجير» تردان في السيرة والتاريخ.
+    pattern: phrase(
+      "(?:صنع|تصنيع|تركيب|إعداد|تحضير|طريقة|كيفية)\\s+(?:ال)?"
+      + "(?:قنبلة|قنابل|متفجرات|عبوة\\s+ناسفة|حزام\\s+ناسف|سلاح\\s+ناري)",
+    ),
+    reason: "ما يشبه تعليمات تصنيع متفجرات أو سلاح",
+    score: 5,
+  },
+  {
+    // تحريض بصيغة الأمر على فئة — لا مجرّد ذكر «القتل» في باب فقهي.
+    pattern: phrase(
+      "(?:اقتلوا|اقتل|اذبحوا|اذبح|فجّروا|فجروا)\\s+(?:كلَّ|كل|جميع|من)"
+      + "|يجب\\s+قتلُ?\\s+(?:كلَّ|كل|جميع|من)",
+    ),
+    reason: "صيغة أمر صريحة بالقتل موجَّهة إلى فئة",
+    score: 4,
+  },
 ];
 
-/// أدنى درجة خطورة تفتح مراجعة وتنبيهاً — ما دونها ليس شبهة تستحق الإزعاج.
-const SUSPICION_ALERT_THRESHOLD = 4;
+/// درجة المحتوى التي تفتح مراجعة بذاتها.
+const CONTENT_ALERT_THRESHOLD = 5;
+/// مجموع الدرجات الذي يفتح مراجعة عند وجود إشارة محتوى مرجّحة مع قرينة.
+const MIXED_ALERT_THRESHOLD = 6;
+/// مجموع درجات سلامة البيانات — ولا يكفي إلا مع قرينتين مستقلّتين فأكثر.
+const HYGIENE_ALERT_THRESHOLD = 6;
+const HYGIENE_MIN_SIGNALS = 2;
+
+/// إشارة سلامة بيانات: لا تفتح مراجعة بمفردها مهما بلغت درجتها.
+function addHygieneSignal(result, reason, score) {
+  if (!reason || result.reasons.includes(reason)) return;
+  result.reasons.push(reason);
+  result.hygieneScore += score;
+  result.hygieneSignals += 1;
+}
+
+/// إشارة محتوى/أمان.
+function addContentSignal(result, reason, score) {
+  if (!reason || result.reasons.includes(reason)) return;
+  result.reasons.push(reason);
+  result.contentScore += score;
+}
+
+/// القرار النهائي: هل يستحق هذا الدرس إزعاج المالك؟
+function shouldOpenReview(result) {
+  if (!result.reasons.length) return false;
+  if (result.contentScore >= CONTENT_ALERT_THRESHOLD) return true;
+  const total = result.contentScore + result.hygieneScore;
+  if (result.contentScore > 0 && total >= MIXED_ALERT_THRESHOLD) return true;
+  return result.hygieneSignals >= HYGIENE_MIN_SIGNALS
+    && result.hygieneScore >= HYGIENE_ALERT_THRESHOLD;
+}
 
 function lessonModerationFields(raw) {
   const d = unwrapLegacy(raw);
@@ -1774,86 +1838,92 @@ function evidenceExcerpt(text, index, length) {
 
 function inspectLesson(raw) {
   const fields = lessonModerationFields(raw);
-  const combined = `${fields.title}\n${fields.description}`;
-  const reasons = [];
-  let riskScore = 0;
+  const result = {
+    fields,
+    reasons: [],
+    contentScore: 0,
+    hygieneScore: 0,
+    hygieneSignals: 0,
+    // البصمة تستثني publishNotified: قلبُه علامة نشر إجرائية (يكتبها
+    // onLessonCreated والمجدول) لا تغييراً في المحتوى، وإدراجه كان يعيد
+    // فتح المراجعة وتنبيه المالك مرتين لنفس الدرس.
+    fingerprint: hashId(
+      JSON.stringify({ ...fields, publishNotified: undefined }),
+    ),
+  };
   const sources = [
     ["العنوان", fields.title],
     ["الوصف", fields.description],
   ];
-  SUSPICIOUS_PATTERNS.forEach((item) => {
+  CONTENT_PATTERNS.forEach((item) => {
     for (const [label, text] of sources) {
       if (!text) continue;
       const match = item.pattern.exec(text);
       if (match) {
-        reasons.push(
+        addContentSignal(
+          result,
           `${item.reason} — وردت عبارة «${match[0]}» في ${label}: `
           + `"${evidenceExcerpt(text, match.index, match[0].length)}"`,
+          item.score,
         );
-        riskScore += item.score;
         break; // يكفي دليل واحد لكل نمط.
       }
     }
   });
   if (!fields.title) {
-    reasons.push("الدرس بلا عنوان إطلاقاً");
-    riskScore += 2;
+    addHygieneSignal(result, "الدرس بلا عنوان إطلاقاً", 3);
+  } else if (fields.title.length < 3) {
+    addHygieneSignal(
+      result,
+      `العنوان أقصر من أن يكون دالاً: «${fields.title}»`,
+      2,
+    );
   }
-  if (fields.title && fields.title.length < 3) {
-    reasons.push(`العنوان أقصر من أن يكون دالاً: «${fields.title}»`);
-    riskScore += 2;
-  }
-  if (/(\p{L}|\p{N})\1{5,}/u.test(fields.title)) {
-    reasons.push("العنوان يحوي تكراراً غير طبيعي لنفس الحرف");
-    riskScore += 2;
+  // التطويل العربي (ـ) حرفٌ زخرفيّ مشروع في العناوين، فلا يُحسب تكراراً
+  // شاذاً؛ والحدّ رُفع إلى سبعة أحرف متطابقة كي لا يُلتقط المدّ المكتوب.
+  if (/(?!ـ)([\p{L}\p{N}])\1{6,}/u.test(fields.title)) {
+    addHygieneSignal(result, "العنوان يحوي تكراراً غير طبيعي لنفس الحرف", 2);
   }
   if (!fields.audioUrl) {
-    reasons.push("الدرس بلا رابط صوت");
-    riskScore += 2;
+    addHygieneSignal(result, "الدرس بلا رابط صوت", 3);
   } else {
     try {
       const host = new URL(fields.audioUrl).hostname.toLowerCase();
       const approved = host === "firebasestorage.googleapis.com"
-        || host.endsWith("storage.googleapis.com")
-        || host.endsWith("res.cloudinary.com");
+        || host.endsWith(".googleapis.com")
+        || host.endsWith(".firebasestorage.app")
+        || host === "storage.cloud.google.com"
+        || host.endsWith("res.cloudinary.com")
+        || host.endsWith("archive.org");
       if (!approved) {
-        reasons.push(`مصدر الصوت خارج تخزين التطبيق المعتمد: ${host}`);
-        riskScore += 2;
+        addHygieneSignal(
+          result,
+          `مصدر الصوت خارج تخزين التطبيق المعتمد: ${host}`,
+          2,
+        );
       }
     } catch (_) {
-      reasons.push("رابط الصوت ليس رابطاً صالحاً أصلاً");
-      riskScore += 3;
+      addHygieneSignal(result, "رابط الصوت ليس رابطاً صالحاً أصلاً", 3);
     }
-  }
-  const emailMatch = /\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/u.exec(combined);
-  const phoneMatch = /(?:\+?\d[\s-]?){9,}/u.exec(combined);
-  if (emailMatch || phoneMatch) {
-    const found = emailMatch ? `بريد إلكتروني «${emailMatch[0]}»` : `رقم يشبه الهاتف «${(phoneMatch[0] || "").trim()}»`;
-    reasons.push(`البيانات تتضمن ما يشبه معلومات اتصال شخصية: ${found}`);
-    riskScore += 2;
   }
   if (fields.publishAt) {
     const parsedPublishAt = Date.parse(fields.publishAt);
     if (Number.isNaN(parsedPublishAt)) {
-      reasons.push(`تاريخ النشر المجدول غير مفهوم: «${fields.publishAt}»`);
-      riskScore += 2;
+      addHygieneSignal(
+        result,
+        `تاريخ النشر المجدول غير مفهوم: «${fields.publishAt}»`,
+        2,
+      );
     } else if (!fields.publishNotified
         && parsedPublishAt < Date.now() - 24 * 60 * 60 * 1000) {
-      reasons.push("درس مجدول تجاوز موعد نشره بأكثر من يوم دون أن يُنشر");
-      riskScore += 2;
+      addHygieneSignal(
+        result,
+        "درس مجدول تجاوز موعد نشره بأكثر من يوم دون أن يُنشر",
+        2,
+      );
     }
   }
-  // البصمة تستثني publishNotified: قلبُه علامة نشر إجرائية (يكتبها
-  // onLessonCreated والمجدول) لا تغييراً في المحتوى، وإدراجه كان يعيد
-  // فتح المراجعة وتنبيه المالك مرتين لنفس الدرس.
-  return {
-    fields,
-    reasons: [...new Set(reasons)],
-    riskScore,
-    fingerprint: hashId(
-      JSON.stringify({ ...fields, publishNotified: undefined }),
-    ),
-  };
+  return result;
 }
 
 async function recordSuspiciousLesson(
@@ -1865,53 +1935,46 @@ async function recordSuspiciousLesson(
   preloaded = null,
 ) {
   const result = inspectLesson(raw);
-  extraReasons.forEach((reason) => {
-    if (reason) {
-      result.reasons.push(reason);
-      result.riskScore += 2;
-    }
-  });
+  // الأسباب الخارجية (من مسارات أخرى) إدارية بطبيعتها، فتُعامَل معاملة
+  // إشارات سلامة البيانات: لا تفتح مراجعة بمفردها.
+  extraReasons.forEach((reason) => addHygieneSignal(result, reason, 2));
   const checks = [];
+  // الدروس المكرّرة: عنوانٌ متطابق وحده أمر طبيعي تماماً في السلاسل
+  // («الدرس الأول»، «القاعدة الأولى»)، فدرجته 1 فقط؛ أمّا تطابق الملف
+  // المخزَّن فأقوى دلالة على تكرار حقيقي.
   if (preloaded) {
     if (result.fields.categoryId
         && !preloaded.categoryIds.has(result.fields.categoryId)) {
-      result.reasons.push("القسم الرئيسي المُشار إليه غير موجود في القاعدة");
-      result.riskScore += 2;
+      addHygieneSignal(result, "القسم الرئيسي المُشار إليه غير موجود في القاعدة", 3);
     }
     if (result.fields.subcategoryId) {
       if (!preloaded.subcategoryParents.has(result.fields.subcategoryId)) {
-        result.reasons.push("القسم الفرعي المُشار إليه غير موجود في القاعدة");
-        result.riskScore += 2;
+        addHygieneSignal(result, "القسم الفرعي المُشار إليه غير موجود في القاعدة", 3);
       } else {
         const parent = preloaded.subcategoryParents.get(result.fields.subcategoryId);
         if (result.fields.categoryId && parent && parent !== result.fields.categoryId) {
-          result.reasons.push("القسم الفرعي المحدد لا يتبع القسم الرئيسي المحدد");
-          result.riskScore += 3;
+          addHygieneSignal(result, "القسم الفرعي المحدد لا يتبع القسم الرئيسي المحدد", 3);
         }
       }
     }
     if (result.fields.normalizedTitle
         && (preloaded.titleCounts.get(result.fields.normalizedTitle) || 0) > 1) {
-      result.reasons.push("العنوان مطابق حرفياً لدرس آخر موجود");
-      result.riskScore += 2;
+      addHygieneSignal(result, "العنوان مطابق حرفياً لدرس آخر موجود", 1);
     }
     if (result.fields.audioUrl
         && (preloaded.audioUrlCounts.get(result.fields.audioUrl) || 0) > 1) {
-      result.reasons.push("رابط الصوت نفسه مستخدم في درس آخر");
-      result.riskScore += 3;
+      addHygieneSignal(result, "رابط الصوت نفسه مستخدم في درس آخر", 2);
     }
     if (result.fields.storagePath
         && (preloaded.storagePathCounts.get(result.fields.storagePath) || 0) > 1) {
-      result.reasons.push("ملف الصوت المخزَّن نفسه مستخدم في درس آخر");
-      result.riskScore += 4;
+      addHygieneSignal(result, "ملف الصوت المخزَّن نفسه مستخدم في درس آخر", 3);
     }
   } else if (result.fields.categoryId) {
     checks.push(
       db.collection("categories").doc(result.fields.categoryId).get()
         .then((snap) => {
           if (!snap.exists) {
-            result.reasons.push("القسم الرئيسي المُشار إليه غير موجود في القاعدة");
-            result.riskScore += 2;
+            addHygieneSignal(result, "القسم الرئيسي المُشار إليه غير موجود في القاعدة", 3);
           }
         }),
     );
@@ -1921,13 +1984,11 @@ async function recordSuspiciousLesson(
       db.collection("subcategories").doc(result.fields.subcategoryId).get()
         .then((snap) => {
           if (!snap.exists) {
-            result.reasons.push("القسم الفرعي المُشار إليه غير موجود في القاعدة");
-            result.riskScore += 2;
+            addHygieneSignal(result, "القسم الفرعي المُشار إليه غير موجود في القاعدة", 3);
           } else {
             const parent = cleanString((snap.data() || {}).categoryId, 180);
             if (result.fields.categoryId && parent && parent !== result.fields.categoryId) {
-              result.reasons.push("القسم الفرعي المحدد لا يتبع القسم الرئيسي المحدد");
-              result.riskScore += 3;
+              addHygieneSignal(result, "القسم الفرعي المحدد لا يتبع القسم الرئيسي المحدد", 3);
             }
           }
         }),
@@ -1941,8 +2002,7 @@ async function recordSuspiciousLesson(
         .get()
         .then((snap) => {
           if (snap.docs.some((doc) => doc.id !== lessonId)) {
-            result.reasons.push("العنوان مطابق حرفياً لدرس آخر موجود");
-            result.riskScore += 2;
+            addHygieneSignal(result, "العنوان مطابق حرفياً لدرس آخر موجود", 1);
           }
         }),
     );
@@ -1952,8 +2012,7 @@ async function recordSuspiciousLesson(
       db.collection("lessons").where("audioUrl", "==", result.fields.audioUrl)
         .limit(3).get().then((snap) => {
           if (snap.docs.some((doc) => doc.id !== lessonId)) {
-            result.reasons.push("رابط الصوت نفسه مستخدم في درس آخر");
-            result.riskScore += 3;
+            addHygieneSignal(result, "رابط الصوت نفسه مستخدم في درس آخر", 2);
           }
         }),
     );
@@ -1963,21 +2022,21 @@ async function recordSuspiciousLesson(
       db.collection("lessons").where("storagePath", "==", result.fields.storagePath)
         .limit(3).get().then((snap) => {
           if (snap.docs.some((doc) => doc.id !== lessonId)) {
-            result.reasons.push("ملف الصوت المخزَّن نفسه مستخدم في درس آخر");
-            result.riskScore += 4;
+            addHygieneSignal(result, "ملف الصوت المخزَّن نفسه مستخدم في درس آخر", 3);
           }
         }),
     );
   }
   await Promise.all(checks);
-  result.reasons = [...new Set(result.reasons)];
+  result.riskScore = result.contentScore + result.hygieneScore;
   const ref = db.collection("owner_lesson_reviews").doc(lessonId);
   const existing = await ref.get();
   const old = existing.data() || {};
   // دون العتبة = ليس شبهة تستحق مراجعة المالك. يشمل هذا المراجعات المعلّقة
   // من منطق قديم أشد حساسية — تُغلق تلقائياً ويُمسح تنبيهها مهما كانت بصمتها.
-  if (!result.reasons.length || result.riskScore < SUSPICION_ALERT_THRESHOLD) {
-    if (existing.exists && old.status === "pending") {
+  // («flagged» حالة قديمة يعدّها التطبيق معلّقة أيضاً، فتُغلق معها.)
+  if (!shouldOpenReview(result)) {
+    if (existing.exists && (old.status === "pending" || old.status === "flagged")) {
       await ref.update({
         status: "auto_cleared",
         resolution: result.reasons.length
@@ -1999,7 +2058,11 @@ async function recordSuspiciousLesson(
     lessonTitle: result.fields.title,
     reasons: result.reasons,
     riskScore: result.riskScore,
-    riskLevel: result.riskScore >= 7 ? "high" : result.riskScore >= 4 ? "medium" : "low",
+    contentScore: result.contentScore,
+    hygieneScore: result.hygieneScore,
+    riskLevel: result.contentScore >= CONTENT_ALERT_THRESHOLD
+      ? "high"
+      : result.contentScore > 0 ? "medium" : "low",
     status: "pending",
     fingerprint: result.fingerprint,
     source,
@@ -2093,9 +2156,30 @@ exports.scanSuspiciousLessons = functions.runWith({ timeoutSeconds: 540, memory:
       );
       suspicious += results.filter(Boolean).length;
     }
+    // مراجعات معلّقة لدروس لم تعد موجودة (حُذفت من مسار آخر): لا يمكن
+    // للمالك حسمها من الشاشة لأن الدرس مفقود، فتبقى معلّقة إلى الأبد.
+    const lessonIds = new Set(snap.docs.map((doc) => doc.id));
+    const pendingSnap = await db.collection("owner_lesson_reviews")
+      .where("status", "==", "pending").get();
+    const orphans = pendingSnap.docs.filter((doc) => {
+      const value = doc.data() || {};
+      return !lessonIds.has(cleanString(value.lessonId, 180) || doc.id);
+    });
+    for (let offset = 0; offset < orphans.length; offset += 400) {
+      const batch = db.batch();
+      orphans.slice(offset, offset + 400).forEach((doc) => {
+        batch.update(doc.ref, {
+          status: "auto_cleared",
+          resolution: "lesson_missing",
+          resolvedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      });
+      await batch.commit();
+    }
     await auditOwnerAction(OWNER_EMAIL, "scan_suspicious_lessons", "", {
       scanned: snap.size,
       suspicious,
+      orphansCleared: orphans.length,
     });
     if (suspicious) {
       await pushToAdmins(
@@ -2105,7 +2189,14 @@ exports.scanSuspiciousLessons = functions.runWith({ timeoutSeconds: 540, memory:
         true,
       );
     }
-    return { ok: true, scanned: snap.size, suspicious };
+    // `flagged` مرادف متوافق مع نسخ اللوحة القديمة التي تقرأ هذا المفتاح.
+    return {
+      ok: true,
+      scanned: snap.size,
+      suspicious,
+      flagged: suspicious,
+      orphansCleared: orphans.length,
+    };
   });
 
 exports.resolveSuspiciousLesson = functions.runWith({ timeoutSeconds: 120, memory: "512MB" })
@@ -2177,6 +2268,119 @@ exports.resolveSuspiciousLesson = functions.runWith({ timeoutSeconds: 120, memor
       cleanupPending: cleanup.failed.length > 0,
       cleanupJobId: cleanup.cleanupJobId,
     };
+  });
+
+/// مسح تنبيهات «درس يحتاج مراجعتك» لمجموعة دروس بمرور واحد على
+/// admin_alerts — بدل مرور كامل لكلّ درس كما في clearAdminAlerts.
+async function clearSuspicionAlertsFor(lessonIds) {
+  const wanted = new Set(lessonIds.filter(Boolean));
+  if (!wanted.size) return 0;
+  const snap = await db.collection("admin_alerts").get();
+  const refs = snap.docs.filter((doc) => {
+    const value = doc.data() || {};
+    const metadata = value.data || {};
+    if (cleanString(value.type || metadata.type, 40) !== "suspicious_lesson") {
+      return false;
+    }
+    const refId = cleanString(
+      value.refId || metadata.refId || metadata.lessonId || metadata.id,
+      180,
+    );
+    return wanted.has(refId);
+  }).map((doc) => doc.ref);
+  for (let offset = 0; offset < refs.length; offset += 400) {
+    const batch = db.batch();
+    refs.slice(offset, offset + 400).forEach((ref) => batch.delete(ref));
+    await batch.commit();
+  }
+  return refs.length;
+}
+
+/// حسم جماعي: «اعتماد الكل» في شاشة المراجعة. يعتمد فقط — الحذف يبقى
+/// فردياً بقرار واعٍ لكل درس (لا حذف جماعي أبداً).
+/// `reviewIds` فارغة تعني كل المراجعات المعلّقة.
+exports.bulkResolveSuspiciousLessons = functions
+  .runWith({ timeoutSeconds: 540, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    const actorEmail = await assertOwner(context);
+    const action = cleanString(data && data.action, 20) || "verified";
+    if (action !== "verified") {
+      throw new functions.https.HttpsError(
+        "invalid-argument",
+        "الإجراء الجماعي المتاح هو الاعتماد فقط.",
+      );
+    }
+    const requested = Array.isArray(data && data.reviewIds)
+      ? [...new Set(
+        data.reviewIds.map((item) => cleanString(item, 180)).filter(Boolean),
+      )].slice(0, 1000)
+      : [];
+    const reviewsRef = db.collection("owner_lesson_reviews");
+    let docs = [];
+    if (requested.length) {
+      for (let offset = 0; offset < requested.length; offset += 200) {
+        const refs = requested.slice(offset, offset + 200)
+          .map((id) => reviewsRef.doc(id));
+        const snaps = await db.getAll(...refs);
+        docs = docs.concat(snaps.filter((item) => item.exists));
+      }
+    } else {
+      const snap = await reviewsRef.where("status", "==", "pending").get();
+      docs = snap.docs;
+    }
+    // لا يُحسم إلا ما هو معلّق فعلاً («flagged» حالة قديمة معلّقة أيضاً).
+    const targets = docs
+      .filter((doc) => {
+        const status = cleanString((doc.data() || {}).status, 40) || "pending";
+        return status === "pending" || status === "flagged";
+      })
+      .map((doc) => ({
+        ref: doc.ref,
+        lessonId: cleanString((doc.data() || {}).lessonId, 180) || doc.id,
+      }));
+    if (!targets.length) {
+      return { ok: true, verified: 0, missingLessons: 0, alertsCleared: 0 };
+    }
+    let verified = 0;
+    let missingLessons = 0;
+    for (let offset = 0; offset < targets.length; offset += 200) {
+      const chunk = targets.slice(offset, offset + 200);
+      const lessonRefs = chunk.map(
+        (item) => db.collection("lessons").doc(item.lessonId),
+      );
+      const lessonSnaps = await db.getAll(...lessonRefs);
+      const batch = db.batch();
+      chunk.forEach((item, index) => {
+        const lessonExists = lessonSnaps[index] && lessonSnaps[index].exists;
+        batch.update(item.ref, {
+          status: "verified",
+          resolvedBy: actorEmail,
+          resolvedAt: admin.firestore.FieldValue.serverTimestamp(),
+          resolution: lessonExists ? "verified_bulk" : "lesson_missing",
+        });
+        if (lessonExists) {
+          batch.update(lessonRefs[index], {
+            moderationStatus: "verified",
+            moderationVerifiedBy: actorEmail,
+            moderationVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        } else {
+          missingLessons += 1;
+        }
+      });
+      await batch.commit();
+      verified += chunk.length;
+    }
+    const alertsCleared = await clearSuspicionAlertsFor(
+      targets.map((item) => item.lessonId),
+    );
+    await auditOwnerAction(actorEmail, "suspicious_bulk_verified", "", {
+      verified,
+      missingLessons,
+      alertsCleared,
+      scope: requested.length ? "selection" : "all_pending",
+    });
+    return { ok: true, verified, missingLessons, alertsCleared };
   });
 
 // ─── الإشعار اليدوي من تطبيق الإدارة ────────────────────────────────

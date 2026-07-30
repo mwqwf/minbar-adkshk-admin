@@ -98,6 +98,21 @@ data class UploadProgress(
 )
 
 /**
+ * آخر درس دخل الطابور للتوّ — تأكيد فوريّ **لكلّ إضافة** لا للأولى فقط.
+ * `atMs` يتغيّر مع كلّ إضافة حتى لو تطابق العنوان، فتُعيد الواجهة إظهار
+ * التأكيد بدل أن تراه بلا تغيير فتظنّ أنّ شيئاً لم يحدث.
+ */
+data class JustEnqueued(
+    val id: String,
+    val title: String,
+    val fileName: String,
+    /** موقعه في دور الرفع (1 = التالي). */
+    val position: Int,
+    val total: Int,
+    val atMs: Long,
+)
+
+/**
  * 📤 طابور رفع الدروس — يعمل دون اتصال ويستأنف تلقائياً.
  *
  * الضمانات:
@@ -120,6 +135,10 @@ object UploadQueue {
 
     private val _progress = MutableStateFlow<UploadProgress?>(null)
     val progress: StateFlow<UploadProgress?> = _progress
+
+    /** تأكيد الإضافة الأخيرة — تعرضه الواجهة لحظات ثمّ تمسحه. */
+    private val _justEnqueued = MutableStateFlow<JustEnqueued?>(null)
+    val justEnqueued: StateFlow<JustEnqueued?> = _justEnqueued
 
     private val lock = Any()
 
@@ -150,6 +169,36 @@ object UploadQueue {
         val next = prefs().getLong(SEQ_KEY, 0L) + 1
         prefs().edit().putLong(SEQ_KEY, next).apply()
         next
+    }
+
+    /**
+     * موقع العنصر في دور الرفع (1-based) من الحالة الحيّة في الذاكرة —
+     * بلا قراءة قرص، فيصلح للاستدعاء من خيط الواجهة. يعيد 0 إن لم يعد
+     * موجوداً (رُفع أو أُلغي).
+     */
+    fun positionOf(id: String): Int =
+        _items.value.indexOfFirst { it.id == id }.let { if (it < 0) 0 else it + 1 }
+
+    /** عدد ما في الطابور الآن من الحالة الحيّة (بلا قراءة قرص). */
+    fun liveCount(): Int = _items.value.size
+
+    /** يُعلن دخول عنصر جديد فوراً — بعد الحفظ كي يكون الترتيب نهائياً. */
+    private fun markJustEnqueued(item: PendingUpload) {
+        val all = _items.value
+        val index = all.indexOfFirst { it.id == item.id }
+        _justEnqueued.value = JustEnqueued(
+            id = item.id,
+            title = item.title,
+            fileName = item.fileName,
+            position = if (index < 0) all.size else index + 1,
+            total = all.size,
+            atMs = System.currentTimeMillis(),
+        )
+    }
+
+    /** تُنادى من الواجهة بعد عرض التأكيد لحظات. */
+    fun clearJustEnqueued(id: String) {
+        if (_justEnqueued.value?.id == id) _justEnqueued.value = null
     }
 
     /** مجلّد النسخ الدائم (files لا cache — النظام لا يمسحه تحت الضغط). */
@@ -195,6 +244,8 @@ object UploadQueue {
             queuedAtMs = System.currentTimeMillis(),
         )
         synchronized(lock) { persist(load() + item) }
+        // بعد الحفظ: الترتيب صار نهائياً فيصحّ إعلان الموقع «س من ص».
+        markJustEnqueued(item)
         item
     }
 
@@ -233,6 +284,8 @@ object UploadQueue {
             queuedAtMs = System.currentTimeMillis(),
         )
         synchronized(lock) { persist(load() + item) }
+        // بعد الحفظ: الترتيب صار نهائياً فيصحّ إعلان الموقع «س من ص».
+        markJustEnqueued(item)
         item
     }
 
@@ -270,6 +323,8 @@ object UploadQueue {
         val list = load()
         list.firstOrNull { it.id == id }?.let { runCatching { File(it.localPath).delete() } }
         persist(list.filterNot { it.id == id })
+        // تأكيد إضافة لعنصر لم يعد موجوداً يُربك: يُمسح مع خروجه.
+        clearJustEnqueued(id)
     }
 
     /**

@@ -1,27 +1,41 @@
 package com.ali.ishaqiyin_admin.ui
 
 import android.net.Uri
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SecurityUpdateWarning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -35,9 +49,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -50,10 +66,19 @@ import com.ali.ishaqiyin_admin.data.AccessState
 import com.ali.ishaqiyin_admin.data.AccessVerificationException
 import com.ali.ishaqiyin_admin.data.AdminNotificationService
 import com.ali.ishaqiyin_admin.data.AuthService
+import com.ali.ishaqiyin_admin.data.ChatRepository
+import com.ali.ishaqiyin_admin.data.ChatUploadTarget
+import com.ali.ishaqiyin_admin.data.ChatUploader
+import com.ali.ishaqiyin_admin.data.DmRepository
+import com.ali.ishaqiyin_admin.data.chatTypeForMime
+import com.ali.ishaqiyin_admin.ui.chat.ChatColors
 import com.ali.ishaqiyin_admin.ui.chat.ChatScreen
 import com.ali.ishaqiyin_admin.ui.chat.DmListScreen
 import com.ali.ishaqiyin_admin.ui.chat.DmScreen
 import com.ali.ishaqiyin_admin.ui.chat.GroupInfoScreen
+import com.ali.ishaqiyin_admin.ui.chat.MemberAvatar
+import com.ali.ishaqiyin_admin.util.PickedFile
+import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
@@ -216,6 +241,245 @@ private fun AdminNavHost(isOwner: Boolean) {
                 otherUid = entry.arguments?.getString("otherUid").orEmpty(),
                 otherName = entry.arguments?.getString("otherName").orEmpty(),
                 onBack = { nav.popBackStack() },
+            )
+        }
+    }
+
+    // 📤 ورقة وجهة المشاركة الخارجية — فوق أيّ شاشة، فالمشاركة قد تصل
+    // والمستخدم داخل الدردشة لا على اللوحة.
+    ShareDestinationSheets(nav)
+}
+
+/**
+ * 📤 خيارات المشاركة الخارجية (نمط واتساب): تظهر فور وصول ملفّات من تطبيق
+ * آخر، وتترك للمستخدم اختيار الوجهة — نموذج الدرس الصوتي، أو مجموعة
+ * الإدارة، أو محادثة خاصّة مع مشرف. لا شيء يُرسَل قبل الاختيار.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ShareDestinationSheets(nav: NavHostController) {
+    val context = LocalContext.current
+    val snack = LocalSnack.current
+    val incoming by ShareIntake.incoming.collectAsState()
+
+    // لا مستمع أعضاء ولا ورقة ما لم تصل مشاركة — والخروج المبكر يُسقط حالة
+    // «قائمة المشرفين» فتبدأ كلّ دفعة جديدة من قائمة الوجهات.
+    if (incoming.isEmpty()) return
+
+    var pickAdmin by remember { mutableStateOf(false) }
+    val hasAudio = remember(incoming) {
+        incoming.any { context.shareContentType(it).startsWith("audio/") }
+    }
+    val label = if (incoming.size == 1) {
+        incoming.first().name
+    } else {
+        "${incoming.size} ملفّات"
+    }
+
+    fun send(target: ChatUploadTarget, files: List<PickedFile>) {
+        files.forEach { file ->
+            val contentType = context.shareContentType(file)
+            ChatUploader.enqueue(
+                target = target,
+                file = file,
+                type = chatTypeForMime(contentType),
+                contentType = contentType,
+            )
+        }
+        ShareIntake.clearIncoming()
+    }
+
+    if (!pickAdmin) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { ShareIntake.clearIncoming() },
+            sheetState = sheetState,
+            containerColor = ChatColors.surface,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                Text(
+                    "مشاركة إلى إدارة منبر",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                )
+                Text(
+                    label,
+                    fontSize = 12.sp,
+                    color = ChatColors.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
+                )
+                HorizontalDivider()
+                if (hasAudio) {
+                    ShareOptionRow(
+                        icon = Icons.Filled.LibraryMusic,
+                        tint = kOrange,
+                        title = "إضافة درس صوتي",
+                        subtitle = "تعبئة نموذج الدرس بالملفّ المشترَك",
+                    ) {
+                        ShareIntake.chooseLesson()
+                        // اللوحة هي من يفتح نموذج الدرس عند امتلاء الطابور،
+                        // فأعِدها إلى المقدّمة كي يعمل مستمعها.
+                        nav.popBackStack(Routes.DASHBOARD, false)
+                    }
+                }
+                ShareOptionRow(
+                    icon = Icons.Filled.Groups,
+                    tint = kTeal,
+                    title = "إرسال إلى مجموعة الإدارة",
+                    subtitle = "يظهر للمشرفين جميعاً في دردشة المجموعة",
+                ) {
+                    val files = incoming
+                    send(ChatUploadTarget.Group, files)
+                    snack("جارٍ الإرسال إلى مجموعة الإدارة…")
+                    nav.navigate(Routes.CHAT)
+                }
+                ShareOptionRow(
+                    icon = Icons.Filled.Person,
+                    tint = kBlue,
+                    title = "إرسال إلى محادثة خاصّة",
+                    subtitle = "اختر مشرفاً واحداً لإرسال الملفّ إليه",
+                ) {
+                    pickAdmin = true
+                }
+            }
+        }
+        return
+    }
+
+    // ⚠️ remember إلزاميّ: بلاه يُنشأ تدفّق جديد مع كل إعادة تركيب
+    // فيُعاد ربط مستمع Firestore في كلّ مرّة.
+    val membersList by remember { ChatRepository.membersStream() }
+        .collectAsState(initial = emptyList())
+    val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
+    val others = membersList.filter { it.uid != myUid }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = { pickAdmin = false },
+        sheetState = sheetState,
+        containerColor = ChatColors.surface,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+            Text(
+                "إرسال إلى مشرف",
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(14.dp),
+            )
+            HorizontalDivider()
+            if (others.isEmpty()) {
+                Text(
+                    "لا يوجد مشرفون آخرون بعد.",
+                    color = ChatColors.textMuted,
+                    modifier = Modifier.fillMaxWidth().padding(20.dp),
+                    textAlign = TextAlign.Center,
+                )
+            }
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 380.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                others.forEach { member ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val files = incoming
+                                val threadId = DmRepository.ensureThread(member.uid)
+                                send(ChatUploadTarget.Dm(threadId, member.uid), files)
+                                snack("جارٍ الإرسال إلى ${member.displayName}…")
+                                nav.navigate(
+                                    Routes.dm(threadId, member.uid, member.displayName),
+                                )
+                            }
+                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        MemberAvatar(
+                            uid = member.uid,
+                            name = member.displayName,
+                            photo = member.displayPhoto,
+                            radius = 20,
+                            showOnline = true,
+                            online = member.isOnline,
+                        )
+                        Spacer(Modifier.size(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    member.displayName,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                if (member.isOwner) {
+                                    Spacer(Modifier.size(5.dp))
+                                    Text("👑", fontSize = 12.sp)
+                                }
+                            }
+                            Text(
+                                if (member.isOnline) "متصل الآن" else member.email,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = if (member.isOnline) {
+                                    ChatColors.online
+                                } else {
+                                    ChatColors.textMuted
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            TextButton(
+                onClick = { pickAdmin = false },
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+            ) {
+                Text("رجوع إلى الخيارات")
+            }
+        }
+    }
+}
+
+/** صفّ خيار واحد في ورقة وجهة المشاركة. */
+@Composable
+private fun ShareOptionRow(
+    icon: ImageVector,
+    tint: Color,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(42.dp)
+                .background(tint.copy(alpha = 0.12f), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, contentDescription = null, tint = tint)
+        }
+        Spacer(Modifier.size(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Text(
+                subtitle,
+                fontSize = 12.sp,
+                color = ChatColors.textMuted,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }

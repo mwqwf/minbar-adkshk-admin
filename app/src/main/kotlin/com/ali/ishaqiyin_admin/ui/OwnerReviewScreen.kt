@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
@@ -62,6 +63,11 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
     var scanning by remember { mutableStateOf(false) }
     var busyId by remember { mutableStateOf("") }
     var pending by remember { mutableStateOf<Pair<SuspiciousLessonReview, String>?>(null) }
+    // الاعتماد الجماعي: تأكيد ثم تقدّم حيّ ثم رسالة حصيلة.
+    var confirmBulk by remember { mutableStateOf(false) }
+    var bulkBusy by remember { mutableStateOf(false) }
+    var bulkDone by remember { mutableStateOf(0) }
+    var bulkTotal by remember { mutableStateOf(0) }
 
     val isOwner = AuthService.isOwnerEmail(AuthService.currentUser?.email)
     if (!isOwner) {
@@ -105,6 +111,45 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
         )
     }
 
+    if (confirmBulk) {
+        val count = items.size
+        ConfirmDialog(
+            title = "اعتماد كل المعروض؟",
+            body = "سيُعلَّم $count درساً بأنك راجعتَها وتحقّقتَ منها دفعة واحدة، "
+                + "وتختفي من هذه الشاشة ومن تنبيهاتك. لا يُحذف أيّ درس.",
+            confirmLabel = "اعتماد الكل",
+            confirmColor = kTeal,
+            onDismiss = { confirmBulk = false },
+            onConfirm = {
+                confirmBulk = false
+                val ids = items.map { it.id }
+                bulkBusy = true
+                bulkDone = 0
+                bulkTotal = ids.size
+                scope.launch {
+                    try {
+                        val result = OwnerReviewRepository.bulkVerify(ids) { done, total ->
+                            bulkDone = done
+                            bulkTotal = total
+                        }
+                        player.stop()
+                        snack(
+                            if (result.missingLessons > 0) {
+                                "اعتُمد ${result.verified} درساً " +
+                                    "(${result.missingLessons} منها لدرس محذوف)."
+                            } else {
+                                "اعتُمد ${result.verified} درساً دفعة واحدة."
+                            },
+                        )
+                    } catch (e: Exception) {
+                        snack("تعذّر الاعتماد الجماعي: ${e.message ?: e}")
+                    }
+                    bulkBusy = false
+                }
+            },
+        )
+    }
+
     AdminScaffold(
         title = "مراجعة الدروس المشبوهة",
         onBack = onBack,
@@ -128,7 +173,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                         scanning = false
                     }
                 },
-                enabled = !scanning,
+                enabled = !scanning && !bulkBusy,
             ) {
                 if (scanning) {
                     Spin(color = Color.White, size = 18)
@@ -140,7 +185,9 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
             }
         },
     ) { padding ->
-        if (items.isEmpty()) {
+        // أثناء الاعتماد الجماعي تفرغ القائمة تدريجياً من البثّ الحيّ؛ نُبقي
+        // الشاشة على وضع القائمة كي لا يختفي شريط التقدّم قبل انتهاء العملية.
+        if (items.isEmpty() && !bulkBusy) {
             Box(
                 Modifier.padding(padding).fillMaxSize().padding(28.dp),
                 contentAlignment = Alignment.Center,
@@ -169,6 +216,55 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "${items.size} درساً بانتظار قرارك",
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Spacer(Modifier.size(2.dp))
+                                Text(
+                                    "راجعتَها ولا شبهة فيها؟ اعتمدها كلّها دفعة واحدة.",
+                                    fontSize = 12.sp,
+                                    color = kMuted,
+                                )
+                            }
+                            Spacer(Modifier.size(8.dp))
+                            Button(
+                                onClick = { confirmBulk = true },
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                                enabled = !bulkBusy && busyId.isEmpty() && items.isNotEmpty(),
+                            ) {
+                                Icon(
+                                    Icons.Filled.DoneAll,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.size(4.dp))
+                                Text("اعتماد الكل")
+                            }
+                        }
+                        if (bulkBusy) {
+                            Spacer(Modifier.size(10.dp))
+                            LinearProgressIndicator(Modifier.fillMaxWidth(), color = kTeal)
+                            Spacer(Modifier.size(6.dp))
+                            Text(
+                                "جارٍ الاعتماد… $bulkDone من $bulkTotal",
+                                fontSize = 12.sp,
+                                color = kMuted,
+                            )
+                        }
+                    }
+                }
+            }
             items(items.size) { index ->
                 val review = items[index]
                 val busy = busyId == review.id
@@ -245,6 +341,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                                     onClick = { pending = review to "verified" },
                                     shape = RoundedCornerShape(8.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                                    enabled = !bulkBusy,
                                     modifier = Modifier.weight(1f),
                                 ) {
                                     Icon(
@@ -257,6 +354,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                                 }
                                 OutlinedButton(
                                     onClick = { pending = review to "delete" },
+                                    enabled = !bulkBusy,
                                     modifier = Modifier.weight(1f),
                                 ) {
                                     Icon(

@@ -44,17 +44,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- «المشاركة إلى إدارة منبر»: استقبال صوتيات من التطبيقات الأخرى
-                 لفتح نموذج إضافة درس معبّأً بها. -->
+            <!-- «المشاركة إلى إدارة منبر»: استقبال ملفّات من التطبيقات الأخرى،
+                 ثمّ تعرض اللوحة ورقة خيارات (درس صوتي / مجموعة الإدارة /
+                 محادثة خاصّة). الصوت يبقى أوّلاً، وأُضيفت الصور والفيديو
+                 والمستندات لأنّ الإرسال إلى الدردشة لا يقتصر على الصوت. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="audio/*" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="*/*" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="audio/*" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
 

@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Star
@@ -246,7 +247,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
         val label = listOfNotNull(cat?.name, sub?.name).joinToString(" ← ")
         scope.launch {
             try {
-                if (files.size == 1) {
+                val queued = if (files.size == 1) {
                     UploadQueue.enqueue(
                         context = context,
                         sourceUri = files.first().uri,
@@ -282,6 +283,11 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         addedBy = AuthService.currentUser?.email.orEmpty(),
                     )
                 }
+                // يُقرأ الموقع **قبل** إيقاظ العامل: ملفّ صغير قد يُرفع
+                // ويخرج من الطابور قبل أن نصل إلى بناء الرسالة، فيصير
+                // «الترتيب 0» بلا معنى.
+                val position = UploadQueue.positionOf(queued.id)
+                val total = UploadQueue.liveCount()
                 LessonUploadWorker.kick(context)
 
                 // إفراغ النموذج فوراً — المشرف يواصل إضافة درس آخر.
@@ -295,8 +301,20 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     sharedConsumed = true
                     ShareIntake.consumeFirst()
                 }
-                message = "أُضيف «$snapshotTitle» إلى طابور الرفع — يكمل وحده."
+                // تأكيد **لكلّ إضافة** لا للأولى فقط: الرسالة الداخلية قد
+                // تتطابق نصّاً مع سابقتها فلا يلحظ المشرف تغيّراً، فيُضاف
+                // موقع الدرس في الدور ويُرفَق شريط سفليّ يظهر من جديد
+                // مع كلّ إدراج.
+                val order = if (total > 1 && position > 0) {
+                    " (الترتيب $position من $total)"
+                } else {
+                    ""
+                }
+                message = "أُضيف «$snapshotTitle» إلى طابور الرفع$order — " +
+                    "يكمل في الخلفية ويصلك إشعار عند اكتماله. " +
+                    "تستطيع إضافة درس آخر الآن."
                 isError = false
+                snack("أُضيف «$snapshotTitle» إلى طابور الرفع$order")
             } catch (e: Exception) {
                 queuing = false
                 merging = false
@@ -352,6 +370,8 @@ fun AddLessonScreen(onBack: () -> Unit) {
             modifier = Modifier.padding(padding).fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         ) {
+            // إرشاد ثابت وموجز: يزيل سؤال «هل أنتظر انتهاء الرفع؟».
+            item { QueueHintCard(Modifier.padding(bottom = 8.dp)) }
             // مؤشّر حيّ لما يُرفع الآن وما ينتظر الدور.
             item { UploadQueueBanner(Modifier.padding(bottom = 8.dp)) }
             item {
@@ -531,6 +551,48 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 }
                 Spacer(Modifier.height(24.dp))
             }
+        }
+    }
+}
+
+/**
+ * 💡 بطاقة إرشاد ثابتة أعلى الشاشة — تجيب صراحةً عمّا يُربك المشرف:
+ * لا انتظار بين درس وآخر، والرفع لا يتوقّف بإغلاق الشاشة، والإشعار يخبره.
+ */
+@Composable
+private fun QueueHintCard(modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .fillMaxWidth()
+            .background(kTeal.copy(alpha = 0.07f), RoundedCornerShape(14.dp))
+            .padding(12.dp),
+    ) {
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.Info,
+                    contentDescription = null,
+                    tint = kTeal,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.size(6.dp))
+                Text(
+                    "أضف بلا انتظار",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = kTealDark,
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "• أضف درساً جديداً حتى أثناء رفع الدرس السابق — الطابور " +
+                    "يرفعها واحداً تلو الآخر بالترتيب.\n" +
+                    "• الرفع يستمرّ في الخلفية ولو أغلقت هذه الشاشة أو التطبيق.\n" +
+                    "• يصلك إشعار فور اكتمال رفع كلّ درس.",
+                fontSize = 12.sp,
+                lineHeight = 20.sp,
+                color = kMuted,
+            )
         }
     }
 }

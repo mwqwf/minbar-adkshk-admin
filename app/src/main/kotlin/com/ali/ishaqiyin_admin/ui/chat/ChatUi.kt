@@ -51,7 +51,14 @@ object ChatColors {
     val rose = kDanger
     val highlight = Color(0xFFDFF0EE)
     val online = Color(0xFF16A34A)
-    val readBlue = Color(0xFF0284C7)
+
+    /**
+     * أزرق واتساب الفعليّ لعلامتَي القراءة ✓✓ وشارة «استُمع إليها».
+     * (كان `0xFF0284C7` أزرق مكتبيّ داكناً باهتاً لا يشبه واتساب.) يُرسم
+     * دائماً كأيقونة مصمتة صغيرة فوق الفقاعة الخضراء `mineBubble` أو فوق
+     * الأبيض، وكلاهما فاتح فيبقى الأزرق مميَّزاً عنهما.
+     */
+    val readBlue = Color(0xFF53BDEB)
 
     /** فقاعة رسائلي (أخضر فاتح بنمط واتساب) وحدودها. */
     val mineBubble = Color(0xFFD9F2E7)
