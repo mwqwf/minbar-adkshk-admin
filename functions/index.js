@@ -709,8 +709,12 @@ exports.sendFeedback = functions.https.onCall(async (data, context) => {
   if (!lessonSnap.exists) {
     throw new functions.https.HttpsError("not-found", "الدرس غير موجود.");
   }
+  // ⚠️ لا يُخزَّن المعرّف الخام: سياسة الخصوصية المنشورة تنصّ صراحةً على أن
+  // الملاحظات والبلاغات لا تُربط بهويّة المرسِل. نخزّن بصمة أحاديّة الاتجاه
+  // تكفي وحدها لحذف بيانات المستخدم عند طلبه (deleteMyData يجزّئ المعرّف
+  // نفسه فيطابقها) ولا تصلح للتعرّف عليه ولا للربط بين بلاغاته وحسابه.
   const ref = await db.collection("feedback").add({
-    uid,
+    uidHash: hashId(uid),
     lessonId,
     type,
     note,
@@ -1038,9 +1042,13 @@ exports.deleteMyData = functions.runWith({ timeoutSeconds: 120, memory: "512MB" 
         if (value.storagePath) await deleteFileIfExists(value.storagePath);
       },
     );
-    const feedback = await deleteQuery(
+    // البلاغات تُخزَّن ببصمة مجزّأة لا بالمعرّف الخام (سياسة الخصوصية)؛
+    // والاستعلام بالمعرّف الخام يبقى لحذف ما كُتب قبل هذا التغيير.
+    const feedback = (await deleteQuery(
+      db.collection("feedback").where("uidHash", "==", hashId(uid)),
+    )) + (await deleteQuery(
       db.collection("feedback").where("uid", "==", uid),
-    );
+    ));
     const anonymizedLessons = await anonymizePublishedLessons(uid);
     await db.collection("admin_device_tokens").doc(uid).delete().catch(() => {});
     const rates = await deleteQuery(
