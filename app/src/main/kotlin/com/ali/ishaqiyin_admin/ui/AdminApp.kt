@@ -3,6 +3,7 @@ package com.ali.ishaqiyin_admin.ui
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -48,6 +49,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -59,6 +61,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.Lifecycle
 import androidx.navigation.NavHostController
+import androidx.navigation.NavOptions
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -77,7 +80,6 @@ import com.ali.ishaqiyin_admin.ui.chat.DmListScreen
 import com.ali.ishaqiyin_admin.ui.chat.DmScreen
 import com.ali.ishaqiyin_admin.ui.chat.GroupInfoScreen
 import com.ali.ishaqiyin_admin.ui.chat.MemberAvatar
-import com.ali.ishaqiyin_admin.util.PickedFile
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -267,6 +269,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
     if (incoming.isEmpty()) return
 
     var pickAdmin by remember { mutableStateOf(false) }
+    val preparing by ShareIntake.preparing.collectAsState()
     val hasAudio = remember(incoming) {
         incoming.any { context.shareContentType(it).startsWith("audio/") }
     }
@@ -276,23 +279,48 @@ private fun ShareDestinationSheets(nav: NavHostController) {
         "${incoming.size} ملفّات"
     }
 
-    fun send(target: ChatUploadTarget, files: List<PickedFile>) {
-        files.forEach { file ->
-            val contentType = context.shareContentType(file)
-            ChatUploader.enqueue(
-                target = target,
-                file = file,
-                type = chatTypeForMime(contentType),
-                contentType = contentType,
-            )
-        }
-        ShareIntake.clearIncoming()
+    // ⚠️ النسخ إلى الكاش قبل الرفع مقصود: إذن قراءة الـUri الوارد مع
+    // ACTION_SEND مؤقّت ومربوط بحياة النشاط ولا يقبل التثبيت، بينما
+    // ChatUploader يرفع في نطاق على مستوى العمليّة — فمغادرة التطبيق أثناء
+    // رفع ملفّ كبير كانت تُسقط الإذن ويضيع الملفّ بصمت.
+    fun send(target: ChatUploadTarget, notice: String, onSent: () -> Unit) {
+        if (preparing) return
+        val files = incoming
+        ShareIntake.prepareForChat(
+            context = context,
+            files = files,
+            onReady = { prepared ->
+                prepared.forEach { item ->
+                    // نوع المحتوى يُقرأ من الوارد الأصلي: اسم النسخة هو نفسه
+                    // والـContentResolver لا يفيد مع `file://`.
+                    val contentType = context.shareContentType(item.source)
+                    ChatUploader.enqueue(
+                        target = target,
+                        file = item.file,
+                        type = chatTypeForMime(contentType),
+                        contentType = contentType,
+                        deleteAfter = item.cached,
+                    )
+                }
+                ShareIntake.consumeIncoming(files)
+                snack(
+                    if (prepared.size < files.size) {
+                        "تعذّر تجهيز بعض الملفّات — يُرسَل ${prepared.size} من ${files.size}."
+                    } else {
+                        notice
+                    },
+                )
+                runCatching { onSent() }
+            },
+            onFailure = { message -> snack(message) },
+        )
     }
 
     if (!pickAdmin) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(
-            onDismissRequest = { ShareIntake.clearIncoming() },
+            // الصرف ممنوع أثناء التجهيز كي لا تختفي الورقة وسط نسخ الملفّ.
+            onDismissRequest = { if (!preparing) ShareIntake.clearIncoming() },
             sheetState = sheetState,
             containerColor = ChatColors.surface,
         ) {
@@ -313,6 +341,17 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
                 )
+                if (preparing) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Spin(color = kTeal, size = 16)
+                        Spacer(Modifier.size(10.dp))
+                        Text("جارٍ التجهيز…", fontSize = 13.sp, color = ChatColors.textMuted)
+                    }
+                }
                 HorizontalDivider()
                 if (hasAudio) {
                     ShareOptionRow(
@@ -320,11 +359,19 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                         tint = kOrange,
                         title = "إضافة درس صوتي",
                         subtitle = "تعبئة نموذج الدرس بالملفّ المشترَك",
+                        enabled = !preparing,
                     ) {
                         ShareIntake.chooseLesson()
-                        // اللوحة هي من يفتح نموذج الدرس عند امتلاء الطابور،
-                        // فأعِدها إلى المقدّمة كي يعمل مستمعها.
-                        nav.popBackStack(Routes.DASHBOARD, false)
+                        // انتقال مباشر إلى النموذج: الرجوع القسري إلى اللوحة
+                        // كان يمحو مكدّس التنقّل ومعه أيّ نموذج قيد التعبئة.
+                        // واللوحة نفسها تفتح النموذج عند امتلاء الطابور، فلا
+                        // ننتقل مرّتين حين تكون هي الشاشة الحاليّة.
+                        if (nav.currentDestination?.route != Routes.DASHBOARD) {
+                            nav.navigate(
+                                Routes.ADD_LESSON,
+                                NavOptions.Builder().setLaunchSingleTop(true).build(),
+                            )
+                        }
                     }
                 }
                 ShareOptionRow(
@@ -332,17 +379,18 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                     tint = kTeal,
                     title = "إرسال إلى مجموعة الإدارة",
                     subtitle = "يظهر للمشرفين جميعاً في دردشة المجموعة",
+                    enabled = !preparing,
                 ) {
-                    val files = incoming
-                    send(ChatUploadTarget.Group, files)
-                    snack("جارٍ الإرسال إلى مجموعة الإدارة…")
-                    nav.navigate(Routes.CHAT)
+                    send(ChatUploadTarget.Group, "جارٍ الإرسال إلى مجموعة الإدارة…") {
+                        nav.navigate(Routes.CHAT)
+                    }
                 }
                 ShareOptionRow(
                     icon = Icons.Filled.Person,
                     tint = kBlue,
                     title = "إرسال إلى محادثة خاصّة",
                     subtitle = "اختر مشرفاً واحداً لإرسال الملفّ إليه",
+                    enabled = !preparing,
                 ) {
                     pickAdmin = true
                 }
@@ -359,7 +407,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
     val others = membersList.filter { it.uid != myUid }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
-        onDismissRequest = { pickAdmin = false },
+        onDismissRequest = { if (!preparing) pickAdmin = false },
         sheetState = sheetState,
         containerColor = ChatColors.surface,
     ) {
@@ -370,6 +418,17 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(14.dp),
             )
+            if (preparing) {
+                Row(
+                    Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Spin(color = kTeal, size = 16)
+                    Spacer(Modifier.size(10.dp))
+                    Text("جارٍ التجهيز…", fontSize = 13.sp, color = ChatColors.textMuted)
+                }
+            }
             HorizontalDivider()
             if (others.isEmpty()) {
                 Text(
@@ -389,14 +448,16 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                val files = incoming
+                            .clickable(enabled = !preparing) {
                                 val threadId = DmRepository.ensureThread(member.uid)
-                                send(ChatUploadTarget.Dm(threadId, member.uid), files)
-                                snack("جارٍ الإرسال إلى ${member.displayName}…")
-                                nav.navigate(
-                                    Routes.dm(threadId, member.uid, member.displayName),
-                                )
+                                send(
+                                    ChatUploadTarget.Dm(threadId, member.uid),
+                                    "جارٍ الإرسال إلى ${member.displayName}…",
+                                ) {
+                                    nav.navigate(
+                                        Routes.dm(threadId, member.uid, member.displayName),
+                                    )
+                                }
                             }
                             .padding(horizontal = 20.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -454,12 +515,14 @@ private fun ShareOptionRow(
     tint: Color,
     title: String,
     subtitle: String,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .alpha(if (enabled) 1f else 0.5f)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

@@ -106,6 +106,7 @@ fun FeaturedScreen(onBack: () -> Unit) {
 
     var durationFor by remember { mutableStateOf<Lesson?>(null) }
     var busyId by remember { mutableStateOf("") }
+    var confirmClean by remember { mutableStateOf(false) }
 
     val expired = lessons.filter { it.featuredUntilMs != null && it.featuredUntilMs <= now }
     val active = lessons.filterNot { it.featuredUntilMs != null && it.featuredUntilMs <= now }
@@ -137,21 +138,44 @@ fun FeaturedScreen(onBack: () -> Unit) {
         )
     }
 
+    if (confirmClean && expired.isNotEmpty()) {
+        // العدد المشمول مذكور صراحةً: التنظيف يمسّ دروساً عدّة دفعة واحدة.
+        val batch = expired
+        ConfirmDialog(
+            title = "تنظيف المنتهية؟",
+            body = "سيُزال التمييز عن ${batch.size} درساً انتهت مدّتها، فتسقط " +
+                "من مختارات المنبر في التطبيق العام. الدروس نفسها لا تُحذف.",
+            confirmLabel = "نظّف ${batch.size}",
+            confirmColor = kOrange,
+            onConfirm = {
+                confirmClean = false
+                scope.launch {
+                    var failed = 0
+                    batch.forEach { lesson ->
+                        runCatching { AdminRepository.setLessonFeatured(lesson.id, false) }
+                            .onFailure { failed++ }
+                    }
+                    // النجاح لا يُعلن إلّا عمّا نجح فعلاً: إعلان ثابت كان
+                    // يُخفي فشل كلّ الكتابات فيظنّها المشرف نُظّفت.
+                    snack(
+                        if (failed == 0) {
+                            "نُظّفت ${batch.size} من المنتهية."
+                        } else {
+                            "نُظّفت ${batch.size - failed}، وتعذّر $failed — أعد المحاولة."
+                        },
+                    )
+                }
+            },
+            onDismiss = { confirmClean = false },
+        )
+    }
+
     AdminScaffold(
         title = "مختارات المنبر",
         onBack = onBack,
         actions = {
             if (expired.isNotEmpty()) {
-                IconButton(
-                    onClick = {
-                        scope.launch {
-                            expired.forEach {
-                                runCatching { AdminRepository.setLessonFeatured(it.id, false) }
-                            }
-                            snack("نُظّفت ${expired.size} من المنتهية.")
-                        }
-                    },
-                ) {
+                IconButton(onClick = { confirmClean = true }) {
                     Icon(Icons.Filled.CleaningServices, contentDescription = "تنظيف المنتهية")
                 }
             }

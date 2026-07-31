@@ -46,6 +46,12 @@ private const val UPLOAD_NOTIFICATION_ID = 4711
 private const val DONE_NOTIFICATION_BASE = 500_000
 
 /**
+ * أساس معرّفات إشعارات الفشل الدائم — بعيد عن [DONE_NOTIFICATION_BASE]
+ * (أقصى إزاحة 0xFFFF) فلا يمحو إشعارُ فشلٍ إشعارَ اكتمالٍ ولا العكس.
+ */
+private const val FAILED_NOTIFICATION_BASE = 600_000
+
+/**
  * 📤 عامل رفع الدروس — يعالج الطابور **تسلسليّاً بالدور** فيصل أوّل درس
  * أُضيف أوّلاً إلى التطبيق العام.
  *
@@ -70,9 +76,15 @@ class LessonUploadWorker(
             lastPercent = 0
             val file = File(item.localPath)
             if (!file.exists() || file.length() == 0L) {
-                // الملفّ ضاع (مسح يدويّ/تخزين ممتلئ) — لا معنى لإبقائه.
+                // الملفّ ضاع (مسح يدويّ/تخزين ممتلئ). لا يُزال بصمت: المشرف
+                // كان قد وُعِد بإشعار عند الاكتمال، فالإزالة الصامتة تجعله
+                // ينتظر ما لن يأتي. يُركن بسبب مقروء ويصله إشعار فشل.
                 Log.w(TAG, "missing local file for ${item.id}")
-                UploadQueue.remove(item.id)
+                UploadQueue.update(item.id) {
+                    it.copy(parked = true, lastError = MISSING_FILE_ERROR)
+                }
+                UploadQueue.setProgress(null)
+                notifyUploadParked(item, MISSING_FILE_ERROR)
                 continue
             }
 
@@ -138,6 +150,9 @@ class LessonUploadWorker(
                             parked = true,
                         )
                     }
+                    // بلا إشعار هنا كان الدرس الميّت يبدو للمشرف «بانتظار
+                    // الدور» إلى الأبد — الركن يخرجه من الدور فلا يُرفع أبداً.
+                    notifyUploadParked(item, e.message)
                 } else {
                     // فشل غير شبكيّ ⇒ الجلسة نفسها قد تكون منتهية الصلاحية،
                     // فتُمسح كي تبدأ المحاولة التالية جلسة جديدة بدل الدوران
@@ -251,6 +266,42 @@ class LessonUploadWorker(
      * العنصر كي لا يمحو إشعارُ درسٍ إشعارَ الذي قبله.
      */
     private fun notifyUploadDone(item: PendingUpload) {
+        val text = "اكتمل رفع: ${item.title.ifBlank { item.fileName }}"
+        val remaining = UploadQueue.liveCount()
+        notifyUpload(
+            item = item,
+            contentTitle = "اكتمل رفع الدرس",
+            text = text,
+            bigText = if (remaining > 0) "$text\nبقي $remaining في طابور الرفع." else text,
+            idBase = DONE_NOTIFICATION_BASE,
+        )
+    }
+
+    /**
+     * 🔔 إشعار الفشل الدائم — نظير [notifyUploadDone] وضرورته أشدّ: العنصر
+     * المركون يخرج من دور الرفع فلن يُرفع أبداً، وبلا هذا الإشعار يظنّ
+     * المشرف أنّ درسه ما زال في الدور.
+     */
+    private fun notifyUploadParked(item: PendingUpload, reason: String?) {
+        val text = "تعذّر رفع: ${item.title.ifBlank { item.fileName }} — " +
+            "أعد المحاولة من طابور الرفع"
+        notifyUpload(
+            item = item,
+            contentTitle = "تعذّر رفع الدرس",
+            text = text,
+            bigText = if (reason.isNullOrBlank()) text else "$text\nالسبب: $reason",
+            idBase = FAILED_NOTIFICATION_BASE,
+        )
+    }
+
+    /** بناء إشعار الإدارة وإرساله — مشترك بين الاكتمال والفشل الدائم. */
+    private fun notifyUpload(
+        item: PendingUpload,
+        contentTitle: String,
+        text: String,
+        bigText: String,
+        idBase: Int,
+    ) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(
                 applicationContext,
@@ -259,18 +310,11 @@ class LessonUploadWorker(
         ) {
             return
         }
-        val name = item.title.ifBlank { item.fileName }
-        val text = "اكتمل رفع: $name"
-        val remaining = UploadQueue.liveCount()
         val builder = NotificationCompat.Builder(applicationContext, AdminChannels.ALERTS)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("اكتمل رفع الدرس")
+            .setContentTitle(contentTitle)
             .setContentText(text)
-            .setStyle(
-                NotificationCompat.BigTextStyle().bigText(
-                    if (remaining > 0) "$text\nبقي $remaining في طابور الرفع." else text,
-                ),
-            )
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
         applicationContext.packageManager
@@ -288,7 +332,7 @@ class LessonUploadWorker(
             }
         runCatching {
             NotificationManagerCompat.from(applicationContext)
-                .notify(DONE_NOTIFICATION_BASE + (item.id.hashCode() and 0xFFFF), builder.build())
+                .notify(idBase + (item.id.hashCode() and 0xFFFF), builder.build())
         }
     }
 
@@ -321,6 +365,9 @@ class LessonUploadWorker(
     companion object {
         private const val TAG = "LessonUpload"
         private const val MAX_ATTEMPTS = 5
+
+        /** سبب مقروء يُعرض للمشرف حين تختفي النسخة المحليّة للدرس. */
+        private const val MISSING_FILE_ERROR = "ضاع الملفّ المحلّي"
 
         const val WORK_NAME = "lesson_upload_queue"
 

@@ -49,9 +49,26 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.ali.ishaqiyin_admin.data.isArabicText
 import com.ali.ishaqiyin_admin.util.AudioRecorderController
 import kotlinx.coroutines.delay
 import java.io.File
+
+/**
+ * سبب فشل التسجيل بالعربية. المسجّل محليّ بالكامل، ولذلك **لا** يمرّ عطله
+ * على `Throwable.arabicReason()`: تلك الطبقة تترجم `IOException` إلى «لا يوجد
+ * اتصال بالإنترنت» — وهي رسالة مضلّلة هنا لأنّ `MediaRecorder.prepare` يرمي
+ * `IOException` عند انشغال الميكروفون أو امتلاء التخزين لا عند انقطاع الشبكة.
+ * المهمّ أنّ نصّ الاستثناء الإنجليزي الخام لا يصل المشرف بأي حال.
+ */
+private fun recorderReason(error: Throwable): String {
+    val text = error.message.orEmpty().trim()
+    return if (text.isNotEmpty() && isArabicText(text)) {
+        text
+    } else {
+        "تحقّق من إذن الميكروفون وخلوّ مساحة التخزين ثم أعد المحاولة."
+    }
+}
 
 /**
  * ورقة تسجيل صوتي مباشر — تعيد الملفّ المسجَّل واسمه المقترح (أو لا شيء إن
@@ -101,7 +118,7 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
             paused = false
             seconds = 0
         } catch (e: Exception) {
-            error = "تعذّر بدء التسجيل: ${e.message ?: e}"
+            error = "تعذّر بدء التسجيل: ${recorderReason(e)}"
         }
     }
 
@@ -120,7 +137,7 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
                 file = result
             }
         } catch (e: Exception) {
-            error = "تعذّر إيقاف التسجيل: ${e.message ?: e}"
+            error = "تعذّر إيقاف التسجيل: ${recorderReason(e)}"
         }
     }
 

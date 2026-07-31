@@ -79,6 +79,7 @@ import com.ali.ishaqiyin_admin.data.ChatUploader
 import com.ali.ishaqiyin_admin.data.DmRepository
 import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.ali.ishaqiyin_admin.data.QUICK_REACTIONS
+import com.ali.ishaqiyin_admin.data.arabicReason
 import com.ali.ishaqiyin_admin.data.chatTypeForMime
 import com.ali.ishaqiyin_admin.data.chatTypeLabel
 import com.ali.ishaqiyin_admin.data.guessContentType
@@ -142,6 +143,7 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
     var searchQuery by remember { mutableStateOf("") }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClearChat by remember { mutableStateOf(false) }
+    var confirmDeleteAll by remember { mutableStateOf<ChatMessage?>(null) }
 
     val listState = rememberLazyListState()
     // ⚠️ remember إلزاميّ: بلاه يُنشأ تدفّق جديد مع كل إعادة تركيب
@@ -374,7 +376,10 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                 }
                 DmSheetItem(Icons.Filled.Delete, "حذف عندي فقط", ChatColors.amber) {
                     actionsFor = null
-                    scope.launch { runCatching { DmRepository.deleteForMe(threadId, msg.id) } }
+                    scope.launch {
+                        runCatching { DmRepository.deleteForMe(threadId, msg.id) }
+                            .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
+                    }
                 }
                 if (msg.isMine && !msg.deleted) {
                     DmSheetItem(
@@ -383,14 +388,31 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                         ChatColors.rose,
                         textColor = ChatColors.rose,
                     ) {
+                        // كان يُنفَّذ بضغطة واحدة بلا تأكيد رغم أنّه يمحو ملفّ
+                        // المرفق من التخزين نهائياً — والمجموعة تؤكّد الإجراء نفسه.
                         actionsFor = null
-                        scope.launch {
-                            runCatching { DmRepository.deleteForEveryone(threadId, msg) }
-                        }
+                        confirmDeleteAll = msg
                     }
                 }
             }
         }
+    }
+
+    confirmDeleteAll?.let { msg ->
+        ConfirmDialog(
+            title = "حذف عند الطرفين",
+            body = "ستُحذف هذه الرسالة عند الطرفين ولا يمكن التراجع. متابعة؟",
+            confirmLabel = "حذف",
+            confirmColor = ChatColors.rose,
+            onDismiss = { confirmDeleteAll = null },
+            onConfirm = {
+                confirmDeleteAll = null
+                scope.launch {
+                    runCatching { DmRepository.deleteForEveryone(threadId, msg) }
+                        .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
+                }
+            },
+        )
     }
 
     if (confirmClearChat) {
@@ -406,7 +428,7 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                 scope.launch {
                     runCatching { DmRepository.clearForMe(threadId) }
                         .onSuccess { snack("مُسحت المحادثة عندك ($it رسالة).") }
-                        .onFailure { snack("تعذّر المسح: ${it.message ?: it}") }
+                        .onFailure { snack("تعذّر المسح: ${it.arabicReason()}") }
                 }
             },
         )
@@ -820,7 +842,7 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                                     fromGroup = quoted,
                                 )
                             } catch (e: Exception) {
-                                snack("تعذّر الإرسال: ${e.message ?: e}")
+                                snack("تعذّر الإرسال: ${e.arabicReason()}")
                             }
                             sending = false
                         }

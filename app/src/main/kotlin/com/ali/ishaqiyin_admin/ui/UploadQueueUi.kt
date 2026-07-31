@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.LessonUploadWorker
 import com.ali.ishaqiyin_admin.data.NetworkMonitor
+import com.ali.ishaqiyin_admin.data.PendingUpload
 import com.ali.ishaqiyin_admin.data.UploadQueue
 import com.ali.ishaqiyin_admin.data.formatBytes
 import kotlinx.coroutines.delay
@@ -77,7 +78,26 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
 
     val waiting = !online || progress?.waitingForNetwork == true
     val current = progress
-    val accent = if (waiting) kOrange else kTeal
+    // درس مركون = فشل رفعه نهائياً وخرج من دور الرفع (peek يستبعد المركون)،
+    // فلا يجوز أن يُعرض «بانتظار الدور» — لن يُرفع أبداً بلا تدخّل المشرف.
+    val parkedCount = items.count { it.parked }
+    val idle = current == null && !waiting
+    val alerting = parkedCount > 0 && idle
+    val accent = when {
+        alerting -> kDanger
+        waiting -> kOrange
+        else -> kTeal
+    }
+    val parkedText = if (parkedCount > 1) {
+        "تعذّر رفع $parkedCount دروس — افتح للتفاصيل"
+    } else {
+        "تعذّر رفع درس — افتح للتفاصيل"
+    }
+    // العنوان المعروض: ما يُرفع الآن، وإلّا أوّل درس **حيّ** — المركون خرج
+    // من الدور فلا يصلح أن يمثّل «التالي».
+    val headline = current?.title?.takeIf { it.isNotBlank() }
+        ?: items.firstOrNull { !it.parked }?.title?.takeIf { it.isNotBlank() }
+        ?: items.firstOrNull()?.title.orEmpty()
     // موقع ما يُرفع الآن في الدور — يبقى «1 من ن» ما لم يبدأ رفع بعد.
     val activePosition = current?.id
         ?.let { id -> items.indexOfFirst { it.id == id } }
@@ -96,7 +116,11 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
         Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    if (waiting) Icons.Filled.CloudOff else Icons.Filled.CloudUpload,
+                    when {
+                        alerting -> Icons.Filled.ErrorOutline
+                        waiting -> Icons.Filled.CloudOff
+                        else -> Icons.Filled.CloudUpload
+                    },
                     contentDescription = null,
                     tint = accent,
                     modifier = Modifier.size(20.dp),
@@ -104,8 +128,7 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                 Spacer(Modifier.size(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        current?.title?.takeIf { it.isNotBlank() }
-                            ?: items.firstOrNull()?.title.orEmpty(),
+                        headline,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         fontSize = 13.sp,
@@ -116,10 +139,11 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                         when {
                             waiting -> "بانتظار الإنترنت — سيُستأنف تلقائياً من حيث توقّف"
                             current != null -> "جارٍ الرفع… ${current.percent}%"
+                            parkedCount > 0 -> parkedText
                             else -> "بانتظار الدور"
                         },
                         fontSize = 11.sp,
-                        color = kMuted,
+                        color = if (alerting) kDanger else kMuted,
                     )
                 }
                 if (items.size > 1) {
@@ -153,6 +177,34 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                     color = accent,
                     trackColor = accent.copy(alpha = 0.2f),
                 )
+            }
+            // الفشل الدائم لا يُخفيه انشغال الطابور بغيره: يبقى ظاهراً بلون
+            // الخطر حتى يُعيد المشرف المحاولة أو يُلغيه.
+            if (parkedCount > 0 && !idle) {
+                Spacer(Modifier.height(7.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(kDanger.copy(alpha = 0.10f), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Filled.ErrorOutline,
+                        contentDescription = null,
+                        tint = kDanger,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Text(
+                        parkedText,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = kDanger,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             justAdded?.let { added ->
                 Spacer(Modifier.height(8.dp))
@@ -207,6 +259,9 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
     val items by UploadQueue.items.collectAsState()
     val progress by UploadQueue.progress.collectAsState()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    // الإلغاء يحذف النسخة المحليّة نهائياً — وهي النسخة الوحيدة للملفّ
+    // المدموج (enqueueLocalFile تحذف المصدر) — فلا يقع بلا تأكيد صريح.
+    var confirmCancel by remember { mutableStateOf<PendingUpload?>(null) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -225,7 +280,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                 "تُرفع بالترتيب المعروض، وأوّل درس أُضيف هو أوّل ما يظهر في " +
                     "التطبيق العام. أضف درساً جديداً ولو كان السابق قيد الرفع، " +
                     "وأغلق الشاشة أو التطبيق إن شئت — الرفع يكمل في الخلفية " +
-                    "ويصلك إشعار عند اكتمال كلّ درس.",
+                    "ويصلك إشعار عند اكتمال كلّ درس، وإشعار آخر إن تعذّر رفعه.",
                 fontSize = 11.5.sp,
                 color = kMuted,
                 lineHeight = 18.sp,
@@ -266,7 +321,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            if (item.lastError != null) {
+                            if (item.lastError != null || item.parked) {
                                 Spacer(Modifier.height(3.dp))
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
@@ -277,9 +332,15 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                                     )
                                     Spacer(Modifier.size(4.dp))
                                     Text(
-                                        "تعذّر الرفع — أعد المحاولة",
+                                        if (item.parked) {
+                                            "توقّف الرفع — أعد المحاولة أو ألغِه"
+                                        } else {
+                                            "تعذّر الرفع — أعد المحاولة"
+                                        },
                                         fontSize = 10.5.sp,
                                         color = kDanger,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
                                 }
                             } else if (active) {
@@ -292,7 +353,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                                 )
                             }
                         }
-                        if (item.lastError != null) {
+                        if (item.lastError != null || item.parked) {
                             IconButton(
                                 onClick = {
                                     // رفع الركن أولاً وإلّا بقي خارج الدور.
@@ -308,7 +369,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                                 )
                             }
                         }
-                        IconButton(onClick = { UploadQueue.cancel(item.id) }) {
+                        IconButton(onClick = { confirmCancel = item }) {
                             Icon(
                                 Icons.Filled.Delete,
                                 contentDescription = "إلغاء",
@@ -321,5 +382,22 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
             }
             Spacer(Modifier.height(16.dp))
         }
+    }
+
+    confirmCancel?.let { target ->
+        val name = target.title.ifBlank { target.fileName }
+        ConfirmDialog(
+            title = "إلغاء رفع هذا الدرس؟",
+            body = "سيُحذف «$name» من طابور الرفع، وتُحذف معه نسخته المحليّة " +
+                "نهائياً بلا تراجع — وهي النسخة الوحيدة إن كان ملفّاً مدموجاً. " +
+                "لن يُنشر الدرس في التطبيق العام.",
+            confirmLabel = "إلغاء وحذف الملفّ",
+            confirmColor = kDanger,
+            onConfirm = {
+                UploadQueue.cancel(target.id)
+                confirmCancel = null
+            },
+            onDismiss = { confirmCancel = null },
+        )
     }
 }

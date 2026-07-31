@@ -44,12 +44,26 @@ import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.AuthService
 import com.ali.ishaqiyin_admin.data.ChatRepository
 import com.ali.ishaqiyin_admin.data.DashAdmin
+import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.launch
 
 private sealed interface SupervisorAction {
     data class Block(val admin: DashAdmin, val mode: String) : SupervisorAction
     data class Remove(val admin: DashAdmin) : SupervisorAction
 }
+
+/**
+ * الحظر والحذف كلاهما يستدعي `ChatRepository.removeMemberByEmail` — وهو حذف
+ * نهائيّ لوثيقة العضويّة لا استعادة له: إلغاء الحظر يعيد الوصول فقط، بينما
+ * الاسم والصورة ورتبة «مشرف المجموعة» تُبنى من جديد عند أوّل دخول للدردشة.
+ */
+private const val CHAT_MEMBERSHIP_NOTE =
+    "كما تُزال عضويّته من مجموعة الإدارة فوراً، ولا يعود بعد إلغاء الحظر " +
+        "اسمه ولا صورته ولا رتبته «مشرف المجموعة» تلقائياً."
+
+private const val CHAT_MEMBERSHIP_NOTE_REMOVE =
+    "كما تُزال عضويّته من مجموعة الإدارة نهائياً باسمه وصورته ورتبته " +
+        "«مشرف المجموعة»."
 
 /**
  * إدارة المشرفين (المالك فقط) — مطابقة لصفحة المشرفين في نبراس: قائمة بكل
@@ -76,7 +90,7 @@ fun SupervisorsScreen(onBack: () -> Unit) {
         try {
             admins = AdminRepository.fetchDashAdmins()
         } catch (e: Exception) {
-            error = "تعذّر جلب المشرفين: ${e.message ?: e}"
+            error = "تعذّر جلب المشرفين: ${e.arabicReason()}"
         }
         loading = false
     }
@@ -88,9 +102,11 @@ fun SupervisorsScreen(onBack: () -> Unit) {
         is SupervisorAction.Block -> ConfirmDialog(
             title = if (action.mode == "permanent") "حظر نهائي" else "حظر مؤقّت",
             body = if (action.mode == "permanent") {
-                "سيتم حظر \"${action.admin.email}\" بشكل نهائي. يمكنك إلغاء الحظر لاحقاً إن رغبت."
+                "سيتم حظر \"${action.admin.email}\" بشكل نهائي. " +
+                    "يمكنك إلغاء الحظر لاحقاً إن رغبت.\n\n" + CHAT_MEMBERSHIP_NOTE
             } else {
-                "سيتم تعليق وصول \"${action.admin.email}\" فوراً. يمكنك إلغاء الحظر لاحقاً."
+                "سيتم تعليق وصول \"${action.admin.email}\" فوراً. " +
+                    "يمكنك إلغاء الحظر لاحقاً.\n\n" + CHAT_MEMBERSHIP_NOTE
             },
             confirmLabel = "تأكيد",
             confirmColor = kDanger,
@@ -107,7 +123,7 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                         )
                         ChatRepository.removeMemberByEmail(action.admin.email)
                     } catch (e: Exception) {
-                        snack("تعذّر التعديل: ${e.message ?: e}")
+                        snack("تعذّر التعديل: ${e.arabicReason()}")
                     }
                     busyEmail = null
                     reload++
@@ -118,7 +134,8 @@ fun SupervisorsScreen(onBack: () -> Unit) {
         is SupervisorAction.Remove -> ConfirmDialog(
             title = "حذف نهائي",
             body = "سيتم حذف \"${action.admin.email}\" من قائمة المشرفين نهائيّاً. " +
-                "لا يمكن التراجع إلّا بإعادة اعتماده عبر رمز جديد.",
+                "لا يمكن التراجع إلّا بإعادة اعتماده عبر رمز جديد.\n\n" +
+                CHAT_MEMBERSHIP_NOTE_REMOVE,
             confirmLabel = "حذف",
             confirmColor = kDanger,
             onDismiss = { pending = null },
@@ -130,7 +147,7 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                         AdminRepository.removeDashAdmin(action.admin.email)
                         ChatRepository.removeMemberByEmail(action.admin.email)
                     } catch (e: Exception) {
-                        snack("تعذّر الحذف: ${e.message ?: e}")
+                        snack("تعذّر الحذف: ${e.arabicReason()}")
                     }
                     busyEmail = null
                     reload++
@@ -249,7 +266,7 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                                                             false,
                                                         )
                                                     }.onFailure {
-                                                        snack("تعذّر التعديل: ${it.message ?: it}")
+                                                        snack("تعذّر التعديل: ${it.arabicReason()}")
                                                     }
                                                     busyEmail = null
                                                     reload++

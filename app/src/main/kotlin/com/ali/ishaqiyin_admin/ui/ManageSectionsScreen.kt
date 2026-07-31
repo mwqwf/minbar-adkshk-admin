@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.Category
+import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.launch
 
 @Composable
@@ -85,7 +86,7 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                                     refreshCategories()
                                     snack("تم إنشاء القسم الرئيسي.")
                                 } catch (e: Exception) {
-                                    snack("تعذّر إنشاء القسم: ${e.message ?: e}")
+                                    snack("تعذّر إنشاء القسم: ${e.arabicReason()}")
                                 }
                                 busyCat = false
                             }
@@ -143,7 +144,7 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                                     subCategoryId = null
                                     snack("تم إنشاء القسم الفرعي.")
                                 } catch (e: Exception) {
-                                    snack("تعذّر إنشاء القسم الفرعي: ${e.message ?: e}")
+                                    snack("تعذّر إنشاء القسم الفرعي: ${e.arabicReason()}")
                                 }
                                 busySub = false
                             }

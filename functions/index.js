@@ -1424,14 +1424,24 @@ exports.deleteSubcategoryCascade = functions.runWith({ timeoutSeconds: 540, memo
       1,
       180,
     );
-    const [subcategorySnap, lessonsSnap] = await Promise.all([
+    // الوثائق القديمة ملفوفة `{data:{...}}`: استعلام الجذر لا يراها إطلاقاً
+    // بينما تفكّها unwrapLegacy عند المعالجة — فكانت دروسها وملفاتها تنجو من
+    // الحذف «الكامل» وتبقى ظاهرة في التطبيق العام. لذا استعلام ثانٍ على
+    // المفتاح الملفوف، والدمج في خريطة واحدة بمعرّف الوثيقة (لا تكرار).
+    const [subcategorySnap, lessonsSnap, wrappedLessonsSnap] = await Promise.all([
       db.collection("subcategories").doc(subcategoryId).get(),
       db.collection("lessons").where("subcategoryId", "==", subcategoryId).get(),
+      db.collection("lessons")
+        .where("data.subcategoryId", "==", subcategoryId).get(),
     ]);
-    const paths = lessonsSnap.docs.flatMap(
+    const lessonMap = new Map();
+    [...lessonsSnap.docs, ...wrappedLessonsSnap.docs]
+      .forEach((doc) => lessonMap.set(doc.id, doc));
+    const lessons = [...lessonMap.values()];
+    const paths = lessons.flatMap(
       (doc) => lessonStoragePaths(unwrapLegacy(doc.data())),
     );
-    const refs = lessonsSnap.docs.map((doc) => doc.ref);
+    const refs = lessons.map((doc) => doc.ref);
     if (subcategorySnap.exists) refs.push(subcategorySnap.ref);
     await deleteRefsInBatches(refs);
     const cleanup = await deletePathsBestEffort(
@@ -1440,14 +1450,14 @@ exports.deleteSubcategoryCascade = functions.runWith({ timeoutSeconds: 540, memo
       subcategoryId,
     );
     await auditOwnerAction(actor.email, "delete_subcategory_cascade", subcategoryId, {
-      lessonsDeleted: lessonsSnap.size,
+      lessonsDeleted: lessons.length,
       cleanupPending: cleanup.failed.length > 0,
       cleanupJobId: cleanup.cleanupJobId,
     });
     return {
       ok: true,
       id: subcategoryId,
-      lessonsDeleted: lessonsSnap.size,
+      lessonsDeleted: lessons.length,
       cleanupPending: cleanup.failed.length > 0,
     };
   });
@@ -1456,22 +1466,51 @@ exports.deleteCategoryCascade = functions.runWith({ timeoutSeconds: 540, memory:
   .https.onCall(async (data, context) => {
     const actor = await assertAuthorized(context);
     const categoryId = requireString(data && data.categoryId, "categoryId", 1, 180);
-    const [categorySnap, subcategoriesSnap, categoryLessonsSnap, booksSnap] = await Promise.all([
+    // كما في حذف القسم الفرعي: الوثائق الملفوفة `{data:{...}}` لا يراها
+    // استعلام الجذر، فتنجو من الحذف التعاقبي كلّه (دروساً وأقساماً وكتباً)
+    // بينما تعلن اللوحة «حُذف بالكامل». لكل مجموعة استعلامان يُدمجان بالمعرّف.
+    const [
+      categorySnap,
+      subcategoriesSnap,
+      wrappedSubcategoriesSnap,
+      categoryLessonsSnap,
+      wrappedCategoryLessonsSnap,
+      booksSnap,
+      wrappedBooksSnap,
+    ] = await Promise.all([
       db.collection("categories").doc(categoryId).get(),
       db.collection("subcategories").where("categoryId", "==", categoryId).get(),
+      db.collection("subcategories")
+        .where("data.categoryId", "==", categoryId).get(),
       db.collection("lessons").where("categoryId", "==", categoryId).get(),
+      db.collection("lessons").where("data.categoryId", "==", categoryId).get(),
       db.collection("books").where("categoryId", "==", categoryId).get(),
+      db.collection("books").where("data.categoryId", "==", categoryId).get(),
     ]);
-    const lessonMap = new Map(categoryLessonsSnap.docs.map((doc) => [doc.id, doc]));
-    for (const subcategory of subcategoriesSnap.docs) {
-      const snap = await db.collection("lessons")
-        .where("subcategoryId", "==", subcategory.id)
-        .get();
-      snap.docs.forEach((doc) => lessonMap.set(doc.id, doc));
+    const lessonMap = new Map();
+    [...categoryLessonsSnap.docs, ...wrappedCategoryLessonsSnap.docs]
+      .forEach((doc) => lessonMap.set(doc.id, doc));
+    const subcategoryMap = new Map();
+    [...subcategoriesSnap.docs, ...wrappedSubcategoriesSnap.docs]
+      .forEach((doc) => subcategoryMap.set(doc.id, doc));
+    const bookMap = new Map();
+    [...booksSnap.docs, ...wrappedBooksSnap.docs]
+      .forEach((doc) => bookMap.set(doc.id, doc));
+    const subcategories = [...subcategoryMap.values()];
+    for (const subcategory of subcategories) {
+      const [plainSnap, wrappedSnap] = await Promise.all([
+        db.collection("lessons")
+          .where("subcategoryId", "==", subcategory.id).get(),
+        db.collection("lessons")
+          .where("data.subcategoryId", "==", subcategory.id).get(),
+      ]);
+      [...plainSnap.docs, ...wrappedSnap.docs]
+        .forEach((doc) => lessonMap.set(doc.id, doc));
     }
     const lessons = [...lessonMap.values()];
+    const books = [...bookMap.values()];
     const paths = lessons.flatMap((doc) => lessonStoragePaths(unwrapLegacy(doc.data())));
-    booksSnap.docs.forEach((doc) => {
+    books.forEach((doc) => {
       const value = unwrapLegacy(doc.data());
       [value.storagePath, value.pdfStoragePath, value.fileUrl, value.url]
         .map(storagePathFromUrl)
@@ -1480,8 +1519,8 @@ exports.deleteCategoryCascade = functions.runWith({ timeoutSeconds: 540, memory:
     });
     const refs = [
       ...lessons.map((doc) => doc.ref),
-      ...booksSnap.docs.map((doc) => doc.ref),
-      ...subcategoriesSnap.docs.map((doc) => doc.ref),
+      ...books.map((doc) => doc.ref),
+      ...subcategories.map((doc) => doc.ref),
     ];
     if (categorySnap.exists) refs.push(categorySnap.ref);
     await deleteRefsInBatches(refs);
@@ -1491,18 +1530,18 @@ exports.deleteCategoryCascade = functions.runWith({ timeoutSeconds: 540, memory:
       categoryId,
     );
     await auditOwnerAction(actor.email, "delete_category_cascade", categoryId, {
-      subcategoriesDeleted: subcategoriesSnap.size,
+      subcategoriesDeleted: subcategories.length,
       lessonsDeleted: lessons.length,
-      booksDeleted: booksSnap.size,
+      booksDeleted: books.length,
       cleanupPending: cleanup.failed.length > 0,
       cleanupJobId: cleanup.cleanupJobId,
     });
     return {
       ok: true,
       id: categoryId,
-      subcategoriesDeleted: subcategoriesSnap.size,
+      subcategoriesDeleted: subcategories.length,
       lessonsDeleted: lessons.length,
-      booksDeleted: booksSnap.size,
+      booksDeleted: books.length,
       cleanupPending: cleanup.failed.length > 0,
     };
   });
@@ -1729,11 +1768,17 @@ exports.onAdminDmMessageCreated = functions.firestore
 // وحُذف ما لا معنى له في مكتبة دروس صوتية: كشف «القرصنة»، وكشف «معلومات
 // الاتصال» (نمطه `(?:\+?\d[\s-]?){9,}` كان يلتقط أيّ تاريخين أو ترقيم دروس).
 
-/// حدّ كلمة عربي/لاتيني (\b اللاتينية لا تعمل مع العربية). بلا سماح بأيّ
-/// سابقة ملتصقة: العبارات أدناه مركّبة، والسماح بسابقة «ال» هو ما جعل
-/// «القاعدة» تُطابق اسم التنظيم أصلاً.
+/// حدّ كلمة عربي/لاتيني (\b اللاتينية لا تعمل مع العربية).
+/// تُسمح السوابق الملتصقة الشائعة وحدها: العطف (و/ف) ثم الجرّ (ب/ك/ل)،
+/// لأن منعها كلياً فتح تهرّباً بحرف واحد — «وداعش» و«فاقتلوا» و«لصنع قنبلة»
+/// كانت تُفلت من كل أنماط المحتوى. ويبقى **منع «ال» التعريف الملتصقة**
+/// (فالألف ليست ضمن السوابق المسموحة)، وهي وحدها سبب إيجابيات «القاعدة
+/// الفقهية»؛ والعبارات أدناه مركّبة فلا يعود بها الضجيج.
 const phrase = (alternatives) =>
-  new RegExp(`(?<![\\p{L}\\p{N}])(?:${alternatives})(?![\\p{L}\\p{N}])`, "iu");
+  new RegExp(
+    `(?<![\\p{L}\\p{N}])(?:و|ف)?(?:ب|ك|ل)?(?:${alternatives})(?![\\p{L}\\p{N}])`,
+    "iu",
+  );
 
 // إشارات المحتوى: قاطعة بدرجة 5 (تفتح مراجعة وحدها)، ومرجّحة بدرجة 4
 // (تحتاج قرينة أخرى) — لأن صيغة الأمر قد ترد داخل نقل نصّ أو ردٍّ عليه.
@@ -1763,12 +1808,15 @@ const CONTENT_PATTERNS = [
   },
   {
     // تحريض بصيغة الأمر على فئة — لا مجرّد ذكر «القتل» في باب فقهي.
+    // درجته 5 لا 4: بدرجة 4 كان التحريض الصريح لا يبلغ أيّ عتبة وحده، بل
+    // يسلك الدرس مسار «دون العتبة» فيُغلق بلاغه السابق تلقائياً — وهو أخطر
+    // ما يمكن أن يفعله كاشف. «قتلوا» ضمن البدائل كي تُطابق «فاقتلوا/واقتلوا».
     pattern: phrase(
-      "(?:اقتلوا|اقتل|اذبحوا|اذبح|فجّروا|فجروا)\\s+(?:كلَّ|كل|جميع|من)"
+      "(?:اقتلوا|اقتل|قتلوا|اذبحوا|اذبح|فجّروا|فجروا)\\s+(?:كلَّ|كل|جميع|من)"
       + "|يجب\\s+قتلُ?\\s+(?:كلَّ|كل|جميع|من)",
     ),
     reason: "صيغة أمر صريحة بالقتل موجَّهة إلى فئة",
-    score: 4,
+    score: 5,
   },
 ];
 

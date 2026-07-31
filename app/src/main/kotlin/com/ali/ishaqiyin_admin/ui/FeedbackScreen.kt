@@ -38,7 +38,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminRepository
+import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.launch
+
+/** هدف حذف مؤكَّد — نحتفظ بوصفه العربيّ كي يذكره الحوار بدقّة. */
+private data class PendingFeedbackDelete(
+    val id: String,
+    val label: String,
+    val lessonTitle: String,
+)
 
 /**
  * «تفاعل المستمعين» — يعرض التقييمات والبلاغات الواردة من التطبيق العام،
@@ -47,6 +55,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun FeedbackScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val snack = LocalSnack.current
+    var pendingDelete by remember { mutableStateOf<PendingFeedbackDelete?>(null) }
     var items by remember { mutableStateOf<List<Map<String, Any?>>>(emptyList()) }
     var titles by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var loading by remember { mutableStateOf(true) }
@@ -65,6 +75,28 @@ fun FeedbackScreen(onBack: () -> Unit) {
             titles = fetchedTitles
         }.onFailure { error = "تعذّر جلب البيانات. تحقّق من الاتصال." }
         loading = false
+    }
+
+    // الحذف كان يقع بضغطة واحدة بلا تأكيد، وفشله يُبتلع بصمت فيظنّه المشرف
+    // نجح حتى يعود التفاعل بعد التحديث — الآن يؤكَّد وتُعلَن حصيلته.
+    pendingDelete?.let { target ->
+        ConfirmDialog(
+            title = "تأكيد الحذف",
+            body = "سيُحذف «${target.label}» المسجَّل على \"${target.lessonTitle}\" " +
+                "نهائياً. لا يمكن التراجع.",
+            confirmLabel = "حذف",
+            confirmColor = kDanger,
+            onDismiss = { pendingDelete = null },
+            onConfirm = {
+                pendingDelete = null
+                scope.launch {
+                    runCatching { AdminRepository.deleteFeedback(target.id) }
+                        .onSuccess { snack("حُذف التفاعل.") }
+                        .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
+                    reload++
+                }
+            },
+        )
     }
 
     AdminScaffold(
@@ -120,12 +152,11 @@ fun FeedbackScreen(onBack: () -> Unit) {
                             }
                             IconButton(
                                 onClick = {
-                                    scope.launch {
-                                        runCatching {
-                                            AdminRepository.deleteFeedback(m["id"].toString())
-                                        }
-                                        reload++
-                                    }
+                                    pendingDelete = PendingFeedbackDelete(
+                                        id = m["id"].toString(),
+                                        label = kind.label,
+                                        lessonTitle = title,
+                                    )
                                 },
                             ) {
                                 Icon(Icons.Filled.Delete, contentDescription = "حذف", tint = kDanger)

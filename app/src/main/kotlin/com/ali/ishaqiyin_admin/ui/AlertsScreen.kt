@@ -28,8 +28,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -38,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminAlert
 import com.ali.ishaqiyin_admin.data.AdminAlertsFeed
+import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.launch
 
 /**
@@ -49,6 +52,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun AlertsScreen(isOwner: Boolean, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val snack = LocalSnack.current
+    var confirmPublicDelete by remember { mutableStateOf<AdminAlert?>(null) }
     val live by remember(isOwner) { AdminAlertsFeed.stream(isOwner) }
         .collectAsState(initial = emptyList())
     val me = AdminAlertsFeed.myEmail
@@ -66,6 +71,32 @@ fun AlertsScreen(isOwner: Boolean, onBack: () -> Unit) {
         }
     }
     val alerts = session.values.sortedByDescending { it.createdAtMs }
+
+    /** الحذف يمحو الوثيقة نفسها لا علامة قراءتي — لذا يُعلَن فشله. */
+    fun deleteNow(alert: AdminAlert) {
+        session.remove(alert.id)
+        scope.launch {
+            runCatching { AdminAlertsFeed.delete(alert) }
+                .onFailure { snack("تعذّر حذف التنبيه: ${it.arabicReason()}") }
+        }
+    }
+
+    // تنبيه المالك العامّ (email فارغ) يعود لكلّ المشرفين، وحذفه يمحوه عنهم
+    // جميعاً — لا عن صاحب الضغطة وحده، فيلزم تأكيد صريح.
+    confirmPublicDelete?.let { alert ->
+        ConfirmDialog(
+            title = "حذف تنبيه عامّ",
+            body = "هذا تنبيه عامّ — سيختفي عن جميع المشرفين لا عنك وحدك، " +
+                "ولا يمكن التراجع.",
+            confirmLabel = "حذف للجميع",
+            confirmColor = kDanger,
+            onDismiss = { confirmPublicDelete = null },
+            onConfirm = {
+                confirmPublicDelete = null
+                deleteNow(alert)
+            },
+        )
+    }
 
     AdminScaffold(
         title = "تنبيهاتك",
@@ -130,8 +161,11 @@ fun AlertsScreen(isOwner: Boolean, onBack: () -> Unit) {
                     if (deletable) {
                         IconButton(
                             onClick = {
-                                session.remove(alert.id)
-                                scope.launch { AdminAlertsFeed.delete(alert) }
+                                if (alert.email.isEmpty()) {
+                                    confirmPublicDelete = alert
+                                } else {
+                                    deleteNow(alert)
+                                }
                             },
                         ) {
                             Icon(

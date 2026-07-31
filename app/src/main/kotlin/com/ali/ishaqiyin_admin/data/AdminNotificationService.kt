@@ -11,7 +11,6 @@ import com.google.firebase.functions.FirebaseFunctionsException
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.tasks.await
-import java.io.IOException
 
 /**
  * فشل إرسال إشعار عام — [message] **عربية دائماً** وصالحة للعرض مباشرة
@@ -68,7 +67,7 @@ object AdminNotificationService {
         } catch (e: Exception) {
             Log.w(TAG, "sendNotification failed: $e")
             throw NotificationSendException(
-                if (isOffline(e)) {
+                if (isOfflineError(e)) {
                     "لا يوجد اتصال بالإنترنت. تحقّق من الشبكة ثم أعد المحاولة."
                 } else {
                     "تعذّر إرسال الإشعار. أعد المحاولة بعد قليل."
@@ -82,7 +81,7 @@ object AdminNotificationService {
         if (rejected) {
             val reason = data?.get("error")?.toString().orEmpty().trim()
             throw NotificationSendException(
-                if (reason.isNotEmpty() && isArabic(reason)) {
+                if (reason.isNotEmpty() && isArabicText(reason)) {
                     reason
                 } else {
                     "رفض الخادم إرسال الإشعار. أعد المحاولة بعد قليل."
@@ -96,58 +95,27 @@ object AdminNotificationService {
     }
 
     /**
-     * ترجمة رمز خطأ الدالة السحابية إلى عربية مفهومة. رسالة الخادم تُفضَّل
-     * إن كانت عربية أصلاً (كل أخطاء `HttpsError` في هذا المشروع عربية)،
-     * وإلا فالرمز وحده يصل بالإنجليزية (`NOT_FOUND`, `INTERNAL`…) لأن
-     * الأخطاء غير المعالَجة والانقطاعات لا تحمل رسالة خادم.
+     * ترجمة رمز خطأ الدالة السحابية إلى عربية مفهومة. المنطق العامّ صار في
+     * `ErrorMessages.kt` (`Throwable.arabicReason()`) وتستعمله كلّ الشاشات؛
+     * هنا لا تبقى إلّا الصياغات الخاصّة بالإشعارات وحدها، وما عداها يُفوَّض.
+     * رسالة الخادم العربية تُفضَّل كما هي (كل أخطاء `HttpsError` عربية).
      */
     private fun arabicMessage(e: FirebaseFunctionsException): String {
         val server = e.message.orEmpty().trim()
-        if (server.isNotEmpty() && isArabic(server)) return server
+        if (server.isNotEmpty() && isArabicText(server)) return server
         return when (e.code) {
-            FirebaseFunctionsException.Code.UNAUTHENTICATED ->
-                "انتهت جلسة الدخول. سجّل الخروج ثم ادخل بحساب Google مجدّداً."
             FirebaseFunctionsException.Code.PERMISSION_DENIED ->
                 "هذا الحساب غير مخوّل لإرسال الإشعارات."
             FirebaseFunctionsException.Code.INVALID_ARGUMENT ->
                 "بيانات الإشعار ناقصة أو غير صالحة. اكتب عنواناً أو نصاً ثم أعد المحاولة."
-            FirebaseFunctionsException.Code.FAILED_PRECONDITION ->
-                "رفض الخادم الطلب قبل التحقق من سلامة التطبيق. أعد فتح اللوحة وحاول مجدّداً."
-            FirebaseFunctionsException.Code.RESOURCE_EXHAUSTED ->
-                "طلبات كثيرة متتابعة. انتظر قليلاً ثم أعد المحاولة."
             FirebaseFunctionsException.Code.NOT_FOUND,
             FirebaseFunctionsException.Code.UNIMPLEMENTED,
             ->
                 "خدمة الإشعارات غير متاحة على الخادم حالياً (لم تُنشر دالة الإرسال)."
-            FirebaseFunctionsException.Code.UNAVAILABLE ->
-                "تعذّر الوصول إلى الخادم. تحقّق من الاتصال بالإنترنت ثم أعد المحاولة."
-            FirebaseFunctionsException.Code.DEADLINE_EXCEEDED ->
-                "انتهت مهلة الاتصال بالخادم. أعد المحاولة."
             FirebaseFunctionsException.Code.CANCELLED ->
                 "أُلغيت عملية الإرسال قبل اكتمالها."
-            else ->
-                if (isOffline(e)) {
-                    "لا يوجد اتصال بالإنترنت. تحقّق من الشبكة ثم أعد المحاولة."
-                } else {
-                    "خطأ في الخادم أثناء الإرسال. أعد المحاولة بعد قليل."
-                }
+            else -> e.arabicReason()
         }
-    }
-
-    /** نطاق الحروف العربية الأساسي U+0600..U+06FF (بلا حروف حرفية في الكود). */
-    private fun isArabic(text: String): Boolean =
-        text.any { it.code in 0x0600..0x06FF }
-
-    /** انقطاع الشبكة يصل ملفوفاً داخل سلسلة أسباب — نفحصها كلّها. */
-    private fun isOffline(error: Throwable): Boolean {
-        var cause: Throwable? = error
-        var guard = 0
-        while (cause != null && guard < 10) {
-            if (cause is IOException) return true
-            cause = cause.cause
-            guard += 1
-        }
-        return false
     }
 
     suspend fun registerCurrentDevice(isOwner: Boolean) {

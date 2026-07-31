@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AuthService
 import com.ali.ishaqiyin_admin.data.OwnerReviewRepository
 import com.ali.ishaqiyin_admin.data.SuspiciousLessonReview
+import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.launch
 
 /**
@@ -103,7 +104,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                         if (player.playingId == review.id) player.stop()
                         snack(if (deleting) "حُذف الدرس نهائياً." else "وُضعت علامة تم التحقق.")
                     } catch (e: Exception) {
-                        snack("تعذّر تنفيذ القرار: ${e.message ?: e}")
+                        snack("تعذّر تنفيذ القرار: ${e.arabicReason()}")
                     }
                     busyId = ""
                 }
@@ -142,7 +143,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                             },
                         )
                     } catch (e: Exception) {
-                        snack("تعذّر الاعتماد الجماعي: ${e.message ?: e}")
+                        snack("تعذّر الاعتماد الجماعي: ${e.arabicReason()}")
                     }
                     bulkBusy = false
                 }
@@ -168,7 +169,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                                 },
                             )
                         } catch (e: Exception) {
-                            snack("تعذّر إكمال الفحص: ${e.message ?: e}")
+                            snack("تعذّر إكمال الفحص: ${e.arabicReason()}")
                         }
                         scanning = false
                     }

@@ -52,6 +52,7 @@ import com.ali.ishaqiyin_admin.core.AppConfig
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.AuthService
 import com.ali.ishaqiyin_admin.data.PendingOwnerCode
+import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -202,7 +203,7 @@ private fun PendingOwnerCodeCards() {
                 confirmCancel = null
                 scope.launch {
                     runCatching { AdminRepository.cancelOwnerCode(code) }
-                        .onFailure { snack("تعذّر إلغاء الرمز: ${it.message ?: it}") }
+                        .onFailure { snack("تعذّر إلغاء الرمز: ${it.arabicReason()}") }
                 }
             },
         )

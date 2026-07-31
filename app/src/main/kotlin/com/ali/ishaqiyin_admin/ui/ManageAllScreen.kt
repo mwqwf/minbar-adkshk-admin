@@ -45,6 +45,7 @@ import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.Category
 import com.ali.ishaqiyin_admin.data.Lesson
 import com.ali.ishaqiyin_admin.data.Subcategory
+import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.launch
 
 private sealed interface PendingAction {
@@ -112,7 +113,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                     scope.launch {
                         runCatching { AdminRepository.updateCategory(action.item.id, name) }
                             .onSuccess { snack("تم التعديل."); reload++ }
-                            .onFailure { snack("تعذّر التعديل: ${it.message ?: it}") }
+                            .onFailure { snack("تعذّر التعديل: ${it.arabicReason()}") }
                     }
                 }
             },
@@ -128,7 +129,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                     scope.launch {
                         runCatching { AdminRepository.updateSubcategory(action.item.id, name) }
                             .onSuccess { snack("تم التعديل."); reload++ }
-                            .onFailure { snack("تعذّر التعديل: ${it.message ?: it}") }
+                            .onFailure { snack("تعذّر التعديل: ${it.arabicReason()}") }
                     }
                 }
             },
@@ -144,55 +145,67 @@ fun ManageAllScreen(onBack: () -> Unit) {
                     scope.launch {
                         runCatching { AdminRepository.updateLessonTitle(action.item.id, title) }
                             .onSuccess { snack("تم التعديل."); reload++ }
-                            .onFailure { snack("تعذّر التعديل: ${it.message ?: it}") }
+                            .onFailure { snack("تعذّر التعديل: ${it.arabicReason()}") }
                     }
                 }
             },
         )
 
-        is PendingAction.DeleteCategory -> ConfirmDialog(
-            title = "تأكيد الحذف",
-            body = "هل أنت متأكد من حذف \"${action.item.name}\"؟\n\n" +
-                "سيُحذف القسم مع كل أقسامه الفرعية ودروسها وملفاتها الصوتية " +
-                "من التخزين. لا يمكن التراجع.",
-            confirmLabel = "حذف",
-            confirmColor = kDanger,
-            onDismiss = { pending = null },
-            onConfirm = {
-                pending = null
-                loading = true
-                scope.launch {
-                    runCatching { AdminRepository.deleteCategory(action.item.id) }
-                        .onSuccess { snack("تم حذف القسم ومحتوياته بالكامل.") }
-                        .onFailure { snack("تعذّر الحذف: ${it.message ?: it}") }
-                    reload++
-                }
-            },
-        )
+        is PendingAction.DeleteCategory -> {
+            // الحذف تعاقبيّ: المشرف يستحقّ معرفة مدى ما سيختفي قبل الضغط.
+            val doomedSubs = subcategories.filter { it.categoryId == action.item.id }
+            val doomedSubIds = doomedSubs.map { it.id }.toSet()
+            val doomedLessons = lessons.count {
+                it.categoryId == action.item.id || it.subcategoryId in doomedSubIds
+            }
+            ConfirmDialog(
+                title = "تأكيد الحذف",
+                body = "هل أنت متأكد من حذف \"${action.item.name}\"؟\n\n" +
+                    "سيُحذف ${doomedSubs.size} قسماً فرعياً و$doomedLessons درساً، " +
+                    "وملفاتها الصوتية من التخزين نهائياً. لا يمكن التراجع.",
+                confirmLabel = "حذف",
+                confirmColor = kDanger,
+                onDismiss = { pending = null },
+                onConfirm = {
+                    pending = null
+                    loading = true
+                    scope.launch {
+                        runCatching { AdminRepository.deleteCategory(action.item.id) }
+                            .onSuccess { snack("تم حذف القسم ومحتوياته بالكامل.") }
+                            .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
+                        reload++
+                    }
+                },
+            )
+        }
 
-        is PendingAction.DeleteSubcategory -> ConfirmDialog(
-            title = "تأكيد الحذف",
-            body = "هل أنت متأكد من حذف \"${action.item.name}\"؟\n\n" +
-                "سيُحذف القسم الفرعي مع كل دروسه وملفاتها الصوتية من التخزين. " +
-                "لا يمكن التراجع.",
-            confirmLabel = "حذف",
-            confirmColor = kDanger,
-            onDismiss = { pending = null },
-            onConfirm = {
-                pending = null
-                loading = true
-                scope.launch {
-                    runCatching { AdminRepository.deleteSubcategory(action.item.id) }
-                        .onSuccess { snack("تم حذف القسم الفرعي ومحتوياته بالكامل.") }
-                        .onFailure { snack("تعذّر الحذف: ${it.message ?: it}") }
-                    reload++
-                }
-            },
-        )
+        is PendingAction.DeleteSubcategory -> {
+            val doomedLessons = lessons.count { it.subcategoryId == action.item.id }
+            ConfirmDialog(
+                title = "تأكيد الحذف",
+                body = "هل أنت متأكد من حذف \"${action.item.name}\"؟\n\n" +
+                    "سيُحذف $doomedLessons درساً وملفاتها الصوتية من التخزين نهائياً. " +
+                    "لا يمكن التراجع.",
+                confirmLabel = "حذف",
+                confirmColor = kDanger,
+                onDismiss = { pending = null },
+                onConfirm = {
+                    pending = null
+                    loading = true
+                    scope.launch {
+                        runCatching { AdminRepository.deleteSubcategory(action.item.id) }
+                            .onSuccess { snack("تم حذف القسم الفرعي ومحتوياته بالكامل.") }
+                            .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
+                        reload++
+                    }
+                },
+            )
+        }
 
         is PendingAction.DeleteLesson -> ConfirmDialog(
             title = "تأكيد الحذف",
-            body = "هل أنت متأكد من حذف \"${action.item.title}\"؟",
+            body = "هل أنت متأكد من حذف \"${action.item.title}\"؟\n\n" +
+                "سيُحذف الدرس وملفّه الصوتي من التخزين نهائياً. لا يمكن التراجع.",
             confirmLabel = "حذف",
             confirmColor = kDanger,
             onDismiss = { pending = null },
@@ -201,7 +214,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                 scope.launch {
                     runCatching { AdminRepository.deleteLesson(action.item) }
                         .onSuccess { snack("تم حذف الدرس والملف الصوتي.") }
-                        .onFailure { snack("تعذّر الحذف: ${it.message ?: it}") }
+                        .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
                     reload++
                 }
             },
@@ -220,7 +233,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                     // وحده كان ينشر بصمت بلا إشعار.
                     runCatching { AdminRepository.publishScheduledNow(action.item.id) }
                         .onSuccess { snack("نُشر الدرس فوراً وأُرسل إشعار «درس جديد».") }
-                        .onFailure { snack("تعذّر النشر الفوري: ${it.message ?: it}") }
+                        .onFailure { snack("تعذّر النشر الفوري: ${it.arabicReason()}") }
                     reload++
                 }
             },
@@ -242,7 +255,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                     }.onSuccess {
                         snack("مُيّز في مختارات المنبر — ${duration.label}")
                         reload++
-                    }.onFailure { snack("تعذّر التمييز: ${it.message ?: it}") }
+                    }.onFailure { snack("تعذّر التمييز: ${it.arabicReason()}") }
                 }
             },
         )
@@ -310,7 +323,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                                             snack("أُزيل من مختارات المنبر.")
                                             reload++
                                         }.onFailure {
-                                            snack("تعذّر التعديل: ${it.message ?: it}")
+                                            snack("تعذّر التعديل: ${it.arabicReason()}")
                                         }
                                     }
                                 } else {
@@ -330,7 +343,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                                             }
                                                 .onSuccess { snack("جُدول النشر.") }
                                                 .onFailure {
-                                                    snack("تعذّرت الجدولة: ${it.message ?: it}")
+                                                    snack("تعذّرت الجدولة: ${it.arabicReason()}")
                                                 }
                                             reload++
                                         }
