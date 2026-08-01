@@ -1,8 +1,9 @@
 package com.ali.ishaqiyin_admin.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -33,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -98,12 +100,40 @@ fun ManageAllScreen(onBack: () -> Unit) {
     }
 
     fun subName(id: String): String = subcategories.firstOrNull { it.id == id }?.name.orEmpty()
+    fun catName(id: String): String = categories.firstOrNull { it.id == id }?.name.orEmpty()
+
+    // فلتر الأقسام: أغلب عناوين الدروس أرقام متشابهة، والقسم هو ما يميّزها —
+    // اختر القسم (الرئيسي/الفرعي) لتحصر البحث فيه، أو اتركه لكل الأقسام.
+    var filterCategoryId by rememberSaveable { mutableStateOf<String?>(null) }
+    var filterSubcategoryId by rememberSaveable { mutableStateOf<String?>(null) }
+    val filterSubs = subcategories.filter { it.categoryId == filterCategoryId }
 
     val cats = filter(categories) { it.name }
     val subs = filter(subcategories) { it.name }
-    val foundLessons = filter(lessons) { it.title }
     val hasQuery = query.trim().isNotEmpty()
-    val empty = hasQuery && cats.isEmpty() && subs.isEmpty() && foundLessons.isEmpty()
+    val hasFilter = filterCategoryId != null || filterSubcategoryId != null
+
+    // بحث الدروس رمزيّ عامّ: يقبل رقماً واحداً، وكل كلمة تُطابق العنوان أو
+    // اسم القسم الرئيسي أو الفرعي («3 الفقه» = الدرس 3 في الفقه)، ويتقيّد
+    // بفلتر الأقسام إن حُدّد. فلترٌ بلا بحث يعرض دروس القسم كلها.
+    val lessonTokens = query.trim().lowercase().split(Regex("\\s+"))
+        .filter { it.isNotEmpty() }
+    val foundLessons = if (!hasQuery && !hasFilter) {
+        emptyList()
+    } else {
+        lessons.filter { lesson ->
+            (filterCategoryId == null || lesson.categoryId == filterCategoryId) &&
+                (filterSubcategoryId == null || lesson.subcategoryId == filterSubcategoryId) &&
+                (
+                    lessonTokens.isEmpty() || lessonTokens.all { token ->
+                        "${lesson.title} ${catName(lesson.categoryId)} ${subName(lesson.subcategoryId)}"
+                            .lowercase().contains(token)
+                    }
+                    )
+        }
+    }
+    val empty = (hasQuery || hasFilter) &&
+        cats.isEmpty() && subs.isEmpty() && foundLessons.isEmpty()
 
     // حوارات التعديل/الحذف
     when (val action = pending) {
@@ -278,18 +308,51 @@ fun ManageAllScreen(onBack: () -> Unit) {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                placeholder = { Text("ابحث في الأقسام والدروس...") },
+                placeholder = { Text("ابحث بالعنوان أو الرقم أو اسم القسم…") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 singleLine = true,
                 shape = RoundedCornerShape(10.dp),
                 colors = adminFieldColors(),
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
             )
+            // فلتر الأقسام للدروس ذات العناوين الرقمية المتشابهة.
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AdminDropdown(
+                    label = "القسم الرئيسي (الكل)",
+                    items = listOf<Category?>(null) + categories,
+                    selected = categories.firstOrNull { it.id == filterCategoryId },
+                    itemLabel = { it?.name ?: "كل الأقسام" },
+                    onSelected = { picked ->
+                        filterCategoryId = picked?.id
+                        filterSubcategoryId = null
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                AdminDropdown(
+                    label = "الفرعي (الكل)",
+                    items = listOf<Subcategory?>(null) + filterSubs,
+                    selected = filterSubs.firstOrNull { it.id == filterSubcategoryId },
+                    itemLabel = { it?.name ?: "كل الفروع" },
+                    enabled = filterCategoryId != null,
+                    onSelected = { picked -> filterSubcategoryId = picked?.id },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Spacer(Modifier.size(6.dp))
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = kTeal)
             when {
-                !hasQuery -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("أدخل كلمة للبحث في كل العناصر.", color = kMuted)
-                }
+                !hasQuery && !hasFilter ->
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            "ابحث بأي كلمة أو رقم، أو اختر قسماً لعرض دروسه —\n" +
+                                "مثال: «3 الفقه» يجد الدرس رقم 3 في قسم الفقه.",
+                            color = kMuted,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                    }
 
                 empty -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("لا توجد نتائج")

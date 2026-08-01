@@ -33,8 +33,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -71,36 +73,59 @@ fun AdminTranscriptImagesEditor(
     val scope = rememberCoroutineScope()
     var cropIndex by remember { mutableIntStateOf(-1) }
     var merging by remember { mutableStateOf(false) }
+    // «القصّ أثناء المعاينة»: كل صورة تُختار تمرّ بشاشة القصّ **قبل** إدراجها
+    // — لا اختيار ثم قصّ لاحق. الإلغاء داخل شاشة القصّ يعني «أدرِجها كما هي».
+    val pendingNew = remember { mutableStateListOf<Uri>() }
+    var cropActive by remember { mutableStateOf(false) }
+
+    fun cropOptions(uri: Uri) = CropImageContractOptions(
+        uri,
+        CropImageOptions(
+            activityTitle = "قصّ صورة الصفحة",
+            cropMenuCropButtonTitle = "تم",
+        ),
+    )
+
+    val cropper = rememberLauncherForActivityResult(CropImageContract()) { result ->
+        if (cropIndex >= 0) {
+            // إعادة قصّ صورة مدرجة.
+            val index = cropIndex
+            cropIndex = -1
+            if (result.isSuccessful && index in images.indices) {
+                result.uriContent?.let { images[index] = it }
+            }
+            return@rememberLauncherForActivityResult
+        }
+        // قصّ صورة جديدة قبل الإدراج: الناتج المقصوص أو الأصل عند الإلغاء.
+        val source = pendingNew.removeFirstOrNull()
+        val final = if (result.isSuccessful) (result.uriContent ?: source) else source
+        if (final != null && images.size < TranscriptsRepository.MAX_IMAGES) {
+            images.add(final)
+        }
+        cropActive = false
+    }
+
+    // سلسلة القصّ: صورة تلو أخرى حتى تفرغ قائمة المنتظرات.
+    LaunchedEffect(pendingNew.size, cropActive) {
+        if (!cropActive && pendingNew.isNotEmpty()) {
+            cropActive = true
+            cropper.launch(cropOptions(pendingNew.first()))
+        }
+    }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetMultipleContents(),
     ) { uris ->
-        uris.forEach { uri ->
-            if (images.size < TranscriptsRepository.MAX_IMAGES) images.add(uri)
-        }
-    }
-
-    val cropper = rememberLauncherForActivityResult(CropImageContract()) { result ->
-        val index = cropIndex
-        cropIndex = -1
-        if (result.isSuccessful && index in images.indices) {
-            result.uriContent?.let { images[index] = it }
-        } else if (!result.isSuccessful && result !is com.canhub.cropper.CropImage.CancelledResult) {
-            onError("تعذّر قصّ الصورة.")
+        val remaining = TranscriptsRepository.MAX_IMAGES - images.size - pendingNew.size
+        pendingNew.addAll(uris.take(remaining.coerceAtLeast(0)))
+        if (uris.size > remaining) {
+            onError("الحد الأقصى ${TranscriptsRepository.MAX_IMAGES} صور.")
         }
     }
 
     fun crop(index: Int) {
         cropIndex = index
-        cropper.launch(
-            CropImageContractOptions(
-                images[index],
-                CropImageOptions(
-                    activityTitle = "قصّ صورة الصفحة",
-                    cropMenuCropButtonTitle = "تم",
-                ),
-            ),
-        )
+        cropper.launch(cropOptions(images[index]))
     }
 
     Row(verticalAlignment = Alignment.CenterVertically) {

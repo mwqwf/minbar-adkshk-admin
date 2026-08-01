@@ -43,6 +43,12 @@ import com.ali.ishaqiyin_admin.data.Lesson
 @Composable
 fun TranscriptIntakeScreen(onBack: () -> Unit) {
     var lessons by remember { mutableStateOf<List<Lesson>>(emptyList()) }
+    var categories by remember {
+        mutableStateOf<List<com.ali.ishaqiyin_admin.data.Category>>(emptyList())
+    }
+    var subcategories by remember {
+        mutableStateOf<List<com.ali.ishaqiyin_admin.data.Subcategory>>(emptyList())
+    }
     var loading by remember { mutableStateOf(true) }
     var query by remember { mutableStateOf("") }
     var target by remember { mutableStateOf<Lesson?>(null) }
@@ -50,9 +56,18 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
     val payload = remember { TranscriptIntake.consume() ?: TranscriptIntake.Payload() }
 
     LaunchedEffect(Unit) {
-        runCatching { lessons = AdminRepository.fetchLessons() }
+        runCatching {
+            lessons = AdminRepository.fetchLessons()
+            categories = AdminRepository.fetchCategories()
+            subcategories = AdminRepository.fetchSubcategories()
+        }
         loading = false
     }
+    fun sectionPath(lesson: Lesson): String = listOfNotNull(
+        categories.firstOrNull { it.id == lesson.categoryId }?.name?.takeIf(String::isNotBlank),
+        subcategories.firstOrNull { it.id == lesson.subcategoryId }?.name
+            ?.takeIf(String::isNotBlank),
+    ).joinToString(" ← ")
 
     target?.let { lesson ->
         TranscriptEditorDialog(
@@ -85,11 +100,17 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
             AdminTextField(
                 value = query,
                 onValueChange = { query = it },
-                label = "ابحث عن الدرس بعنوانه",
+                label = "ابحث بالعنوان أو رقم الدرس أو اسم القسم",
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
-            Spacer(Modifier.height(8.dp))
+            Text(
+                "مثال: «3 الفقه» يجد الدرس رقم 3 في قسم الفقه.",
+                fontSize = 11.sp,
+                color = kMuted,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
+            )
+            Spacer(Modifier.height(4.dp))
             if (loading) {
                 Box(
                     Modifier.fillMaxSize().padding(32.dp),
@@ -97,22 +118,28 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
                 ) { Text("جارٍ تحميل الدروس…", color = kMuted) }
                 return@Column
             }
-            val q = query.trim().lowercase()
-            val matches = if (q.length < 2) {
+            // بحث عامّ: يقبل رقماً واحداً، وكل كلمة تُطابق العنوان أو القسم
+            // الرئيسي أو الفرعي — فالعناوين الرقمية تتمايز بقسمها.
+            val tokens = query.trim().lowercase().split(Regex("\\s+"))
+                .filter { it.isNotEmpty() }
+            val matches = if (tokens.isEmpty()) {
                 emptyList()
             } else {
-                lessons.filter { it.title.lowercase().contains(q) }.take(20)
+                lessons.filter { lesson ->
+                    val haystack = "${lesson.title} ${sectionPath(lesson)}".lowercase()
+                    tokens.all { haystack.contains(it) }
+                }.take(25)
             }
-            if (q.length < 2) {
+            if (tokens.isEmpty()) {
                 Text(
-                    "اكتب حرفين على الأقل من عنوان الدرس.",
+                    "اكتب رقم الدرس أو أي كلمة من عنوانه أو قسمه.",
                     modifier = Modifier.fillMaxWidth().padding(24.dp),
                     textAlign = TextAlign.Center,
                     color = kMuted,
                 )
             } else if (matches.isEmpty()) {
                 Text(
-                    "لا نتائج — جرّب كلمة أخرى من العنوان.",
+                    "لا نتائج — جرّب رقم الدرس مع اسم قسمه، مثل: «3 الفقه».",
                     modifier = Modifier.fillMaxWidth().padding(24.dp),
                     textAlign = TextAlign.Center,
                     color = kMuted,
@@ -141,12 +168,18 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
                                     tint = kTeal,
                                 )
                                 Spacer(Modifier.size(10.dp))
-                                Text(
-                                    lesson.title.ifEmpty { "بدون عنوان" },
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                Column {
+                                    Text(
+                                        lesson.title.ifEmpty { "بدون عنوان" },
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    val path = sectionPath(lesson)
+                                    if (path.isNotEmpty()) {
+                                        Text(path, fontSize = 12.sp, color = kMuted)
+                                    }
+                                }
                             }
                         }
                     }

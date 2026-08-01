@@ -135,23 +135,50 @@ fun TranscriptEditorDialog(
         loading = false
     }
 
-    val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetMultipleContents(),
-    ) { uris ->
-        uris.forEach { uri ->
-            if (images.size < TranscriptsRepository.MAX_IMAGES) {
-                images.add(EditorImage(local = uri))
-            } else {
-                snack("الحد الأقصى ${TranscriptsRepository.MAX_IMAGES} صور.")
+    // «القصّ أثناء المعاينة»: كل صورة تُختار تمرّ بشاشة القصّ قبل إدراجها؛
+    // الإلغاء داخل الشاشة يعني «أدرِجها كما هي».
+    val pendingNew = remember { mutableStateListOf<Uri>() }
+    var cropActive by remember { mutableStateOf(false) }
+
+    fun cropOptions(uri: Uri) = CropImageContractOptions(
+        uri,
+        CropImageOptions(
+            activityTitle = "قصّ صورة الصفحة",
+            cropMenuCropButtonTitle = "تم",
+        ),
+    )
+
+    val cropper = rememberLauncherForActivityResult(CropImageContract()) { result ->
+        if (cropIndex >= 0) {
+            val index = cropIndex
+            cropIndex = -1
+            if (result.isSuccessful && index in images.indices) {
+                result.uriContent?.let { images[index] = EditorImage(local = it) }
             }
+            return@rememberLauncherForActivityResult
+        }
+        val source = pendingNew.removeFirstOrNull()
+        val final = if (result.isSuccessful) (result.uriContent ?: source) else source
+        if (final != null && images.size < TranscriptsRepository.MAX_IMAGES) {
+            images.add(EditorImage(local = final))
+        }
+        cropActive = false
+    }
+
+    LaunchedEffect(pendingNew.size, cropActive) {
+        if (!cropActive && pendingNew.isNotEmpty()) {
+            cropActive = true
+            cropper.launch(cropOptions(pendingNew.first()))
         }
     }
 
-    val cropper = rememberLauncherForActivityResult(CropImageContract()) { result ->
-        val index = cropIndex
-        cropIndex = -1
-        if (result.isSuccessful && index in images.indices) {
-            result.uriContent?.let { images[index] = EditorImage(local = it) }
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetMultipleContents(),
+    ) { uris ->
+        val remaining = TranscriptsRepository.MAX_IMAGES - images.size - pendingNew.size
+        pendingNew.addAll(uris.take(remaining.coerceAtLeast(0)))
+        if (uris.size > remaining) {
+            snack("الحد الأقصى ${TranscriptsRepository.MAX_IMAGES} صور.")
         }
     }
 
@@ -161,15 +188,7 @@ fun TranscriptEditorDialog(
             return
         }
         cropIndex = index
-        cropper.launch(
-            CropImageContractOptions(
-                local,
-                CropImageOptions(
-                    activityTitle = "قصّ صورة الصفحة",
-                    cropMenuCropButtonTitle = "تم",
-                ),
-            ),
-        )
+        cropper.launch(cropOptions(local))
     }
 
     viewingImage?.let { model ->
