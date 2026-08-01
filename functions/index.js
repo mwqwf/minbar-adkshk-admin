@@ -832,6 +832,16 @@ exports.createSubmission = functions.https.onCall(async (data, context) => {
     }
     throw new functions.https.HttpsError("already-exists", "المساهمة موجودة مسبقاً.");
   }
+  // «النص المشروح» الاختياري المرافق للمساهمة: نص/صور صفحات تُنشر مع
+  // الدرس تلقائياً عند اعتماده. صوره تُرفع لمساحة اقتراحات النصوص بنفس
+  // معرّف المساهمة، ويتحقق منها هنا كما في createTranscriptSubmission.
+  const transcriptText = cleanString(data && data.transcriptText, 20000);
+  const transcriptBookTitle = cleanString(data && data.transcriptBookTitle, 200);
+  const transcriptSourceRef = cleanString(data && data.transcriptSourceRef, 300);
+  const transcriptImagePaths = await validateTranscriptImages(
+    data && data.transcriptImagePaths,
+    `transcript_submissions/${uid}/${ref.id}/`,
+  );
   await consumeRateLimit({
     uid,
     action: "submission",
@@ -862,6 +872,10 @@ exports.createSubmission = functions.https.onCall(async (data, context) => {
     termsAcceptedAt,
     termsAcceptedAtTs: admin.firestore.FieldValue.serverTimestamp(),
     contentPolicyVersion: cleanString(data && data.contentPolicyVersion, 40) || "2026-07",
+    transcriptText,
+    transcriptBookTitle,
+    transcriptSourceRef,
+    transcriptImagePaths,
     createdAt: new Date().toISOString(),
     createdAtTs: admin.firestore.FieldValue.serverTimestamp(),
     createdAtMs: Date.now(),
@@ -1041,6 +1055,12 @@ exports.deleteMyData = functions.runWith({ timeoutSeconds: 120, memory: "512MB" 
       db.collection("lesson_submissions").where("uid", "==", uid),
       async (value) => {
         if (value.storagePath) await deleteFileIfExists(value.storagePath);
+        const transcriptImages = Array.isArray(value.transcriptImagePaths)
+          ? value.transcriptImagePaths
+          : [];
+        for (const path of transcriptImages) {
+          await deleteFileIfExists(path).catch(() => {});
+        }
       },
     );
     const transcriptSubmissions = await deleteQuery(
@@ -1257,6 +1277,42 @@ exports.approveSubmission = functions.runWith({ timeoutSeconds: 120, memory: "51
     } catch (_) {
       await submissionRef.update({ cleanupPending: true }).catch(() => {});
     }
+    // «النص المشروح» المرافق (إن أُرفق): يُنشر مع الدرس فور اعتماده.
+    // فشله لا يُسقط نشر الدرس نفسه — يُسجَّل ويستطيع المشرف إضافته يدوياً.
+    const transcriptText = cleanString(original.transcriptText, 20000);
+    const transcriptImages = Array.isArray(original.transcriptImagePaths)
+      ? original.transcriptImagePaths
+      : [];
+    if (transcriptText.length >= 10 || transcriptImages.length) {
+      try {
+        const publishedImages = [];
+        for (let index = 0; index < transcriptImages.length; index += 1) {
+          publishedImages.push(
+            await publishTranscriptImage(transcriptImages[index], lessonRef.id, index),
+          );
+        }
+        await db.collection("lesson_transcripts").doc(lessonRef.id).set({
+          lessonId: lessonRef.id,
+          lessonTitle: title,
+          text: transcriptText,
+          bookTitle: cleanString(original.transcriptBookTitle, 200),
+          sourceRef: cleanString(original.transcriptSourceRef, 300),
+          images: publishedImages,
+          contributorUid: cleanString(original.uid, 180),
+          contributorName: cleanString(original.submitterName, 60),
+          sourceSubmissionId: submissionId,
+          updatedBy: actor.email,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAtMs: Date.now(),
+          createdAt: new Date().toISOString(),
+        });
+        for (const path of transcriptImages) {
+          await deleteFileIfExists(path).catch(() => {});
+        }
+      } catch (error) {
+        console.error("transcript publish with lesson failed", submissionId, error);
+      }
+    }
     await auditOwnerAction(
       actor.email,
       "approve_submission",
@@ -1283,6 +1339,7 @@ exports.rejectSubmission = functions.https.onCall(async (data, context) => {
   const reason = requireString(data && data.reason, "reason", 2, 300);
   const ref = db.collection("lesson_submissions").doc(submissionId);
   let storagePath = "";
+  let transcriptImages = [];
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists) {
@@ -1297,18 +1354,22 @@ exports.rejectSubmission = functions.https.onCall(async (data, context) => {
       );
     }
     storagePath = cleanString(value.storagePath, 700);
+    transcriptImages = Array.isArray(value.transcriptImagePaths)
+      ? value.transcriptImagePaths
+      : [];
     tx.update(ref, {
       status: "rejected",
       rejectReason: reason,
       decidedBy: actor.email,
       decidedAt: new Date().toISOString(),
       decidedAtTs: admin.firestore.FieldValue.serverTimestamp(),
-      cleanupPending: Boolean(storagePath),
+      cleanupPending: Boolean(storagePath) || transcriptImages.length > 0,
     });
   });
-  if (storagePath) {
+  if (storagePath || transcriptImages.length) {
     try {
-      await deleteFileIfExists(storagePath);
+      if (storagePath) await deleteFileIfExists(storagePath);
+      for (const path of transcriptImages) await deleteFileIfExists(path);
       await ref.update({ cleanupPending: false });
     } catch (_) {
       // تبقى cleanupPending=true لإعادة المحاولة الآمنة لاحقاً.
@@ -1331,6 +1392,10 @@ async function deleteSubmissionHandler(data, context) {
   if (!snap.exists) return { ok: true, alreadyDeleted: true };
   const value = snap.data() || {};
   if (value.storagePath) await deleteFileIfExists(value.storagePath);
+  const transcriptImages = Array.isArray(value.transcriptImagePaths)
+    ? value.transcriptImagePaths
+    : [];
+  for (const path of transcriptImages) await deleteFileIfExists(path).catch(() => {});
   await ref.delete();
   await auditOwnerAction(actor.email, "delete_submission", submissionId, {});
   return { ok: true };
@@ -1357,6 +1422,10 @@ exports.deleteMySubmission = functions.https.onCall(async (data, context) => {
     throw new functions.https.HttpsError("permission-denied", "لا يمكن حذف هذا الطلب.");
   }
   if (value.storagePath) await deleteFileIfExists(value.storagePath);
+  const transcriptImages = Array.isArray(value.transcriptImagePaths)
+    ? value.transcriptImagePaths
+    : [];
+  for (const path of transcriptImages) await deleteFileIfExists(path).catch(() => {});
   await ref.delete();
   return { ok: true };
 });

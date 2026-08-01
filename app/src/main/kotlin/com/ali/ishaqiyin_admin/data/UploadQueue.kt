@@ -45,7 +45,16 @@ data class PendingUpload(
      * الرفع** — بلا هذا كان العامل يعيد رفعه بلا توقّف حين لا يبقى غيره.
      */
     val parked: Boolean = false,
+    // «النص المشروح» الاختياري المرافق: يُنشر بعد إنشاء الدرس مباشرة.
+    val transcriptText: String = "",
+    val transcriptBookTitle: String = "",
+    val transcriptSourceRef: String = "",
+    /** نسخ محليّة لصور صفحات الكتاب (في تخزين التطبيق مع ملفّ الصوت). */
+    val transcriptImagePaths: List<String> = emptyList(),
 ) {
+    val hasTranscript: Boolean
+        get() = transcriptText.trim().length >= 10 || transcriptImagePaths.isNotEmpty()
+
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
         put("seq", seq)
@@ -64,6 +73,10 @@ data class PendingUpload(
         put("attempts", attempts)
         put("lastError", lastError ?: JSONObject.NULL)
         put("parked", parked)
+        put("transcriptText", transcriptText)
+        put("transcriptBookTitle", transcriptBookTitle)
+        put("transcriptSourceRef", transcriptSourceRef)
+        put("transcriptImagePaths", org.json.JSONArray(transcriptImagePaths))
     }
 
     companion object {
@@ -85,6 +98,13 @@ data class PendingUpload(
             attempts = o.optInt("attempts"),
             lastError = o.optString("lastError").takeIf { it.isNotEmpty() && it != "null" },
             parked = o.optBoolean("parked"),
+            transcriptText = o.optString("transcriptText"),
+            transcriptBookTitle = o.optString("transcriptBookTitle"),
+            transcriptSourceRef = o.optString("transcriptSourceRef"),
+            transcriptImagePaths = o.optJSONArray("transcriptImagePaths")
+                ?.let { arr -> (0 until arr.length()).map { arr.optString(it) } }
+                ?.filter { it.isNotEmpty() }
+                .orEmpty(),
         )
     }
 }
@@ -209,6 +229,18 @@ object UploadQueue {
      * ينسخ الملفّ المختار إلى تخزين التطبيق ثم يُدرجه في الطابور.
      * يعيد العنصر المُدرَج، أو يرمي إن تعذّرت قراءة الملفّ.
      */
+    /** ينسخ صور «النص المشروح» المرافقة إلى تخزين التطبيق (تصمد كالصوت). */
+    private fun Context.copyTranscriptImages(id: String, uris: List<Uri>): List<String> =
+        uris.take(4).mapIndexedNotNull { index, uri ->
+            runCatching {
+                val dest = File(queueDir(), "${id}_transcript_$index.jpg")
+                contentResolver.openInputStream(uri)?.use { input ->
+                    dest.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
+                } ?: error("unreadable")
+                dest.absolutePath
+            }.getOrNull()
+        }
+
     suspend fun enqueue(
         context: Context,
         sourceUri: Uri,
@@ -220,6 +252,10 @@ object UploadQueue {
         featured: Boolean,
         featuredUntilMs: Long?,
         addedBy: String,
+        transcriptText: String = "",
+        transcriptBookTitle: String = "",
+        transcriptSourceRef: String = "",
+        transcriptImages: List<Uri> = emptyList(),
     ): PendingUpload = withContext(Dispatchers.IO) {
         val id = "up_${System.currentTimeMillis()}_${(0..9999).random()}"
         val safeName = fileName.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").takeLast(120)
@@ -242,6 +278,10 @@ object UploadQueue {
             fileName = fileName,
             sizeBytes = dest.length(),
             queuedAtMs = System.currentTimeMillis(),
+            transcriptText = transcriptText.trim(),
+            transcriptBookTitle = transcriptBookTitle.trim(),
+            transcriptSourceRef = transcriptSourceRef.trim(),
+            transcriptImagePaths = context.copyTranscriptImages(id, transcriptImages),
         )
         synchronized(lock) { persist(load() + item) }
         // بعد الحفظ: الترتيب صار نهائياً فيصحّ إعلان الموقع «س من ص».
@@ -263,6 +303,11 @@ object UploadQueue {
         featured: Boolean,
         featuredUntilMs: Long?,
         addedBy: String,
+        context: Context? = null,
+        transcriptText: String = "",
+        transcriptBookTitle: String = "",
+        transcriptSourceRef: String = "",
+        transcriptImages: List<Uri> = emptyList(),
     ): PendingUpload = withContext(Dispatchers.IO) {
         val id = "up_${System.currentTimeMillis()}_${(0..9999).random()}"
         val dest = File(queueDir(), "${id}_${file.name}")
@@ -282,6 +327,11 @@ object UploadQueue {
             fileName = fileName,
             sizeBytes = dest.length(),
             queuedAtMs = System.currentTimeMillis(),
+            transcriptText = transcriptText.trim(),
+            transcriptBookTitle = transcriptBookTitle.trim(),
+            transcriptSourceRef = transcriptSourceRef.trim(),
+            transcriptImagePaths = context?.copyTranscriptImages(id, transcriptImages)
+                .orEmpty(),
         )
         synchronized(lock) { persist(load() + item) }
         // بعد الحفظ: الترتيب صار نهائياً فيصحّ إعلان الموقع «س من ص».

@@ -194,7 +194,7 @@ object AdminRepository {
          * الخادم بعد نجاح الكتابة (حالة معتادة على شبكة ضعيفة).
          */
         clientKey: String? = null,
-    ) {
+    ): String {
         val data = mutableMapOf<String, Any>(
             "title" to title.trim(),
             "categoryId" to categoryId,
@@ -209,7 +209,9 @@ object AdminRepository {
         }
         if (addedBy.isNotEmpty()) data["addedBy"] = addedBy.lowercase()
         if (!clientKey.isNullOrEmpty()) data["clientKey"] = clientKey
-        functions.getHttpsCallable("createLesson").call(data).await()
+        val result = functions.getHttpsCallable("createLesson").call(data).await()
+        // معرّف الدرس المنشأ — يلزم «النص المشروح» المرافق في طابور الرفع.
+        return ((result.data as? Map<*, *>)?.get("id"))?.toString().orEmpty()
     }
 
     /**

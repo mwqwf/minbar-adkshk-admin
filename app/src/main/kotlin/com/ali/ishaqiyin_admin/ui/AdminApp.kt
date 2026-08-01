@@ -39,6 +39,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -99,6 +100,7 @@ object Routes {
     const val ADMINS = "admins"
     const val SUPERVISORS = "supervisors"
     const val SUBMISSIONS = "submissions"
+    const val TRANSCRIPT_INTAKE = "transcript_intake"
     const val OWNER_REVIEW = "owner_review"
     const val FEATURED = "featured"
     const val CHAT = "chat"
@@ -210,6 +212,18 @@ fun AdminApp() {
 @Composable
 private fun AdminNavHost(isOwner: Boolean) {
     val nav: NavHostController = rememberNavController()
+    // نصّ وصل بالمشاركة الخارجية (بلا ملفات): يفتح اختيار الدرس مباشرة.
+    val transcriptPayload by TranscriptIntake.payload.collectAsState()
+    LaunchedEffect(transcriptPayload) {
+        if (transcriptPayload != null &&
+            nav.currentDestination?.route != Routes.TRANSCRIPT_INTAKE
+        ) {
+            nav.navigate(
+                Routes.TRANSCRIPT_INTAKE,
+                NavOptions.Builder().setLaunchSingleTop(true).build(),
+            )
+        }
+    }
     NavHost(navController = nav, startDestination = Routes.DASHBOARD) {
         composable(Routes.DASHBOARD) { DashboardScreen(isOwner = isOwner, nav = nav) }
         composable(Routes.ALERTS) { AlertsScreen(isOwner = isOwner, onBack = { nav.popBackStack() }) }
@@ -230,6 +244,9 @@ private fun AdminNavHost(isOwner: Boolean) {
         }
         composable(Routes.SUPERVISORS) { SupervisorsScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.SUBMISSIONS) { SubmissionsScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.TRANSCRIPT_INTAKE) {
+            TranscriptIntakeScreen(onBack = { nav.popBackStack() })
+        }
         composable(Routes.OWNER_REVIEW) { OwnerReviewScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.FEATURED) { FeaturedScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.CHAT) { ChatScreen(isOwner = isOwner, nav = nav) }
@@ -272,6 +289,9 @@ private fun ShareDestinationSheets(nav: NavHostController) {
     val preparing by ShareIntake.preparing.collectAsState()
     val hasAudio = remember(incoming) {
         incoming.any { context.shareContentType(it).startsWith("audio/") }
+    }
+    val hasImage = remember(incoming) {
+        incoming.any { context.shareContentType(it).startsWith("image/") }
     }
     val label = if (incoming.size == 1) {
         incoming.first().name
@@ -372,6 +392,40 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                                 NavOptions.Builder().setLaunchSingleTop(true).build(),
                             )
                         }
+                    }
+                }
+                if (hasImage) {
+                    ShareOptionRow(
+                        icon = Icons.AutoMirrored.Filled.MenuBook,
+                        tint = kGreen,
+                        title = "النص المشروح لدرس",
+                        subtitle = "إرفاق صورة صفحة الكتاب بنص درس (مع القصّ والدمج)",
+                        enabled = !preparing,
+                    ) {
+                        // نسخ الصور للكاش أولاً (إذن الـUri الوارد مؤقت) ثم فتح
+                        // اختيار الدرس معبّأً بها.
+                        val files = incoming.filter {
+                            context.shareContentType(it).startsWith("image/")
+                        }
+                        ShareIntake.prepareForChat(
+                            context = context,
+                            files = files,
+                            onReady = { prepared ->
+                                TranscriptIntake.set(
+                                    text = "",
+                                    images = prepared.map { it.file.uri },
+                                )
+                                ShareIntake.consumeIncoming(files)
+                                if (ShareIntake.incoming.value.isEmpty()) {
+                                    ShareIntake.clearIncoming()
+                                }
+                                nav.navigate(
+                                    Routes.TRANSCRIPT_INTAKE,
+                                    NavOptions.Builder().setLaunchSingleTop(true).build(),
+                                )
+                            },
+                            onFailure = { failure -> snack(failure) },
+                        )
                     }
                 }
                 ShareOptionRow(

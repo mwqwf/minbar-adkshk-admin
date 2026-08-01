@@ -2,6 +2,7 @@ package com.ali.ishaqiyin_admin.ui
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -319,7 +320,36 @@ fun ManageAllScreen(onBack: () -> Unit) {
                             onDelete = { pending = PendingAction.DeleteSubcategory(s) },
                         )
                     }
-                    if (foundLessons.isNotEmpty()) item { SectionTitle("الدروس الصوتية") }
+                    if (foundLessons.isNotEmpty()) {
+                        item { SectionTitle("الدروس الصوتية") }
+                        // إيماءة توجيهية: أين يضيف المشرف «النص المشروح»؟
+                        item {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        kTeal.copy(alpha = 0.07f),
+                                        RoundedCornerShape(10.dp),
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.MenuBook,
+                                    contentDescription = null,
+                                    tint = kTeal,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(Modifier.size(6.dp))
+                                Text(
+                                    "أيقونة الكتاب بجانب كل درس تضيف/تعدّل «النص " +
+                                        "المشروح» الذي يظهر للمستمعين في شاشة التشغيل.",
+                                    fontSize = 12.sp,
+                                    color = kMuted,
+                                )
+                            }
+                        }
+                    }
                     items(foundLessons.size) { i ->
                         val l = foundLessons[i]
                         LessonRow(

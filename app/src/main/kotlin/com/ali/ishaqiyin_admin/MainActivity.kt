@@ -44,6 +44,19 @@ class MainActivity : ComponentActivity() {
 
     private fun captureShare(intent: Intent?) {
         ShareIntake.add(sharedAudioFrom(intent))
+        // نصّ مشارَك من تطبيق خارجي: وجهته الوحيدة «النص المشروح» — يفتح
+        // اختيار الدرس مباشرة (الملفات تمرّ بورقة الوجهات كالسابق).
+        if (intent?.action == Intent.ACTION_SEND &&
+            intent.type.orEmpty().startsWith("text/")
+        ) {
+            val text = runCatching {
+                intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
+            }.getOrDefault("")
+            if (text.isNotBlank()) {
+                runCatching { intent.removeExtra(Intent.EXTRA_TEXT) }
+                com.ali.ishaqiyin_admin.ui.TranscriptIntake.set(text.trim(), emptyList())
+            }
+        }
     }
 
     private fun requestNotificationPermission() {

@@ -7,6 +7,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
@@ -168,24 +170,46 @@ fun AddLessonScreen(onBack: () -> Unit) {
     var showFeatureSheet by remember { mutableStateOf(false) }
     var showRecorder by remember { mutableStateOf(false) }
 
-    // ملفّ وارد من مشاركة خارجية: عبّئ الحقل واقترح عنواناً من اسمه.
-    val sharedFile = remember { ShareIntake.peek() }
-    var sharedConsumed by remember { mutableStateOf(false) }
+    // «النص المشروح» الاختياري المرافق للدرس — من أحبّ أضافه ومن لم يرد فلا.
+    var transcriptOpen by rememberSaveable { mutableStateOf(false) }
+    var transcriptText by rememberSaveable { mutableStateOf("") }
+    var transcriptBookTitle by rememberSaveable { mutableStateOf("") }
+    var transcriptSourceRef by rememberSaveable { mutableStateOf("") }
+    val transcriptImages = remember { mutableStateListOf<Uri>() }
+
     LaunchedEffect(Unit) {
-        if (sharedFile != null) {
-            files.add(sharedFile)
-            title = smartTitleFromFileName(sharedFile.name)
-        }
         runCatching {
             categories = AdminRepository.fetchCategories()
             subcategories = AdminRepository.fetchSubcategories()
         }
     }
 
-    // النموذج انتهى؛ أكّد استهلاك ملفّ المشاركة سواء رُفع أو أُلغي العمل.
-    DisposableEffect(Unit) {
-        onDispose {
-            if (sharedFile != null && !sharedConsumed) ShareIntake.consumeFirst()
+    // ملفات واردة من المشاركة الخارجية: تُلحق بقائمة الدمج **فور وصولها**
+    // حتى والنموذج مفتوح — شارِك صوتية أخرى من أي تطبيق وستنضم للدمج هنا.
+    LaunchedEffect(Unit) {
+        ShareIntake.pending.collect { queue ->
+            val shared = queue.firstOrNull() ?: return@collect
+            val duplicate = files.any { it.uri.toString() == shared.uri.toString() }
+            when {
+                duplicate -> Unit
+                files.isNotEmpty() && !(files + shared).all { AudioMerger.isMp3(it.name) } -> {
+                    message = "لدمج عدة ملفات يجب أن تكون جميعها MP3 — " +
+                        "«${shared.name}» لا يقبل الدمج مع المختار."
+                    isError = true
+                }
+
+                files.size >= AudioMerger.maxFiles -> {
+                    message = "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد " +
+                        "— لم يُضف «${shared.name}»."
+                    isError = true
+                }
+
+                else -> {
+                    files.add(shared)
+                    if (title.isBlank()) title = smartTitleFromFileName(shared.name)
+                }
+            }
+            ShareIntake.consumeFirst()
         }
     }
 
@@ -223,8 +247,18 @@ fun AddLessonScreen(onBack: () -> Unit) {
     }
 
     val subsForCategory = subcategories.filter { it.categoryId == categoryId }
-    val canQueue = title.isNotBlank() && categoryId != null && subcategoryId != null &&
-        files.isNotEmpty() && !queuing
+
+    /// أوّل نقص بترتيب منطقي مع رسالة تسمّيه بعينه — الزر لا يُعطَّل،
+    /// والنقص يُشرح صراحةً بدل زر أصمّ لا يفسّر امتناعه.
+    fun firstMissing(): String? = when {
+        files.isEmpty() -> "اختر ملفاً صوتياً (أو سجّل مباشرة) أولاً."
+        title.isBlank() -> "اكتب عنوان الدرس."
+        categoryId == null -> "اختر القسم الرئيسي."
+        subcategoryId == null && subsForCategory.isEmpty() ->
+            "لا توجد أقسام فرعية لهذا القسم — أنشئ واحداً أو اختر قسماً آخر."
+        subcategoryId == null -> "اختر القسم الفرعي."
+        else -> null
+    }
 
     /**
      * يُدرج الدرس في طابور الرفع ثم يُفرغ النموذج فوراً.
@@ -232,8 +266,10 @@ fun AddLessonScreen(onBack: () -> Unit) {
      * ويُختم زمن الإضافة الآن فيصل الدرس إلى التطبيق العام بترتيب إضافته.
      */
     fun queueLesson() {
-        if (!canQueue) {
-            message = "يرجى تعبئة جميع الحقول واختيار ملف صوتي."
+        if (queuing) return
+        val missing = firstMissing()
+        if (missing != null) {
+            message = missing
             isError = true
             return
         }
@@ -259,6 +295,10 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         featured = featured,
                         featuredUntilMs = featuredUntil,
                         addedBy = AuthService.currentUser?.email.orEmpty(),
+                        transcriptText = transcriptText,
+                        transcriptBookTitle = transcriptBookTitle,
+                        transcriptSourceRef = transcriptSourceRef,
+                        transcriptImages = transcriptImages.toList(),
                     )
                 } else {
                     // عدّة ملفات = درس واحد متّصل: يُدمج محليّاً أوّلاً (لا
@@ -281,6 +321,11 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         featured = featured,
                         featuredUntilMs = featuredUntil,
                         addedBy = AuthService.currentUser?.email.orEmpty(),
+                        context = context,
+                        transcriptText = transcriptText,
+                        transcriptBookTitle = transcriptBookTitle,
+                        transcriptSourceRef = transcriptSourceRef,
+                        transcriptImages = transcriptImages.toList(),
                     )
                 }
                 // يُقرأ الموقع **قبل** إيقاظ العامل: ملفّ صغير قد يُرفع
@@ -296,11 +341,12 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 featured = false
                 featuredUntil = null
                 featuredLabel = ""
+                transcriptText = ""
+                transcriptBookTitle = ""
+                transcriptSourceRef = ""
+                transcriptImages.clear()
+                transcriptOpen = false
                 queuing = false
-                if (sharedFile != null && !sharedConsumed) {
-                    sharedConsumed = true
-                    ShareIntake.consumeFirst()
-                }
                 // تأكيد **لكلّ إضافة** لا للأولى فقط: الرسالة الداخلية قد
                 // تتطابق نصّاً مع سابقتها فلا يلحظ المشرف تغيّراً، فيُضاف
                 // موقع الدرس في الدور ويُرفَق شريط سفليّ يظهر من جديد
@@ -515,6 +561,88 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.height(10.dp))
+
+                // 📖 «النص المشروح» الاختياري — يُنشر مع الدرس فور اكتمال رفعه.
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(kTeal.copy(alpha = 0.07f), RoundedCornerShape(12.dp)),
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { transcriptOpen = !transcriptOpen },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.MenuBook,
+                                contentDescription = null,
+                                tint = kTeal,
+                            )
+                            Spacer(Modifier.size(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "النص المشروح (اختياري)",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                )
+                                Text(
+                                    "نص المقطع من الكتاب أو صور صفحاته — يظهر في " +
+                                        "شاشة تشغيل الدرس.",
+                                    fontSize = 12.sp,
+                                    color = kMuted,
+                                )
+                            }
+                            Icon(
+                                if (transcriptOpen) {
+                                    Icons.Filled.ArrowUpward
+                                } else {
+                                    Icons.Filled.ArrowDownward
+                                },
+                                contentDescription = null,
+                                tint = kMuted,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                        if (transcriptOpen) {
+                            Spacer(Modifier.height(10.dp))
+                            AdminTextField(
+                                value = transcriptBookTitle,
+                                onValueChange = { if (it.length <= 200) transcriptBookTitle = it },
+                                label = "اسم الكتاب/المتن (اختياري)",
+                                enabled = !queuing,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            AdminTextField(
+                                value = transcriptSourceRef,
+                                onValueChange = { if (it.length <= 300) transcriptSourceRef = it },
+                                label = "المقطع (من … إلى …) — اختياري",
+                                enabled = !queuing,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            AdminTextField(
+                                value = transcriptText,
+                                onValueChange = { if (it.length <= 20000) transcriptText = it },
+                                label = "النص المشروح",
+                                singleLine = false,
+                                minLines = 4,
+                                maxLines = 10,
+                                enabled = !queuing,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            AdminTranscriptImagesEditor(
+                                images = transcriptImages,
+                                enabled = !queuing,
+                                onError = { errorText ->
+                                    message = errorText
+                                    isError = true
+                                },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
                 if (merging) {
                     LinearProgressIndicator(
                         modifier = Modifier.fillMaxWidth(),
@@ -540,7 +668,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 }
                 Button(
                     onClick = { queueLesson() },
-                    enabled = canQueue,
+                    enabled = !queuing,
                     shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = kTeal),
                     modifier = Modifier.fillMaxWidth().height(52.dp),

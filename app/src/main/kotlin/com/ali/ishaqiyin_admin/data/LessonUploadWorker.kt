@@ -100,7 +100,7 @@ class LessonUploadWorker(
                     UploadQueue.setProgress(null)
                     continue
                 }
-                AdminRepository.addLesson(
+                val lessonId = AdminRepository.addLesson(
                     title = item.title,
                     categoryId = item.categoryId,
                     subcategoryId = item.subcategoryId,
@@ -114,6 +114,12 @@ class LessonUploadWorker(
                     // مفتاح ثابت: إعادة المحاولة بعد ضياع الردّ لا تُنشئ درساً ثانياً.
                     clientKey = item.id,
                 )
+                // «النص المشروح» المرافق (إن أُرفق بالنموذج): يُنشر بعد إنشاء
+                // الدرس مباشرة. فشله لا يُفشل الدرس — المشرف يضيفه يدوياً.
+                if (item.hasTranscript && lessonId.isNotEmpty()) {
+                    runCatching { publishTranscript(item, lessonId) }
+                        .onFailure { Log.w(TAG, "transcript publish failed for $lessonId: $it") }
+                }
                 UploadQueue.remove(item.id)
                 UploadQueue.setProgress(null)
                 // إشعار الاكتمال: المشرف أغلق الشاشة غالباً، فبلا هذا لا
@@ -265,6 +271,36 @@ class LessonUploadWorker(
      * فلولا هذا لم يبقَ للمشرف أثر يخبره بالاكتمال. ومعرّفه مشتقّ من معرّف
      * العنصر كي لا يمحو إشعارُ درسٍ إشعارَ الذي قبله.
      */
+    /**
+     * نشر «النص المشروح» المرافق لدرس الطابور: رفع صور الصفحات المحفوظة
+     * محليّاً إلى مساحة النصوص ثم استدعاء upsertLessonTranscript، وحذف
+     * النسخ المحليّة بعد النجاح.
+     */
+    private suspend fun publishTranscript(item: PendingUpload, lessonId: String) {
+        val storage = com.google.firebase.storage.FirebaseStorage.getInstance()
+        val uploadedPaths = mutableListOf<String>()
+        item.transcriptImagePaths.forEachIndexed { index, localPath ->
+            val local = File(localPath)
+            if (!local.exists()) return@forEachIndexed
+            val remotePath = "lesson_transcripts/$lessonId/${item.queuedAtMs}_$index.jpg"
+            val metadata = com.google.firebase.storage.StorageMetadata.Builder()
+                .setContentType("image/jpeg")
+                .build()
+            storage.reference.child(remotePath)
+                .putFile(android.net.Uri.fromFile(local), metadata)
+                .await()
+            uploadedPaths.add(remotePath)
+        }
+        TranscriptsRepository.upsert(
+            lessonId = lessonId,
+            text = item.transcriptText,
+            bookTitle = item.transcriptBookTitle,
+            sourceRef = item.transcriptSourceRef,
+            imagePaths = uploadedPaths,
+        )
+        item.transcriptImagePaths.forEach { runCatching { File(it).delete() } }
+    }
+
     private fun notifyUploadDone(item: PendingUpload) {
         val text = "اكتمل رفع: ${item.title.ifBlank { item.fileName }}"
         val remaining = UploadQueue.liveCount()
