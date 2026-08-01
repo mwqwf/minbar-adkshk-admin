@@ -526,6 +526,28 @@ service cloud.firestore {
         && request.resource.data.fcmToken.size() <= 4096;
     }
 
+    // النص المشروح المعتمد (المتن المرافق للصوتية): وثيقة لكل درس بمعرّفه.
+    // القراءة عامة، والكتابة عبر approveTranscriptSubmission/upsertLessonTranscript
+    // حصراً حتى تمر بالتحقق والتدقيق وتوليد روابط الصور.
+    match /lesson_transcripts/{lessonId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // اقتراحات المستمعين للنص المشروح: نفس دورة lesson_submissions تماماً —
+    // تُنشأ وتُحسم عبر callables، وصاحبها يحدّث رمز جهازه فقط ما دامت معلقة.
+    match /transcript_submissions/{submissionId} {
+      allow read: if canManageContent()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create, delete: if false;
+      allow update: if signedIn()
+        && resource.data.uid == request.auth.uid
+        && resource.data.status == 'pending'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fcmToken'])
+        && request.resource.data.fcmToken is string
+        && request.resource.data.fcmToken.size() <= 4096;
+    }
+
     // قائمة الدروس المشبوهة سرية تماماً عن بقية المشرفين.
     match /owner_lesson_reviews/{reviewId} {
       allow read: if isOwner();

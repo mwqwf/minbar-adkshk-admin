@@ -1043,6 +1043,28 @@ exports.deleteMyData = functions.runWith({ timeoutSeconds: 120, memory: "512MB" 
         if (value.storagePath) await deleteFileIfExists(value.storagePath);
       },
     );
+    const transcriptSubmissions = await deleteQuery(
+      db.collection("transcript_submissions").where("uid", "==", uid),
+      async (value) => {
+        const paths = Array.isArray(value.imagePaths) ? value.imagePaths : [];
+        for (const path of paths) await deleteFileIfExists(path).catch(() => {});
+      },
+    );
+    // إخفاء هوية المساهم في النصوص المعتمدة المنشورة (كما في الدروس).
+    const transcriptsSnap = await db.collection("lesson_transcripts")
+      .where("contributorUid", "==", uid)
+      .get();
+    for (let offset = 0; offset < transcriptsSnap.docs.length; offset += 400) {
+      const batch = db.batch();
+      transcriptsSnap.docs.slice(offset, offset + 400).forEach((doc) => {
+        batch.update(doc.ref, {
+          contributorUid: admin.firestore.FieldValue.delete(),
+          contributorName: admin.firestore.FieldValue.delete(),
+          contributorDeletedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      });
+      await batch.commit();
+    }
     // البلاغات تُخزَّن ببصمة مجزّأة لا بالمعرّف الخام (سياسة الخصوصية)؛
     // والاستعلام بالمعرّف الخام يبقى لحذف ما كُتب قبل هذا التغيير.
     const feedback = (await deleteQuery(
@@ -1060,8 +1082,9 @@ exports.deleteMyData = functions.runWith({ timeoutSeconds: 120, memory: "512MB" 
     });
     return {
       ok: true,
-      deleted: { submissions, feedback, rates },
+      deleted: { submissions, transcriptSubmissions, feedback, rates },
       anonymizedLessons,
+      anonymizedTranscripts: transcriptsSnap.size,
     };
   });
 
@@ -1338,6 +1361,587 @@ exports.deleteMySubmission = functions.https.onCall(async (data, context) => {
   return { ok: true };
 });
 
+// ─── النص المشروح: المتن/المقطع الذي تشرحه الصوتية ─────────────────
+// وثيقة واحدة لكل درس في lesson_transcripts (معرّفها = معرّف الدرس) تُجلب
+// عند فتح المشغّل فقط، فلا تُثقل مزامنة مجموعة lessons الكاملة إطلاقاً.
+// اقتراحات المستمعين تمرّ عبر transcript_submissions بنفس دورة «شارك درساً».
+const TRANSCRIPTS_COLLECTION = "lesson_transcripts";
+const TRANSCRIPT_SUBMISSIONS_COLLECTION = "transcript_submissions";
+const MAX_TRANSCRIPT_CHARS = 20000;
+const MAX_TRANSCRIPT_IMAGES = 4;
+const MAX_TRANSCRIPT_IMAGE_BYTES = 10 * 1024 * 1024;
+const MIN_TRANSCRIPT_TEXT_CHARS = 10;
+
+async function validateTranscriptImages(paths, requiredPrefix) {
+  const list = Array.isArray(paths) ? paths.slice(0, MAX_TRANSCRIPT_IMAGES) : [];
+  const cleaned = [];
+  for (const raw of list) {
+    const path = cleanString(raw, 700);
+    if (!path || !path.startsWith(requiredPrefix) || path.includes("..")) {
+      throw new functions.https.HttpsError("permission-denied", "مسار صورة غير صالح.");
+    }
+    let metadata;
+    try {
+      [metadata] = await bucket.file(path).getMetadata();
+    } catch (_) {
+      throw new functions.https.HttpsError("not-found", "صورة مرفقة غير موجودة.");
+    }
+    const size = Number(metadata.size || 0);
+    const contentType = String(metadata.contentType || "");
+    if (size <= 0 || size > MAX_TRANSCRIPT_IMAGE_BYTES
+        || !contentType.startsWith("image/")) {
+      throw new functions.https.HttpsError("invalid-argument", "صورة مرفقة غير صالحة.");
+    }
+    if (!cleaned.includes(path)) cleaned.push(path);
+  }
+  return cleaned;
+}
+
+function buildTokenUrl(path, token) {
+  return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket.name)}`
+    + `/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+}
+
+async function ensureImageDownloadUrl(path) {
+  const file = bucket.file(path);
+  const [metadata] = await file.getMetadata();
+  let token = String(
+    (metadata.metadata || {}).firebaseStorageDownloadTokens || "",
+  ).split(",")[0].trim();
+  if (!token) {
+    token = crypto.randomUUID();
+    await file.setMetadata({
+      metadata: { firebaseStorageDownloadTokens: token },
+    });
+  }
+  return buildTokenUrl(path, token);
+}
+
+async function publishTranscriptImage(sourcePath, lessonId, index) {
+  const source = bucket.file(sourcePath);
+  const [metadata] = await source.getMetadata();
+  const baseName = safeFileName(sourcePath.split("/").pop() || `page_${index + 1}.jpg`);
+  const destinationPath = `lesson_transcripts/${lessonId}/${Date.now()}_${index}_${baseName}`;
+  const destination = bucket.file(destinationPath);
+  await source.copy(destination);
+  const token = crypto.randomUUID();
+  await destination.setMetadata({
+    contentType: metadata.contentType || "image/jpeg",
+    cacheControl: "public,max-age=86400",
+    metadata: {
+      firebaseStorageDownloadTokens: token,
+      sourceSubmissionPath: sourcePath,
+    },
+  });
+  return { path: destinationPath, url: buildTokenUrl(destinationPath, token) };
+}
+
+exports.createTranscriptSubmission = functions.https.onCall(async (data, context) => {
+  assertAppCheck(context);
+  const uid = assertSignedIn(context);
+  const lessonId = requireString(data && data.lessonId, "lessonId", 1, 180);
+  const lessonSnap = await db.collection("lessons").doc(lessonId).get();
+  if (!lessonSnap.exists) {
+    throw new functions.https.HttpsError("not-found", "الدرس غير موجود.");
+  }
+  const lesson = unwrapLegacy(lessonSnap.data());
+  const text = cleanString(data && data.text, MAX_TRANSCRIPT_CHARS);
+  const bookTitle = cleanString(data && data.bookTitle, 200);
+  const sourceRef = cleanString(data && data.sourceRef, 300);
+  const note = cleanString(data && data.note, 500);
+  const submitterName = cleanString(data && data.submitterName, 60);
+  const fcmToken = cleanString(data && data.fcmToken, 4096);
+  const requiredPrefix = `transcript_submissions/${uid}/`;
+  const rawImagePaths = Array.isArray(data && data.imagePaths) ? data.imagePaths : [];
+  const firstImagePath = cleanString(rawImagePaths[0], 700);
+  const pathParts = firstImagePath.split("/");
+  const pathSubmissionId = pathParts.length >= 4 ? pathParts[2] : "";
+  const requestedId = cleanString(
+    (data && data.submissionId) || pathSubmissionId,
+    180,
+  );
+  const ref = requestedId && /^[A-Za-z0-9_-]+$/.test(requestedId)
+    ? db.collection(TRANSCRIPT_SUBMISSIONS_COLLECTION).doc(requestedId)
+    : db.collection(TRANSCRIPT_SUBMISSIONS_COLLECTION).doc();
+  // كل الصور يجب أن تكون داخل مجلد هذه المساهمة تحديداً (لا مجلد آخر للمستخدم).
+  const imagePaths = await validateTranscriptImages(
+    rawImagePaths,
+    `${requiredPrefix}${ref.id}/`,
+  );
+  if (text.length < MIN_TRANSCRIPT_TEXT_CHARS && !imagePaths.length) {
+    throw new functions.https.HttpsError(
+      "invalid-argument",
+      "أرفق نص المقطع أو صورة صفحة واحدة على الأقل.",
+    );
+  }
+  const existing = await ref.get();
+  if (existing.exists) {
+    const value = existing.data() || {};
+    if (value.uid === uid && value.lessonId === lessonId) {
+      return { ok: true, id: ref.id, submissionId: ref.id, existing: true };
+    }
+    throw new functions.https.HttpsError("already-exists", "المساهمة موجودة مسبقاً.");
+  }
+  await consumeRateLimit({
+    uid,
+    action: "transcript_submission",
+    limit: 5,
+    windowMs: 24 * 60 * 60 * 1000,
+    minIntervalMs: 60 * 1000,
+  });
+  await ref.set({
+    uid,
+    submitterName,
+    lessonId,
+    lessonTitle: cleanString(lesson.title || lesson.name, 160),
+    text,
+    bookTitle,
+    sourceRef,
+    note,
+    imagePaths,
+    fcmToken,
+    status: "pending",
+    rejectReason: "",
+    createdAt: new Date().toISOString(),
+    createdAtTs: admin.firestore.FieldValue.serverTimestamp(),
+    createdAtMs: Date.now(),
+  });
+  return { ok: true, id: ref.id, submissionId: ref.id };
+});
+
+exports.approveTranscriptSubmission = functions
+  .runWith({ timeoutSeconds: 120, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    const actor = await assertAuthorized(context);
+    const submissionId = requireString(
+      data && data.submissionId,
+      "submissionId",
+      1,
+      180,
+    );
+    const submissionRef = db.collection(TRANSCRIPT_SUBMISSIONS_COLLECTION)
+      .doc(submissionId);
+    const firstSnap = await submissionRef.get();
+    if (!firstSnap.exists) {
+      throw new functions.https.HttpsError("not-found", "المساهمة غير موجودة.");
+    }
+    const original = firstSnap.data() || {};
+    if (original.status !== "pending") {
+      if (["approved", "approved_edited"].includes(original.status)) {
+        return { ok: true, lessonId: original.lessonId, alreadyApproved: true };
+      }
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "سبق حسم هذه المساهمة.",
+      );
+    }
+    const lessonId = requireString(original.lessonId, "lessonId", 1, 180);
+    const text = cleanString(
+      data && data.text !== undefined ? data.text : original.text,
+      MAX_TRANSCRIPT_CHARS,
+    );
+    const bookTitle = cleanString(
+      data && data.bookTitle !== undefined ? data.bookTitle : original.bookTitle,
+      200,
+    );
+    const sourceRef = cleanString(
+      data && data.sourceRef !== undefined ? data.sourceRef : original.sourceRef,
+      300,
+    );
+    const keepImages = !(data && data.keepImages === false);
+    const sourceImages = keepImages
+      ? (Array.isArray(original.imagePaths) ? original.imagePaths : [])
+      : [];
+    if (text.length < MIN_TRANSCRIPT_TEXT_CHARS && !sourceImages.length) {
+      throw new functions.https.HttpsError(
+        "invalid-argument",
+        "لا يمكن اعتماد نص فارغ بلا صور.",
+      );
+    }
+    const transcriptRef = db.collection(TRANSCRIPTS_COLLECTION).doc(lessonId);
+    const published = [];
+    let previousImagePaths = [];
+    try {
+      for (let index = 0; index < sourceImages.length; index += 1) {
+        published.push(
+          await publishTranscriptImage(sourceImages[index], lessonId, index),
+        );
+      }
+      const edited = text !== cleanString(original.text, MAX_TRANSCRIPT_CHARS)
+        || bookTitle !== cleanString(original.bookTitle, 200)
+        || sourceRef !== cleanString(original.sourceRef, 300)
+        || (!keepImages
+          && Array.isArray(original.imagePaths)
+          && original.imagePaths.length > 0);
+      const status = edited ? "approved_edited" : "approved";
+      const nowIso = new Date().toISOString();
+      await db.runTransaction(async (tx) => {
+        const [currentSnap, transcriptSnap] = await Promise.all([
+          tx.get(submissionRef),
+          tx.get(transcriptRef),
+        ]);
+        if (!currentSnap.exists || currentSnap.data().status !== "pending") {
+          throw new functions.https.HttpsError(
+            "aborted",
+            "حُسمت المساهمة من مشرف آخر.",
+          );
+        }
+        const previous = transcriptSnap.data() || {};
+        previousImagePaths = (Array.isArray(previous.images) ? previous.images : [])
+          .map((item) => item && item.path)
+          .filter(Boolean);
+        tx.set(transcriptRef, {
+          lessonId,
+          lessonTitle: cleanString(original.lessonTitle, 160),
+          text,
+          bookTitle,
+          sourceRef,
+          images: published,
+          contributorUid: cleanString(original.uid, 180),
+          contributorName: cleanString(original.submitterName, 60),
+          sourceSubmissionId: submissionId,
+          updatedBy: actor.email,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAtMs: Date.now(),
+          createdAt: transcriptSnap.exists
+            ? (previous.createdAt || nowIso)
+            : nowIso,
+        });
+        tx.update(submissionRef, {
+          status,
+          publishedLessonId: lessonId,
+          publishedTextPreview: text.slice(0, 200),
+          decidedBy: actor.email,
+          decidedAt: nowIso,
+          decidedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+          cleanupPending: false,
+        });
+      });
+      // الصور المعتمدة سابقاً واستُبدلت الآن تُحذف بعد نجاح المعاملة فقط.
+      for (const path of previousImagePaths) {
+        if (!published.some((item) => item.path === path)) {
+          await deleteFileIfExists(path).catch(() => {});
+        }
+      }
+    } catch (error) {
+      for (const item of published) {
+        await deleteFileIfExists(item.path).catch(() => {});
+      }
+      throw error;
+    }
+    const originalImages = Array.isArray(original.imagePaths)
+      ? original.imagePaths
+      : [];
+    for (const path of originalImages) {
+      try {
+        await deleteFileIfExists(path);
+      } catch (_) {
+        await submissionRef.update({ cleanupPending: true }).catch(() => {});
+      }
+    }
+    await auditOwnerAction(actor.email, "approve_transcript", submissionId, {
+      lessonId,
+    });
+    return { ok: true, lessonId };
+  });
+
+exports.rejectTranscriptSubmission = functions.https.onCall(async (data, context) => {
+  const actor = await assertAuthorized(context);
+  const submissionId = requireString(
+    data && data.submissionId,
+    "submissionId",
+    1,
+    180,
+  );
+  const reason = requireString(data && data.reason, "reason", 2, 300);
+  const ref = db.collection(TRANSCRIPT_SUBMISSIONS_COLLECTION).doc(submissionId);
+  let imagePaths = [];
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      throw new functions.https.HttpsError("not-found", "المساهمة غير موجودة.");
+    }
+    const value = snap.data() || {};
+    if (value.status !== "pending") {
+      if (value.status === "rejected") return;
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "سبق حسم هذه المساهمة.",
+      );
+    }
+    imagePaths = Array.isArray(value.imagePaths) ? value.imagePaths : [];
+    tx.update(ref, {
+      status: "rejected",
+      rejectReason: reason,
+      decidedBy: actor.email,
+      decidedAt: new Date().toISOString(),
+      decidedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+      cleanupPending: imagePaths.length > 0,
+    });
+  });
+  if (imagePaths.length) {
+    try {
+      for (const path of imagePaths) await deleteFileIfExists(path);
+      await ref.update({ cleanupPending: false });
+    } catch (_) {
+      // تبقى cleanupPending=true لإعادة المحاولة الآمنة لاحقاً.
+    }
+  }
+  await auditOwnerAction(actor.email, "reject_transcript", submissionId, { reason });
+  return { ok: true, id: submissionId };
+});
+
+exports.deleteTranscriptSubmission = functions.https.onCall(async (data, context) => {
+  const actor = await assertAuthorized(context);
+  const submissionId = requireString(
+    data && data.submissionId,
+    "submissionId",
+    1,
+    180,
+  );
+  const ref = db.collection(TRANSCRIPT_SUBMISSIONS_COLLECTION).doc(submissionId);
+  const snap = await ref.get();
+  if (!snap.exists) return { ok: true, alreadyDeleted: true };
+  const value = snap.data() || {};
+  const imagePaths = Array.isArray(value.imagePaths) ? value.imagePaths : [];
+  for (const path of imagePaths) await deleteFileIfExists(path).catch(() => {});
+  await ref.delete();
+  await auditOwnerAction(actor.email, "delete_transcript_submission", submissionId, {});
+  return { ok: true };
+});
+
+exports.deleteMyTranscriptSubmission = functions.https.onCall(async (data, context) => {
+  assertAppCheck(context);
+  const uid = assertSignedIn(context);
+  const submissionId = requireString(
+    data && data.submissionId,
+    "submissionId",
+    1,
+    180,
+  );
+  const ref = db.collection(TRANSCRIPT_SUBMISSIONS_COLLECTION).doc(submissionId);
+  const snap = await ref.get();
+  if (!snap.exists) return { ok: true, alreadyDeleted: true };
+  const value = snap.data() || {};
+  if (value.uid !== uid || value.status !== "pending") {
+    throw new functions.https.HttpsError("permission-denied", "لا يمكن حذف هذا الطلب.");
+  }
+  const imagePaths = Array.isArray(value.imagePaths) ? value.imagePaths : [];
+  for (const path of imagePaths) await deleteFileIfExists(path).catch(() => {});
+  await ref.delete();
+  return { ok: true };
+});
+
+// إضافة/تعديل مباشر من لوحة الإدارة: الصور تكون قد رُفعت مسبقاً عبر SDK إلى
+// lesson_transcripts/{lessonId}/ (قواعد التخزين تسمح بذلك للمشرفين فقط)،
+// والخادم يتحقق منها ويولّد روابطها ويحذف اليتيم منها.
+exports.upsertLessonTranscript = functions
+  .runWith({ timeoutSeconds: 120, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    const actor = await assertAuthorized(context);
+    const lessonId = requireString(data && data.lessonId, "lessonId", 1, 180);
+    const transcriptRef = db.collection(TRANSCRIPTS_COLLECTION).doc(lessonId);
+    const requiredPrefix = `lesson_transcripts/${lessonId}/`;
+    if (data && data.remove === true) {
+      await transcriptRef.delete();
+      await bucket.deleteFiles({ prefix: requiredPrefix }).catch(() => {});
+      await auditOwnerAction(actor.email, "delete_transcript", lessonId, {});
+      return { ok: true, removed: true };
+    }
+    const lessonSnap = await db.collection("lessons").doc(lessonId).get();
+    if (!lessonSnap.exists) {
+      throw new functions.https.HttpsError("not-found", "الدرس غير موجود.");
+    }
+    const lesson = unwrapLegacy(lessonSnap.data());
+    const text = cleanString(data && data.text, MAX_TRANSCRIPT_CHARS);
+    const bookTitle = cleanString(data && data.bookTitle, 200);
+    const sourceRef = cleanString(data && data.sourceRef, 300);
+    const imagePaths = await validateTranscriptImages(
+      data && data.imagePaths,
+      requiredPrefix,
+    );
+    if (text.length < MIN_TRANSCRIPT_TEXT_CHARS && !imagePaths.length) {
+      throw new functions.https.HttpsError(
+        "invalid-argument",
+        "أدخل نص المقطع أو أرفق صورة واحدة على الأقل.",
+      );
+    }
+    const images = [];
+    for (const path of imagePaths) {
+      images.push({ path, url: await ensureImageDownloadUrl(path) });
+    }
+    // حذف صور المجلد التي لم تعد ضمن القائمة المرسلة (اليتيمة).
+    try {
+      const [existingFiles] = await bucket.getFiles({ prefix: requiredPrefix });
+      for (const file of existingFiles) {
+        if (!imagePaths.includes(file.name)) await file.delete().catch(() => {});
+      }
+    } catch (_) { /* تنظيف اختياري */ }
+    const prevSnap = await transcriptRef.get();
+    const previous = prevSnap.data() || {};
+    const nowIso = new Date().toISOString();
+    await transcriptRef.set({
+      lessonId,
+      lessonTitle: cleanString(lesson.title || lesson.name, 160),
+      text,
+      bookTitle,
+      sourceRef,
+      images,
+      contributorUid: cleanString(previous.contributorUid, 180),
+      contributorName: cleanString(previous.contributorName, 60),
+      sourceSubmissionId: cleanString(previous.sourceSubmissionId, 180),
+      updatedBy: actor.email,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAtMs: Date.now(),
+      createdAt: prevSnap.exists ? (previous.createdAt || nowIso) : nowIso,
+    });
+    await auditOwnerAction(actor.email, "upsert_transcript", lessonId, {
+      images: images.length,
+    });
+    return { ok: true, lessonId, images };
+  });
+
+// استخراج النص من صورة صفحة الكتاب (OCR عربي) — للمشرفين فقط، عبر Cloud
+// Vision REST بهوية حساب خدمة الدوال. إن لم تكن الواجهة مفعّلة تُعاد رسالة
+// إرشادية واضحة بدل فشل غامض.
+exports.extractImageText = functions
+  .runWith({ timeoutSeconds: 60, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    await assertAuthorized(context);
+    const storagePath = requireString(data && data.storagePath, "storagePath", 1, 700);
+    const allowed = storagePath.startsWith("transcript_submissions/")
+      || storagePath.startsWith("lesson_transcripts/");
+    if (!allowed || storagePath.includes("..")) {
+      throw new functions.https.HttpsError("permission-denied", "مسار الصورة غير صالح.");
+    }
+    const file = bucket.file(storagePath);
+    let metadata;
+    try {
+      [metadata] = await file.getMetadata();
+    } catch (_) {
+      throw new functions.https.HttpsError("not-found", "الصورة غير موجودة.");
+    }
+    const size = Number(metadata.size || 0);
+    if (size <= 0 || size > MAX_TRANSCRIPT_IMAGE_BYTES
+        || !String(metadata.contentType || "").startsWith("image/")) {
+      throw new functions.https.HttpsError("invalid-argument", "الصورة غير صالحة للاستخراج.");
+    }
+    const [buffer] = await file.download();
+    const { GoogleAuth } = require("google-auth-library");
+    const auth = new GoogleAuth({
+      scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+    });
+    const client = await auth.getClient();
+    let response;
+    try {
+      response = await client.request({
+        url: "https://vision.googleapis.com/v1/images:annotate",
+        method: "POST",
+        data: {
+          requests: [{
+            image: { content: buffer.toString("base64") },
+            features: [{ type: "DOCUMENT_TEXT_DETECTION" }],
+            imageContext: { languageHints: ["ar"] },
+          }],
+        },
+      });
+    } catch (error) {
+      console.error("vision request failed", error && error.message);
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "تعذّر استخراج النص. تأكد من تفعيل Cloud Vision API لمشروع mxqp-8d1e8 ثم أعد المحاولة.",
+      );
+    }
+    const result = (((response.data || {}).responses || [])[0]) || {};
+    if (result.error && result.error.message) {
+      throw new functions.https.HttpsError(
+        "internal",
+        cleanString(result.error.message, 300) || "فشل استخراج النص.",
+      );
+    }
+    const text = cleanString(
+      (result.fullTextAnnotation || {}).text,
+      MAX_TRANSCRIPT_CHARS,
+    );
+    return { ok: true, text };
+  });
+
+exports.onTranscriptSubmissionCreated = functions.firestore
+  .document("transcript_submissions/{id}")
+  .onCreate(async (snap) => {
+    const d = snap.data() || {};
+    const who = cleanString(d.submitterName, 60) || "مستمع";
+    const lessonTitle = cleanString(d.lessonTitle, 160) || "درس";
+    const hasImages = Array.isArray(d.imagePaths) && d.imagePaths.length > 0;
+    const alertTitle = "اقتراح نص مشروح بانتظار المراجعة";
+    const alertBody = hasImages
+      ? `أرسل ${who} نص/صور المقطع المشروح لدرس «${lessonTitle}».`
+      : `أرسل ${who} نص المقطع المشروح لدرس «${lessonTitle}».`;
+    await Promise.all([
+      writeAdminAlert("", alertTitle, alertBody, {
+        type: "transcript",
+        submissionId: snap.id,
+        lessonId: cleanString(d.lessonId, 180),
+      }),
+      pushToAdmins(alertTitle, alertBody, {
+        type: "transcript",
+        submissionId: snap.id,
+        lessonId: cleanString(d.lessonId, 180),
+      }),
+    ]);
+    return null;
+  });
+
+exports.onTranscriptSubmissionDecided = functions.firestore
+  .document("transcript_submissions/{id}")
+  .onUpdate(async (change) => {
+    const before = change.before.data() || {};
+    const after = change.after.data() || {};
+    if (before.status !== "pending" || after.status === "pending") return null;
+    const token = cleanString(after.fcmToken, 4096);
+    const lessonTitle = cleanString(after.lessonTitle, 160) || "الدرس";
+    if (after.status === "approved" || after.status === "approved_edited") {
+      const edited = after.status === "approved_edited";
+      const notificationTitle = edited
+        ? "اعتُمد النص الذي أرسلته بعد المراجعة"
+        : "اعتُمد النص الذي أرسلته";
+      const notificationBody = `صار النص المشروح ظاهراً في درس «${lessonTitle}». شكراً لمساهمتك.`;
+      const notificationData = {
+        type: "transcript",
+        id: change.after.id,
+        refId: change.after.id,
+        lessonId: cleanString(after.lessonId, 180),
+        result: after.status,
+      };
+      await Promise.all([
+        clearAdminAlerts("transcript", change.after.id),
+        writeUserNotification(after.uid, notificationTitle, notificationBody, notificationData),
+        pushToToken(token, notificationTitle, notificationBody, notificationData),
+      ]);
+      return null;
+    }
+    if (after.status === "rejected") {
+      const reason = cleanString(after.rejectReason, 300);
+      const notificationTitle = "نتيجة مراجعة النص المقترح";
+      const notificationBody = reason
+        ? `لم يُعتمد نص «${lessonTitle}»: ${reason}`
+        : `لم يُعتمد نص «${lessonTitle}».`;
+      const notificationData = {
+        type: "transcript",
+        id: change.after.id,
+        refId: change.after.id,
+        result: "rejected",
+      };
+      await Promise.all([
+        clearAdminAlerts("transcript", change.after.id),
+        writeUserNotification(after.uid, notificationTitle, notificationBody, notificationData),
+        pushToToken(token, notificationTitle, notificationBody, notificationData),
+      ]);
+      return null;
+    }
+    return null;
+  });
+
 async function queueStorageCleanup(paths, reason, targetId) {
   const unique = [...new Set((paths || []).map(storagePathFromUrl).filter(Boolean))];
   if (!unique.length) return "";
@@ -1389,6 +1993,8 @@ async function deleteLessonHandler(data, context) {
   const paths = lessonStoragePaths(unwrapLegacy(lessonSnap.data()));
   const batch = db.batch();
   batch.delete(lessonRef);
+  // النص المشروح المرافق يُحذف مع درسه (الوثيقة + صور مجلده في التخزين).
+  batch.delete(db.collection("lesson_transcripts").doc(lessonId));
   if (reviewSnap.exists) {
     batch.update(reviewRef, {
       status: "deleted",
@@ -1398,6 +2004,8 @@ async function deleteLessonHandler(data, context) {
     });
   }
   await batch.commit();
+  await bucket.deleteFiles({ prefix: `lesson_transcripts/${lessonId}/` })
+    .catch(() => {});
   const cleanup = await deletePathsBestEffort(paths, "delete_lesson", lessonId);
   await auditOwnerAction(actor.email, "delete_lesson", lessonId, {
     cleanupPending: cleanup.failed.length > 0,
@@ -1451,8 +2059,15 @@ exports.deleteSubcategoryCascade = functions.runWith({ timeoutSeconds: 540, memo
       (doc) => lessonStoragePaths(unwrapLegacy(doc.data())),
     );
     const refs = lessons.map((doc) => doc.ref);
+    lessons.forEach((doc) => {
+      refs.push(db.collection("lesson_transcripts").doc(doc.id));
+    });
     if (subcategorySnap.exists) refs.push(subcategorySnap.ref);
     await deleteRefsInBatches(refs);
+    for (const doc of lessons) {
+      await bucket.deleteFiles({ prefix: `lesson_transcripts/${doc.id}/` })
+        .catch(() => {});
+    }
     const cleanup = await deletePathsBestEffort(
       paths,
       "delete_subcategory_cascade",
@@ -1528,11 +2143,16 @@ exports.deleteCategoryCascade = functions.runWith({ timeoutSeconds: 540, memory:
     });
     const refs = [
       ...lessons.map((doc) => doc.ref),
+      ...lessons.map((doc) => db.collection("lesson_transcripts").doc(doc.id)),
       ...books.map((doc) => doc.ref),
       ...subcategories.map((doc) => doc.ref),
     ];
     if (categorySnap.exists) refs.push(categorySnap.ref);
     await deleteRefsInBatches(refs);
+    for (const doc of lessons) {
+      await bucket.deleteFiles({ prefix: `lesson_transcripts/${doc.id}/` })
+        .catch(() => {});
+    }
     const cleanup = await deletePathsBestEffort(
       paths,
       "delete_category_cascade",

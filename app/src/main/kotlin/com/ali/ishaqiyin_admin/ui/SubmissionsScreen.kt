@@ -1,6 +1,7 @@
 package com.ali.ishaqiyin_admin.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
@@ -22,23 +24,31 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.TextSnippet
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -46,24 +56,77 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import coil3.compose.AsyncImage
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.Category
 import com.ali.ishaqiyin_admin.data.LessonSubmission
 import com.ali.ishaqiyin_admin.data.Subcategory
 import com.ali.ishaqiyin_admin.data.SubmissionsRepository
+import com.ali.ishaqiyin_admin.data.TranscriptSubmission
+import com.ali.ishaqiyin_admin.data.TranscriptsRepository
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 /**
- * 🗳️ «طلبات النشر» — مراجعة مساهمات المستمعين القادمة من تطبيق منبر
- * العام. المشرف يستمع للصوت ثم: يوافق كما هي / يعدّل (العنوان/الأقسام)
- * وينشر / يرفض بسبب. النتيجة تصل المساهم إشعاراً.
+ * 🗳️ «المساهمات» — تبويبان:
+ * 1. دروس صوتية: مساهمات «شارك درساً» (استماع ثم نشر/تعديل/رفض).
+ * 2. نصوص مشروحة: اقتراحات «النص المشروح» (نص المتن/صور صفحاته) مع
+ *    الاستماع لصوتية الدرس نفسها أثناء المطابقة، واستخراج النص من
+ *    الصورة (OCR خادمي) عند التعديل. النتيجة تصل المساهم إشعاراً.
  */
 @Composable
 fun SubmissionsScreen(onBack: () -> Unit) {
+    var tab by remember { mutableStateOf(0) }
+    val audioPending by remember { SubmissionsRepository.watchPendingCount() }
+        .collectAsState(initial = 0)
+    val textPending by remember { TranscriptsRepository.watchPendingCount() }
+        .collectAsState(initial = 0)
+
+    AdminScaffold(title = "المساهمات", onBack = onBack) { padding ->
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            TabRow(
+                selectedTabIndex = tab,
+                containerColor = Color.White,
+                contentColor = kTeal,
+            ) {
+                Tab(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    text = { TabLabel("دروس صوتية", audioPending) },
+                )
+                Tab(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    text = { TabLabel("نصوص مشروحة", textPending) },
+                )
+            }
+            if (tab == 0) AudioSubmissionsContent() else TranscriptSubmissionsContent()
+        }
+    }
+}
+
+@Composable
+private fun TabLabel(label: String, pending: Int) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        if (pending > 0) {
+            Spacer(Modifier.size(6.dp))
+            Badge(containerColor = kOrange) { Text("$pending") }
+        }
+    }
+}
+
+// ─── تبويب الدروس الصوتية (سلوك «طلبات النشر» السابق كما هو) ─────────
+
+@Composable
+private fun AudioSubmissionsContent() {
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
     val player = rememberPreviewPlayer()
@@ -138,6 +201,7 @@ fun SubmissionsScreen(onBack: () -> Unit) {
 
     rejecting?.let { s ->
         RejectDialog(
+            presets = audioRejectPresets,
             onDismiss = { rejecting = null },
             onReject = { reason ->
                 rejecting = null
@@ -148,148 +212,146 @@ fun SubmissionsScreen(onBack: () -> Unit) {
         )
     }
 
-    AdminScaffold(title = "طلبات النشر (مساهمات المستمعين)", onBack = onBack) { padding ->
-        if (items.isEmpty()) {
-            Box(
-                Modifier.padding(padding).fillMaxSize().padding(32.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "لا توجد مساهمات بعد.\nعندما يرسل المستمعون دروساً من " +
-                        "«شارك درساً» ستظهر هنا للمراجعة.",
-                    textAlign = TextAlign.Center,
-                    lineHeight = 26.sp,
-                )
-            }
-            return@AdminScaffold
-        }
-        LazyColumn(
-            modifier = Modifier.padding(padding).fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+    if (items.isEmpty()) {
+        Box(
+            Modifier.fillMaxSize().padding(32.dp),
+            contentAlignment = Alignment.Center,
         ) {
-            items(items.size) { index ->
-                val s = items[index]
-                val isPlaying = player.playingId == s.id && player.playing
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                Modifier
-                                    .size(44.dp)
-                                    .background(kBoxBg, CircleShape)
-                                    .padding(2.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                IconButton(onClick = { player.toggle(s.id, s.audioUrl) }) {
-                                    Icon(
-                                        if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                        contentDescription = if (isPlaying) "إيقاف" else "استماع",
-                                        tint = kTeal,
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.size(8.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(s.title, fontWeight = FontWeight.Bold)
-                                Spacer(Modifier.size(2.dp))
-                                Text(
-                                    "${s.categoryName} ← ${s.subcategoryName}",
-                                    fontSize = 12.sp,
-                                    color = kMuted,
+            Text(
+                "لا توجد مساهمات بعد.\nعندما يرسل المستمعون دروساً من " +
+                    "«شارك درساً» ستظهر هنا للمراجعة.",
+                textAlign = TextAlign.Center,
+                lineHeight = 26.sp,
+            )
+        }
+        return
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        items(items.size) { index ->
+            val s = items[index]
+            val isPlaying = player.playingId == s.id && player.playing
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier
+                                .size(44.dp)
+                                .background(kBoxBg, CircleShape)
+                                .padding(2.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            IconButton(onClick = { player.toggle(s.id, s.audioUrl) }) {
+                                Icon(
+                                    if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                    contentDescription = if (isPlaying) "إيقاف" else "استماع",
+                                    tint = kTeal,
                                 )
                             }
-                            StatusChip(s.status)
-                        }
-                        Spacer(Modifier.size(6.dp))
-                        Text(
-                            "المساهم: ${s.submitterName.ifEmpty { "بدون اسم" }}" +
-                                if (s.fileSize > 0) {
-                                    " • ${"%.1f".format(s.fileSize / (1024.0 * 1024.0))}MB"
-                                } else {
-                                    ""
-                                },
-                            fontSize = 12.sp,
-                            color = kMuted,
-                        )
-                        if (s.note.isNotEmpty()) {
-                            Spacer(Modifier.size(4.dp))
-                            Text("ملاحظة المساهم: ${s.note}", fontSize = 12.sp)
-                        }
-                        if (!s.isPending && s.status == "rejected" && s.rejectReason.isNotEmpty()) {
-                            Spacer(Modifier.size(4.dp))
-                            Text(
-                                "سبب الرفض: ${s.rejectReason}",
-                                fontSize = 12.sp,
-                                color = kDanger,
-                            )
                         }
                         Spacer(Modifier.size(8.dp))
-                        if (s.isPending) {
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
+                        Column(Modifier.weight(1f)) {
+                            Text(s.title, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.size(2.dp))
+                            Text(
+                                "${s.categoryName} ← ${s.subcategoryName}",
+                                fontSize = 12.sp,
+                                color = kMuted,
+                            )
+                        }
+                        StatusChip(s.status)
+                    }
+                    Spacer(Modifier.size(6.dp))
+                    Text(
+                        "المساهم: ${s.submitterName.ifEmpty { "بدون اسم" }}" +
+                            if (s.fileSize > 0) {
+                                " • ${"%.1f".format(s.fileSize / (1024.0 * 1024.0))}MB"
+                            } else {
+                                ""
+                            },
+                        fontSize = 12.sp,
+                        color = kMuted,
+                    )
+                    if (s.note.isNotEmpty()) {
+                        Spacer(Modifier.size(4.dp))
+                        Text("ملاحظة المساهم: ${s.note}", fontSize = 12.sp)
+                    }
+                    if (!s.isPending && s.status == "rejected" && s.rejectReason.isNotEmpty()) {
+                        Spacer(Modifier.size(4.dp))
+                        Text(
+                            "سبب الرفض: ${s.rejectReason}",
+                            fontSize = 12.sp,
+                            color = kDanger,
+                        )
+                    }
+                    Spacer(Modifier.size(8.dp))
+                    if (s.isPending) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Button(
+                                onClick = { approving = s },
+                                enabled = !busy,
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                                modifier = Modifier.weight(1f),
                             ) {
-                                Button(
-                                    onClick = { approving = s },
-                                    enabled = !busy,
-                                    shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = kTeal),
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Icon(
-                                        Icons.Filled.Check,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                    Spacer(Modifier.size(4.dp))
-                                    Text("نشر كما هي")
-                                }
-                                OutlinedButton(
-                                    onClick = { editing = s },
-                                    enabled = !busy,
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Icon(
-                                        Icons.Filled.Edit,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                    Spacer(Modifier.size(4.dp))
-                                    Text("تعديل ثم نشر")
-                                }
-                                IconButton(onClick = { rejecting = s }, enabled = !busy) {
-                                    Icon(
-                                        Icons.Filled.Close,
-                                        contentDescription = "رفض",
-                                        tint = kDanger,
-                                    )
-                                }
+                                Icon(
+                                    Icons.Filled.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.size(4.dp))
+                                Text("نشر كما هي")
                             }
-                        } else {
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.End,
+                            OutlinedButton(
+                                onClick = { editing = s },
+                                enabled = !busy,
+                                modifier = Modifier.weight(1f),
                             ) {
-                                TextButton(
-                                    onClick = {
-                                        run("") { SubmissionsRepository.deleteDecided(s) }
-                                    },
-                                    enabled = !busy,
-                                ) {
-                                    Icon(
-                                        Icons.Filled.Delete,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                    Spacer(Modifier.size(4.dp))
-                                    Text("إزالة من السجل")
-                                }
+                                Icon(
+                                    Icons.Filled.Edit,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.size(4.dp))
+                                Text("تعديل ثم نشر")
+                            }
+                            IconButton(onClick = { rejecting = s }, enabled = !busy) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "رفض",
+                                    tint = kDanger,
+                                )
+                            }
+                        }
+                    } else {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    run("") { SubmissionsRepository.deleteDecided(s) }
+                                },
+                                enabled = !busy,
+                            ) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.size(4.dp))
+                                Text("إزالة من السجل")
                             }
                         }
                     }
@@ -297,6 +359,558 @@ fun SubmissionsScreen(onBack: () -> Unit) {
             }
         }
     }
+}
+
+// ─── تبويب النصوص المشروحة ──────────────────────────────────────────
+
+private val transcriptRejectPresets = listOf(
+    "النص لا يطابق ما تشرحه الصوتية",
+    "الصورة غير واضحة أو غير مقروءة",
+    "النص منقول بأخطاء تحتاج تدقيقاً",
+    "الدرس له نص معتمد أدق من المقترح",
+)
+
+private val audioRejectPresets = listOf(
+    "المحتوى لا يناسب طبيعة التطبيق",
+    "جودة الصوت ضعيفة أو غير واضحة",
+    "المحتوى مكرّر (منشور سابقاً)",
+    "القسم المختار غير مناسب والمحتوى غير مكتمل",
+)
+
+@Composable
+private fun TranscriptSubmissionsContent() {
+    val scope = rememberCoroutineScope()
+    val snack = LocalSnack.current
+    val player = rememberPreviewPlayer()
+
+    var busy by remember { mutableStateOf(false) }
+    var approving by remember { mutableStateOf<TranscriptSubmission?>(null) }
+    var editing by remember { mutableStateOf<TranscriptSubmission?>(null) }
+    var rejecting by remember { mutableStateOf<TranscriptSubmission?>(null) }
+    var viewingImage by remember { mutableStateOf("") }
+    // روابط صوتيات الدروس وروابط صور الاقتراحات تُجلب كسولاً وتُخزّن هنا.
+    val audioUrls = remember { mutableStateMapOf<String, String>() }
+    val imageUrls = remember { mutableStateMapOf<String, String>() }
+    val hasApprovedText = remember { mutableStateMapOf<String, Boolean>() }
+
+    val items by remember { TranscriptsRepository.watchAll() }
+        .collectAsState(initial = emptyList())
+
+    fun run(doneMsg: String, action: suspend () -> Unit) {
+        busy = true
+        scope.launch {
+            try {
+                action()
+                if (doneMsg.isNotEmpty()) snack(doneMsg)
+            } catch (_: Exception) {
+                snack("تعذّر تنفيذ العملية. حاول مجدداً.")
+            }
+            busy = false
+        }
+    }
+
+    fun playLesson(lessonId: String) {
+        val cached = audioUrls[lessonId]
+        if (cached != null) {
+            player.toggle(lessonId, cached)
+            return
+        }
+        scope.launch {
+            try {
+                val doc = FirebaseFirestore.getInstance()
+                    .collection("lessons").document(lessonId).get().await()
+                val raw = doc.data ?: emptyMap()
+                @Suppress("UNCHECKED_CAST")
+                val unwrapped = (raw["data"] as? Map<String, Any?>) ?: raw
+                val url = (unwrapped["audioUrl"] ?: raw["audioUrl"])?.toString().orEmpty()
+                if (url.isEmpty()) {
+                    snack("لم يُعثر على صوتية هذا الدرس.")
+                } else {
+                    audioUrls[lessonId] = url
+                    player.toggle(lessonId, url)
+                }
+            } catch (_: Exception) {
+                snack("تعذّر جلب صوتية الدرس.")
+            }
+        }
+    }
+
+    approving?.let { s ->
+        ConfirmDialog(
+            title = "اعتماد النص كما هو؟",
+            body = "سيظهر النص المشروح فوراً في درس «${s.lessonTitle}» " +
+                "ويصل المساهم إشعار شكر." +
+                if (hasApprovedText[s.lessonId] == true) {
+                    "\n\n⚠️ يوجد نص معتمد سابق لهذا الدرس وسيُستبدل."
+                } else {
+                    ""
+                },
+            confirmLabel = "اعتماد",
+            onDismiss = { approving = null },
+            onConfirm = {
+                approving = null
+                run("اعتُمد النص وأُخطر المساهم. ✅") {
+                    TranscriptsRepository.approve(s)
+                }
+            },
+        )
+    }
+
+    editing?.let { s ->
+        EditTranscriptDialog(
+            submission = s,
+            imageUrls = imageUrls,
+            hasExistingApproved = hasApprovedText[s.lessonId] == true,
+            onDismiss = { editing = null },
+            onApprove = { text, bookTitle, sourceRef, keepImages ->
+                editing = null
+                run("اعتُمد النص بعد التعديل وأُخطر المساهم. ✅") {
+                    TranscriptsRepository.approve(
+                        s,
+                        editedText = text,
+                        editedBookTitle = bookTitle,
+                        editedSourceRef = sourceRef,
+                        keepImages = keepImages,
+                    )
+                }
+            },
+        )
+    }
+
+    rejecting?.let { s ->
+        RejectDialog(
+            presets = transcriptRejectPresets,
+            onDismiss = { rejecting = null },
+            onReject = { reason ->
+                rejecting = null
+                run("رُفض الاقتراح وأُبلغ المساهم بالسبب.") {
+                    TranscriptsRepository.reject(s, reason)
+                }
+            },
+        )
+    }
+
+    if (viewingImage.isNotEmpty()) {
+        FullscreenImageDialog(url = viewingImage, onDismiss = { viewingImage = "" })
+    }
+
+    if (items.isEmpty()) {
+        Box(
+            Modifier.fillMaxSize().padding(32.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "لا توجد اقتراحات نصوص بعد.\nعندما يرسل المستمعون نص المقطع " +
+                    "المشروح (أو صور صفحاته) من شاشة التشغيل ستظهر هنا للمراجعة.",
+                textAlign = TextAlign.Center,
+                lineHeight = 26.sp,
+            )
+        }
+        return
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        items(items.size) { index ->
+            val s = items[index]
+            // جلب كسول: هل للدرس نص معتمد سابق؟ (تحذير الاستبدال عند الاعتماد)
+            LaunchedEffect(s.lessonId) {
+                if (s.isPending && !hasApprovedText.containsKey(s.lessonId)) {
+                    runCatching {
+                        hasApprovedText[s.lessonId] =
+                            TranscriptsRepository.fetchTranscript(s.lessonId) != null
+                    }
+                }
+            }
+            val isPlaying = player.playingId == s.lessonId && player.playing
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier
+                                .size(44.dp)
+                                .background(kBoxBg, CircleShape)
+                                .padding(2.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            IconButton(onClick = { playLesson(s.lessonId) }) {
+                                Icon(
+                                    if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                    contentDescription = if (isPlaying) {
+                                        "إيقاف"
+                                    } else {
+                                        "الاستماع لصوتية الدرس"
+                                    },
+                                    tint = kTeal,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.size(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                s.lessonTitle.ifEmpty { "درس" },
+                                fontWeight = FontWeight.Bold,
+                            )
+                            if (s.bookTitle.isNotEmpty()) {
+                                Spacer(Modifier.size(2.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Filled.MenuBook,
+                                        contentDescription = null,
+                                        tint = kMuted,
+                                        modifier = Modifier.size(14.dp),
+                                    )
+                                    Spacer(Modifier.size(4.dp))
+                                    Text(s.bookTitle, fontSize = 12.sp, color = kMuted)
+                                }
+                            }
+                        }
+                        StatusChip(s.status)
+                    }
+                    if (s.sourceRef.isNotEmpty()) {
+                        Spacer(Modifier.size(4.dp))
+                        Text("المقطع: ${s.sourceRef}", fontSize = 12.sp, color = kMuted)
+                    }
+                    if (s.text.isNotEmpty()) {
+                        Spacer(Modifier.size(8.dp))
+                        var expanded by remember(s.id) { mutableStateOf(false) }
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(kBoxBg, RoundedCornerShape(8.dp))
+                                .clickable { expanded = !expanded }
+                                .padding(10.dp),
+                        ) {
+                            Text(
+                                s.text,
+                                fontSize = 14.sp,
+                                lineHeight = 24.sp,
+                                maxLines = if (expanded) Int.MAX_VALUE else 4,
+                            )
+                        }
+                        if (s.text.length > 160) {
+                            TextButton(onClick = { expanded = !expanded }) {
+                                Text(
+                                    if (expanded) "طيّ النص" else "عرض النص كاملاً",
+                                    fontSize = 12.sp,
+                                )
+                            }
+                        }
+                    }
+                    if (s.imagePaths.isNotEmpty()) {
+                        Spacer(Modifier.size(8.dp))
+                        SubmissionImagesRow(
+                            paths = s.imagePaths,
+                            imageUrls = imageUrls,
+                            onOpen = { viewingImage = it },
+                        )
+                    }
+                    Spacer(Modifier.size(6.dp))
+                    Text(
+                        "المساهم: ${s.submitterName.ifEmpty { "بدون اسم" }}",
+                        fontSize = 12.sp,
+                        color = kMuted,
+                    )
+                    if (s.note.isNotEmpty()) {
+                        Spacer(Modifier.size(4.dp))
+                        Text("ملاحظة المساهم: ${s.note}", fontSize = 12.sp)
+                    }
+                    if (s.isPending && hasApprovedText[s.lessonId] == true) {
+                        Spacer(Modifier.size(4.dp))
+                        Text(
+                            "⚠️ للدرس نص معتمد سابق — الاعتماد يستبدله.",
+                            fontSize = 12.sp,
+                            color = kOrange,
+                        )
+                    }
+                    if (!s.isPending && s.status == "rejected" && s.rejectReason.isNotEmpty()) {
+                        Spacer(Modifier.size(4.dp))
+                        Text(
+                            "سبب الرفض: ${s.rejectReason}",
+                            fontSize = 12.sp,
+                            color = kDanger,
+                        )
+                    }
+                    Spacer(Modifier.size(8.dp))
+                    if (s.isPending) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Button(
+                                onClick = { approving = s },
+                                enabled = !busy,
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Icon(
+                                    Icons.Filled.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.size(4.dp))
+                                Text("اعتماد كما هو")
+                            }
+                            OutlinedButton(
+                                onClick = { editing = s },
+                                enabled = !busy,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Icon(
+                                    Icons.Filled.Edit,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.size(4.dp))
+                                Text("تعديل ثم اعتماد")
+                            }
+                            IconButton(onClick = { rejecting = s }, enabled = !busy) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "رفض",
+                                    tint = kDanger,
+                                )
+                            }
+                        }
+                    } else {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    run("") { TranscriptsRepository.deleteDecided(s) }
+                                },
+                                enabled = !busy,
+                            ) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.size(4.dp))
+                                Text("إزالة من السجل")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** صور صفحات الكتاب في الاقتراح: مصغّرات تفتح بالنقر عرضاً كاملاً. */
+@Composable
+private fun SubmissionImagesRow(
+    paths: List<String>,
+    imageUrls: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>,
+    onOpen: (String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        items(paths.size) { i ->
+            val path = paths[i]
+            val url = imageUrls[path]
+            LaunchedEffect(path) {
+                if (url == null) {
+                    scope.launch {
+                        runCatching {
+                            imageUrls[path] = TranscriptsRepository.submissionImageUrl(path)
+                        }
+                    }
+                }
+            }
+            Box(
+                Modifier
+                    .size(96.dp)
+                    .background(kBoxBg, RoundedCornerShape(8.dp))
+                    .clickable(enabled = url != null) { url?.let(onOpen) },
+                contentAlignment = Alignment.Center,
+            ) {
+                if (url == null) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = kTeal,
+                    )
+                } else {
+                    AsyncImage(
+                        model = url,
+                        contentDescription = "صورة صفحة ${i + 1}",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** عرض صورة الصفحة كاملةً للتدقيق. */
+@Composable
+fun FullscreenImageDialog(url: String, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .background(Color.Black, RoundedCornerShape(12.dp))
+                .clickable { onDismiss() },
+            contentAlignment = Alignment.Center,
+        ) {
+            AsyncImage(
+                model = url,
+                contentDescription = "صورة الصفحة",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/**
+ * «تعديل ثم اعتماد» للنص المشروح: تحرير النص/الكتاب/المقطع، استخراج النص
+ * من كل صورة (OCR خادمي) وإلحاقه، وخيار إبقاء الصور المرفقة أو إسقاطها.
+ */
+@Composable
+private fun EditTranscriptDialog(
+    submission: TranscriptSubmission,
+    imageUrls: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>,
+    hasExistingApproved: Boolean,
+    onDismiss: () -> Unit,
+    onApprove: (String, String, String, Boolean) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val snack = LocalSnack.current
+    var text by remember { mutableStateOf(submission.text) }
+    var bookTitle by remember { mutableStateOf(submission.bookTitle) }
+    var sourceRef by remember { mutableStateOf(submission.sourceRef) }
+    var keepImages by remember { mutableStateOf(true) }
+    var extracting by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("تعديل ثم اعتماد") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (hasExistingApproved) {
+                    Text(
+                        "⚠️ للدرس نص معتمد سابق — الاعتماد يستبدله.",
+                        fontSize = 12.sp,
+                        color = kOrange,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                AdminTextField(
+                    value = bookTitle,
+                    onValueChange = { if (it.length <= 200) bookTitle = it },
+                    label = "اسم الكتاب/المتن (اختياري)",
+                )
+                Spacer(Modifier.height(8.dp))
+                AdminTextField(
+                    value = sourceRef,
+                    onValueChange = { if (it.length <= 300) sourceRef = it },
+                    label = "المقطع (من … إلى …) — اختياري",
+                )
+                Spacer(Modifier.height(8.dp))
+                AdminTextField(
+                    value = text,
+                    onValueChange = { if (it.length <= 20000) text = it },
+                    label = "النص المشروح",
+                    singleLine = false,
+                    minLines = 6,
+                    maxLines = 14,
+                )
+                if (submission.imagePaths.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "الصور المرفقة (${submission.imagePaths.size})",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    SubmissionImagesRow(
+                        paths = submission.imagePaths,
+                        imageUrls = imageUrls,
+                        onOpen = {},
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedButton(
+                        onClick = {
+                            extracting = true
+                            scope.launch {
+                                try {
+                                    val parts = submission.imagePaths.mapNotNull { path ->
+                                        runCatching {
+                                            TranscriptsRepository.extractText(path)
+                                        }.getOrNull()?.takeIf { it.isNotBlank() }
+                                    }
+                                    if (parts.isEmpty()) {
+                                        snack("لم يُستخرج نص من الصور.")
+                                    } else {
+                                        val joined = parts.joinToString("\n\n")
+                                        text = if (text.isBlank()) {
+                                            joined
+                                        } else {
+                                            "$text\n\n$joined"
+                                        }.take(20000)
+                                        snack("أُلحق النص المستخرج — دقّقه قبل الاعتماد.")
+                                    }
+                                } catch (e: Exception) {
+                                    snack(e.message ?: "تعذّر استخراج النص من الصورة.")
+                                }
+                                extracting = false
+                            }
+                        },
+                        enabled = !extracting,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        if (extracting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = kTeal,
+                            )
+                            Spacer(Modifier.size(6.dp))
+                            Text("جارٍ الاستخراج…")
+                        } else {
+                            Icon(
+                                Icons.Filled.TextSnippet,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.size(4.dp))
+                            Text("استخراج النص من الصور (OCR)")
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Checkbox(checked = keepImages, onCheckedChange = { keepImages = it })
+                        Text("إبقاء الصور ظاهرة مع النص المعتمد", fontSize = 13.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onApprove(text.trim(), bookTitle.trim(), sourceRef.trim(), keepImages) },
+                enabled = text.trim().length >= 10 ||
+                    (keepImages && submission.imagePaths.isNotEmpty()),
+                colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+            ) { Text("اعتماد المعدَّل") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } },
+    )
 }
 
 @Composable
@@ -384,13 +998,11 @@ private fun EditAndPublishDialog(
 }
 
 @Composable
-private fun RejectDialog(onDismiss: () -> Unit, onReject: (String) -> Unit) {
-    val presets = listOf(
-        "المحتوى لا يناسب طبيعة التطبيق",
-        "جودة الصوت ضعيفة أو غير واضحة",
-        "المحتوى مكرّر (منشور سابقاً)",
-        "القسم المختار غير مناسب والمحتوى غير مكتمل",
-    )
+private fun RejectDialog(
+    presets: List<String>,
+    onDismiss: () -> Unit,
+    onReject: (String) -> Unit,
+) {
     var selected by remember { mutableStateOf<String?>(null) }
     var note by remember { mutableStateOf("") }
 

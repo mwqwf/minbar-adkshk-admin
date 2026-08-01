@@ -43,6 +43,13 @@ service firebase.storage {
         && request.resource.contentType == 'application/pdf';
     }
 
+    function validImage() {
+      return request.resource.size > 0
+        && request.resource.size <= 10 * 1024 * 1024
+        && request.resource.contentType != null
+        && request.resource.contentType.matches('image/.*');
+    }
+
     // المسار الحالي للتطبيق العام: submissions/{uid}/{submissionId}/{fileName}
     match /submissions/{uid}/{submissionId}/{fileName} {
       allow read: if canManageContent() || (signedIn() && request.auth.uid == uid);
@@ -74,6 +81,32 @@ service firebase.storage {
     match /lessons/{allPaths=**} {
       allow read: if true;
       allow create, update: if canManageContent() && validAudio();
+      allow delete: if canManageContent();
+    }
+
+    // صور صفحات الكتاب المرفقة باقتراح نص مشروح (خاصة بصاحبها والمشرفين).
+    match /transcript_submissions/{uid}/{submissionId}/{fileName} {
+      allow read: if canManageContent() || (signedIn() && request.auth.uid == uid);
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && validImage();
+      allow update: if false;
+      allow delete: if canManageContent()
+        || (
+          signedIn()
+          && request.auth.uid == uid
+          && (
+            !firestore.exists(/databases/(default)/documents/transcript_submissions/$(submissionId))
+            || firestore.get(/databases/(default)/documents/transcript_submissions/$(submissionId)).data.status == 'pending'
+          )
+        );
+    }
+
+    // صور النص المشروح المعتمد: عامة للقراءة، ويرفعها المشرفون مباشرة عبر SDK
+    // قبل استدعاء upsertLessonTranscript (الخادم يتحقق ويولّد الروابط).
+    match /lesson_transcripts/{lessonId}/{fileName} {
+      allow read: if true;
+      allow create, update: if canManageContent() && validImage();
       allow delete: if canManageContent();
     }
 

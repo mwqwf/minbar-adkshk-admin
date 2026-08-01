@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Schedule
@@ -65,6 +66,8 @@ fun ManageAllScreen(onBack: () -> Unit) {
     val snack = LocalSnack.current
     // اختيار مدّة التمييز — التمييز لم يعد دائماً بالضرورة.
     var featureFor by remember { mutableStateOf<Lesson?>(null) }
+    // محرر «النص المشروح» (المتن الذي تشرحه الصوتية).
+    var transcriptFor by remember { mutableStateOf<Lesson?>(null) }
 
     var categories by remember { mutableStateOf<List<Category>>(emptyList()) }
     var subcategories by remember { mutableStateOf<List<Subcategory>>(emptyList()) }
@@ -242,6 +245,14 @@ fun ManageAllScreen(onBack: () -> Unit) {
         null -> Unit
     }
 
+    transcriptFor?.let { lesson ->
+        TranscriptEditorDialog(
+            lessonId = lesson.id,
+            lessonTitle = lesson.title,
+            onDismiss = { transcriptFor = null },
+        )
+    }
+
     featureFor?.let { lesson ->
         FeatureDurationSheet(
             lessonTitle = lesson.title,
@@ -352,6 +363,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                             },
                             onEdit = { pending = PendingAction.EditLesson(l) },
                             onDelete = { pending = PendingAction.DeleteLesson(l) },
+                            onTranscript = { transcriptFor = l },
                         )
                     }
                 }
@@ -390,6 +402,7 @@ private fun LessonRow(
     onSchedule: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    onTranscript: () -> Unit,
 ) {
     val scheduled = (lesson.publishAtMs ?: 0) > System.currentTimeMillis()
     Card(
@@ -435,6 +448,13 @@ private fun LessonRow(
                         Icons.Filled.Schedule,
                         contentDescription = "نشر الآن",
                         tint = kOrange,
+                    )
+                }
+                IconButton(onClick = onTranscript) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.MenuBook,
+                        contentDescription = "النص المشروح",
+                        tint = kTeal,
                     )
                 }
                 IconButton(onClick = onEdit) {

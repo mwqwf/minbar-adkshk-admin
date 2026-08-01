@@ -67,6 +67,7 @@ import com.ali.ishaqiyin_admin.data.DmRepository
 import com.ali.ishaqiyin_admin.data.Lesson
 import com.ali.ishaqiyin_admin.data.OwnerReviewRepository
 import com.ali.ishaqiyin_admin.data.Subcategory
+import com.ali.ishaqiyin_admin.data.TranscriptsRepository
 import com.ali.ishaqiyin_admin.data.SubmissionsRepository
 import com.ali.ishaqiyin_admin.ui.chat.ProfileDialog
 import kotlinx.coroutines.async
@@ -218,8 +219,12 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
         .collectAsState(initial = 0)
     val dmUnread by remember { DmRepository.unreadThreadsStream() }
         .collectAsState(initial = 0)
-    val pendingSubmissions by remember { SubmissionsRepository.watchPendingCount() }
+    val pendingAudioSubmissions by remember { SubmissionsRepository.watchPendingCount() }
         .collectAsState(initial = 0)
+    val pendingTranscripts by remember { TranscriptsRepository.watchPendingCount() }
+        .collectAsState(initial = 0)
+    // شارة «المساهمات» = الدروس الصوتية + النصوص المشروحة المعلّقة معاً.
+    val pendingSubmissions = pendingAudioSubmissions + pendingTranscripts
     // عدد المميّزة السارية فقط (ما انتهت مدّته لا يُعدّ).
     val featured by remember { AdminRepository.watchFeatured() }
         .collectAsState(initial = emptyList())
@@ -258,8 +263,8 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
         )
         add(
             ActionSpec(
-                Icons.Filled.HowToVote, kGold, "طلبات النشر",
-                "مساهمات المستمعين", pendingSubmissions, Routes.SUBMISSIONS,
+                Icons.Filled.HowToVote, kGold, "المساهمات",
+                "دروس ونصوص المستمعين", pendingSubmissions, Routes.SUBMISSIONS,
             ),
         )
         add(
