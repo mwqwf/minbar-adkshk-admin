@@ -215,6 +215,17 @@ object AdminRepository {
     }
 
     /**
+     * إعادة ترتيب دروس قسم فرعي: تُرسل القائمة الكاملة بالترتيب الجديد،
+     * والخادم يعيد توزيع طوابع الإنشاء نفسها عليها (فيصح «الأقدم أولاً»
+     * و«الأحدث أولاً» معاً في التطبيق العام بلا أي تعديل عليه).
+     */
+    suspend fun reorderSubcategoryLessons(subcategoryId: String, lessonIds: List<String>) {
+        functions.getHttpsCallable("reorderSubcategoryLessons").call(
+            mapOf("subcategoryId" to subcategoryId, "lessonIds" to lessonIds),
+        ).await()
+    }
+
+    /**
      * تمييز/إلغاء تمييز درس (يظهر في «مختارات المنبر» أعلى التطبيق).
      * [untilMs] نهاية المدّة، و`null` تعني تمييزاً دائماً.
      * إلغاء التمييز يمسح المدّة أيضاً كي لا تبقى قيمة معلّقة تُربك العرض.

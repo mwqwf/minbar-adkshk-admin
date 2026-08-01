@@ -2151,6 +2151,110 @@ exports.purgeDeletedLesson = functions
     return { ok: true, id: lessonId, cleanupPending: cleanup.failed.length > 0 };
   });
 
+/** تفريغ السلة كاملةً — **للمالك حصراً**: حذف نهائي لكل محتوياتها. */
+exports.emptyTrash = functions
+  .runWith({ timeoutSeconds: 540, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    const actorEmail = await assertOwner(context);
+    const snap = await db.collection(TRASH_COLLECTION).get();
+    let purged = 0;
+    for (const doc of snap.docs) {
+      await purgeTrashedLesson(doc, "").catch((error) => {
+        console.error("empty trash item failed", doc.id, error);
+      });
+      purged += 1;
+    }
+    await auditOwnerAction(actorEmail, "empty_trash", "", { purged });
+    return { ok: true, purged };
+  });
+
+/**
+ * 🔀 إعادة ترتيب دروس قسم فرعي: ترتيب التطبيق قائم على تاريخ الإنشاء
+ * (الأقدم أولاً افتراضياً، والأحدث إن اختاره المستمع) — لذا لا نخترع
+ * حقلاً جديداً بل **نعيد توزيع طوابع الإنشاء الموجودة نفسها** على الدروس
+ * بالترتيب المطلوب: أقدم طابع لأول درس في الترتيب الجديد وهكذا. فيصحّ
+ * الترتيبان تلقائياً في كل النسخ المثبتة بلا أي تعديل على التطبيق العام.
+ */
+exports.reorderSubcategoryLessons = functions
+  .runWith({ timeoutSeconds: 300, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    const actor = await assertAuthorized(context);
+    const subcategoryId = requireString(
+      data && data.subcategoryId,
+      "subcategoryId",
+      1,
+      180,
+    );
+    const orderedIds = Array.isArray(data && data.lessonIds)
+      ? data.lessonIds.map((id) => cleanString(id, 180)).filter(Boolean)
+      : [];
+    if (orderedIds.length < 2) {
+      throw new functions.https.HttpsError(
+        "invalid-argument",
+        "أرسل ترتيباً يضم درسين على الأقل.",
+      );
+    }
+    const [plainSnap, wrappedSnap] = await Promise.all([
+      db.collection("lessons").where("subcategoryId", "==", subcategoryId).get(),
+      db.collection("lessons")
+        .where("data.subcategoryId", "==", subcategoryId).get(),
+    ]);
+    const byId = new Map();
+    [...plainSnap.docs, ...wrappedSnap.docs].forEach((doc) => byId.set(doc.id, doc));
+    // الترتيب المرسل يجب أن يطابق دروس القسم تماماً (لا أكثر ولا أقل):
+    // قائمة ناقصة تعني أن اللوحة ترى نسخة قديمة — نرفض بدل خلط الترتيب.
+    if (orderedIds.length !== byId.size ||
+        orderedIds.some((id) => !byId.has(id))) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "قائمة الترتيب لا تطابق دروس القسم الحالية — حدّث الشاشة وأعد المحاولة.",
+      );
+    }
+    // جمع طوابع الإنشاء الحالية ثم فرزها تصاعدياً وإزالة أي تطابق بدفعة
+    // +1ms — طابعان متساويان يجعلان موضعَي درسين غير محسومَين.
+    const parseMs = (value) => {
+      const raw = unwrapLegacy(value);
+      const fromIso = Date.parse(String(raw.createdAt || ""));
+      if (!Number.isNaN(fromIso)) return fromIso;
+      if (Number.isFinite(Number(raw.createdAtMs))) return Number(raw.createdAtMs);
+      if (raw.createdAtTs && typeof raw.createdAtTs.toMillis === "function") {
+        return raw.createdAtTs.toMillis();
+      }
+      return Date.now();
+    };
+    const stamps = orderedIds
+      .map((id) => parseMs(byId.get(id).data()))
+      .sort((a, b) => a - b);
+    for (let i = 1; i < stamps.length; i += 1) {
+      if (stamps[i] <= stamps[i - 1]) stamps[i] = stamps[i - 1] + 1;
+    }
+    const batch = db.batch();
+    orderedIds.forEach((id, index) => {
+      const doc = byId.get(id);
+      const ms = stamps[index];
+      const iso = new Date(ms).toISOString();
+      const update = {
+        createdAt: iso,
+        createdAtTs: admin.firestore.Timestamp.fromMillis(ms),
+        createdAtMs: ms,
+        reorderedBy: actor.email,
+        reorderedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      // الوثائق القديمة الملفوفة `{data:{...}}`: التطبيق يقرأ المفتاح
+      // الملفوف — يُحدَّث الموضعان معاً.
+      const raw = doc.data() || {};
+      if (raw.data && typeof raw.data === "object") {
+        update["data.createdAt"] = iso;
+      }
+      batch.update(doc.ref, update);
+    });
+    await batch.commit();
+    await auditOwnerAction(actor.email, "reorder_subcategory", subcategoryId, {
+      lessons: orderedIds.length,
+    });
+    return { ok: true, id: subcategoryId, lessons: orderedIds.length };
+  });
+
 /** تنظيف يومي: ما تجاوز مدة بقائه في السلة (30 يوماً) يُحذف نهائياً. */
 exports.purgeExpiredTrash = functions
   .runWith({ timeoutSeconds: 300, memory: "512MB" })

@@ -75,4 +75,10 @@ object TrashRepository {
         functions.getHttpsCallable("purgeDeletedLesson")
             .call(mapOf("lessonId" to item.id)).await()
     }
+
+    /** تفريغ السلة كاملةً — الخادم يقصرها على المالك حصراً. */
+    suspend fun emptyAll(): Int {
+        val result = functions.getHttpsCallable("emptyTrash").call().await()
+        return ((result.data as? Map<*, *>)?.get("purged") as? Number)?.toInt() ?: 0
+    }
 }

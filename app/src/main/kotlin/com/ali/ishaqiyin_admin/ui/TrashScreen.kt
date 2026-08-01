@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RestoreFromTrash
@@ -54,7 +55,7 @@ import java.util.Locale
  * احذف نهائياً. ما تجاوز مهلته يُنظَّف تلقائياً كل ليلة.
  */
 @Composable
-fun TrashScreen(onBack: () -> Unit) {
+fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
     val player = rememberPreviewPlayer()
@@ -62,6 +63,7 @@ fun TrashScreen(onBack: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var restoring by remember { mutableStateOf<TrashedLesson?>(null) }
     var purging by remember { mutableStateOf<TrashedLesson?>(null) }
+    var emptying by remember { mutableStateOf(false) }
 
     val items by remember { TrashRepository.watchAll() }
         .collectAsState(initial = emptyList())
@@ -108,7 +110,39 @@ fun TrashScreen(onBack: () -> Unit) {
         )
     }
 
-    AdminScaffold(title = "سلة المحذوفات", onBack = onBack) { padding ->
+    if (emptying) {
+        ConfirmDialog(
+            title = "تفريغ السلة كاملةً؟",
+            body = "⚠️ سيُحذف ${items.size} درساً وملفاتها الصوتية نهائياً " +
+                "ولا يمكن استعادة أي منها بعدها أبداً.\n\nهذا الإجراء للمالك فقط.",
+            confirmLabel = "تفريغ نهائي",
+            onDismiss = { emptying = false },
+            onConfirm = {
+                emptying = false
+                run("") {
+                    val purged = TrashRepository.emptyAll()
+                    snack("فُرّغت السلة — حُذف $purged درساً نهائياً.")
+                }
+            },
+        )
+    }
+
+    AdminScaffold(
+        title = "سلة المحذوفات",
+        onBack = onBack,
+        actions = {
+            // تفريغ السلة دفعة واحدة: زرّ للمالك وحده (والخادم يتحقق أيضاً).
+            if (isOwner && items.isNotEmpty()) {
+                IconButton(onClick = { emptying = true }, enabled = !busy) {
+                    Icon(
+                        Icons.Filled.DeleteSweep,
+                        contentDescription = "تفريغ السلة",
+                        tint = kDanger,
+                    )
+                }
+            }
+        },
+    ) { padding ->
         if (items.isEmpty()) {
             Box(
                 Modifier.padding(padding).fillMaxSize().padding(32.dp),

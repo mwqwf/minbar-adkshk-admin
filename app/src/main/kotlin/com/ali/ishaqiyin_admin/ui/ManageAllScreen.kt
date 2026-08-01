@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
@@ -26,6 +27,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -71,6 +73,8 @@ fun ManageAllScreen(onBack: () -> Unit) {
     var featureFor by remember { mutableStateOf<Lesson?>(null) }
     // محرر «النص المشروح» (المتن الذي تشرحه الصوتية).
     var transcriptFor by remember { mutableStateOf<Lesson?>(null) }
+    // شاشة إعادة ترتيب دروس القسم الفرعي المفلتَر.
+    var reorderOpen by remember { mutableStateOf(false) }
 
     var categories by remember { mutableStateOf<List<Category>>(emptyList()) }
     var subcategories by remember { mutableStateOf<List<Subcategory>>(emptyList()) }
@@ -285,6 +289,15 @@ fun ManageAllScreen(onBack: () -> Unit) {
         )
     }
 
+    if (reorderOpen && filterSubcategoryId != null) {
+        ReorderLessonsDialog(
+            subcategoryId = filterSubcategoryId!!,
+            subcategoryName = subName(filterSubcategoryId!!),
+            onDismiss = { reorderOpen = false },
+            onSaved = { reload++ },
+        )
+    }
+
     featureFor?.let { lesson ->
         FeatureDurationSheet(
             lessonTitle = lesson.title,
@@ -341,6 +354,24 @@ fun ManageAllScreen(onBack: () -> Unit) {
                     onSelected = { picked -> filterSubcategoryId = picked?.id },
                     modifier = Modifier.weight(1f),
                 )
+            }
+            // إعادة ترتيب دروس القسم الفرعي المختار (أسهم/موضع محدد/آلي بالأرقام).
+            if (filterSubcategoryId != null) {
+                OutlinedButton(
+                    onClick = { reorderOpen = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.SwapVert,
+                        contentDescription = null,
+                        tint = kTeal,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Text("إعادة ترتيب دروس «${subName(filterSubcategoryId!!)}»")
+                }
             }
             Spacer(Modifier.size(6.dp))
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = kTeal)

@@ -248,7 +248,9 @@ private fun AdminNavHost(isOwner: Boolean) {
         composable(Routes.TRANSCRIPT_INTAKE) {
             TranscriptIntakeScreen(onBack = { nav.popBackStack() })
         }
-        composable(Routes.TRASH) { TrashScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.TRASH) {
+            TrashScreen(isOwner = isOwner, onBack = { nav.popBackStack() })
+        }
         composable(Routes.OWNER_REVIEW) { OwnerReviewScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.FEATURED) { FeaturedScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.CHAT) { ChatScreen(isOwner = isOwner, nav = nav) }
