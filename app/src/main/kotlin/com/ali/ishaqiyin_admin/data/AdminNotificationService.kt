@@ -103,6 +103,19 @@ object AdminNotificationService {
     private fun arabicMessage(e: FirebaseFunctionsException): String {
         val server = e.message.orEmpty().trim()
         if (server.isNotEmpty() && isArabicText(server)) return server
+        // 401 من بوّابة Google (لا من الدالة) يعيد صفحة HTML لا JSON، فيفشل
+        // تحليلها ويبقى نصّ الرسالة اسمَ الرمز المجرَّد "UNAUTHENTICATED".
+        // حدث ذلك فعلاً حين فقدت `sendNotification` وحدها ربط الاستدعاء
+        // (allUsers/invoker) فرُفض الطلب قبل بلوغ الشيفرة، وكان يُعرض حينها
+        // «انتهت جلسة الدخول» فيدور المالك في خروج ودخول لا يُصلحان شيئاً.
+        // أمّا انتهاء الجلسة الحقيقي فرسالته "Unauthenticated" داخل JSON،
+        // فيسقط إلى `arabicReason()` ويأخذ نصّ الجلسة الصحيح من ErrorMessages.
+        if (e.code == FirebaseFunctionsException.Code.UNAUTHENTICATED &&
+            server == "UNAUTHENTICATED"
+        ) {
+            return "رفض الخادم الطلب قبل أن يبلغ دالة الإشعارات. " +
+                "راجع نشر الدالة وصلاحية استدعائها."
+        }
         return when (e.code) {
             FirebaseFunctionsException.Code.PERMISSION_DENIED ->
                 "هذا الحساب غير مخوّل لإرسال الإشعارات."

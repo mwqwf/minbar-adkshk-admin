@@ -786,12 +786,12 @@ exports.createSubmission = functions.https.onCall(async (data, context) => {
   const accepted = Boolean(termsAcceptedAt)
     && !Number.isNaN(parsedTermsAcceptedAt)
     && parsedTermsAcceptedAt <= Date.now() + 5 * 60 * 1000;
-  if (!(data && data.rightsConfirmed === true) || !accepted) {
-    throw new functions.https.HttpsError(
-      "failed-precondition",
-      "يجب تأكيد حق النشر والموافقة على سياسة المحتوى.",
-    );
-  }
+  // ⚠️ الإقرار **ليس شرطاً** لقبول المساهمة: المشرفون يتحقّقون من كل درس
+  // بأنفسهم قبل النشر ولا يبنون قرارهم على ادّعاء المرسِل. كان هنا رفضٌ يمنع
+  // الإرسال بلا إقرار فيبدو زرّ «إرسال للمراجعة» صامتاً بلا تفسير.
+  // نسجّل ما أقرّ به المستخدم فعلاً ليظهر للمشرف في شاشة المراجعة.
+  const rightsConfirmed = data && data.rightsConfirmed === true;
+  const policyAccepted = data && data.contentPolicyAccepted === true;
   const requiredPrefix = `submissions/${uid}/`;
   if (!storagePath.startsWith(requiredPrefix) || storagePath.includes("..")) {
     throw new functions.https.HttpsError("permission-denied", "مسار الملف غير صالح.");
@@ -856,8 +856,9 @@ exports.createSubmission = functions.https.onCall(async (data, context) => {
     fcmToken,
     status: "pending",
     rejectReason: "",
-    rightsConfirmed: true,
-    termsAccepted: true,
+    // ما أقرّ به المرسِل فعلاً (لا قيمة ثابتة) — يظهر للمشرف عند المراجعة.
+    rightsConfirmed,
+    termsAccepted: policyAccepted,
     termsAcceptedAt,
     termsAcceptedAtTs: admin.firestore.FieldValue.serverTimestamp(),
     contentPolicyVersion: cleanString(data && data.contentPolicyVersion, 40) || "2026-07",
