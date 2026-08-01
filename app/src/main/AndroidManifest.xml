@@ -37,7 +37,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -74,12 +74,13 @@
             </intent-filter>
         </activity>
 
-        <!-- شاشة قصّ الصور (مكتبة القصّ): تتطلّب سمة AppCompat — بلا هذا
-             السطر كانت تنهار فور فتحها لأن سمة التطبيق Compose فقط. -->
+        <!-- شاشة قصّ الصور: تتطلّب سمة AppCompat (بلاها تنهار فور فتحها)،
+             وبشريط علويّ (لا NoActionBar) لأنّ زرّ «تم» يسكن قائمة الشريط —
+             بلا شريط لا يظهر أيّ زرّ إتمام إطلاقاً. -->
         <activity
             android:name="com.canhub.cropper.CropImageActivity"
             android:exported="false"
-            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar"
+            android:theme="@style/Theme.AppCompat.DayNight"
             tools:replace="android:theme,android:exported" />
 
         <!-- شاشة المكالمة: تظهر فوق شاشة القفل وتوقظ الشاشة عند الرنين،

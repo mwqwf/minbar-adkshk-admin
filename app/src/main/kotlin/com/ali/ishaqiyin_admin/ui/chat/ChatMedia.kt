@@ -446,7 +446,8 @@ fun AudioBubblePlayer(
                         else -> Icons.Filled.PlayArrow
                     },
                     contentDescription = null,
-                    tint = ChatColors.accentDark,
+                    // رمادي أزرار واتساب #8696A0 لا لون العلامة التجارية.
+                    tint = Color(0xFF8696A0),
                     modifier = Modifier.size(34.dp),
                 )
             }
@@ -457,13 +458,18 @@ fun AudioBubblePlayer(
             WaveformSeekBar(
                 bars = bars,
                 progress = progress,
-                played = if (mine) ChatColors.accentDark else ChatColors.accent,
-                // رمادي محايد كغير-المسموع في واتساب — الأزرق المخضرّ الباهت
-                // السابق كان يذوب في خلفيّة الفقاعة فتبدو الموجة ممسوحة.
-                rest = Color(0xFFBFC8CE),
+                // ألوان واتساب الحرفيّة: المسموع رمادي مائل للأزرق الداكن
+                // #54656F، وغير المسموع رمادي فاتح — على الفقاعتين معاً.
+                played = Color(0xFF54656F),
+                rest = if (mine) Color(0xFFA0BFB0) else Color(0xFFC5CDD2),
                 enabled = active && total > 0,
                 playing = active && playing,
                 onSeek = { fraction -> SharedAudioPlayer.seekTo((fraction * total).toLong()) },
+                dot = if (isVoice && !mine && !listened) {
+                    ChatColors.readBlue
+                } else {
+                    Color(0xFF54656F)
+                },
             )
             Spacer(Modifier.height(3.dp))
             // 4) سطر الحالة: رقم واحد لا رقمان (يزول التباس اتجاه RTL).
@@ -547,6 +553,9 @@ private fun WaveformSeekBar(
     playing: Boolean,
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier,
+    // نقطة السحب: زرقاء لرسالة صوتيّة لم أسمعها بعد (سلوك واتساب)، وإلا
+    // بلون المسموع.
+    dot: Color = played,
 ) {
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     Canvas(
@@ -595,7 +604,7 @@ private fun WaveformSeekBar(
             val r = 5.5.dp.toPx()
             val x = if (rtl) size.width - progress * size.width else progress * size.width
             drawCircle(
-                color = played,
+                color = dot,
                 radius = r,
                 center = Offset(x.coerceIn(r, (size.width - r).coerceAtLeast(r)), size.height / 2f),
             )

@@ -69,6 +69,8 @@ import com.ali.ishaqiyin_admin.data.LessonUploadWorker
 import com.ali.ishaqiyin_admin.data.Subcategory
 import com.ali.ishaqiyin_admin.data.UploadQueue
 import com.ali.ishaqiyin_admin.util.AudioMerger
+import androidx.lifecycle.repeatOnLifecycle
+import com.ali.ishaqiyin_admin.util.AudioTranscodeMerger
 import com.ali.ishaqiyin_admin.util.Mp3FormatException
 import com.ali.ishaqiyin_admin.util.PickedFile
 import com.ali.ishaqiyin_admin.util.copyUriToCache
@@ -186,30 +188,33 @@ fun AddLessonScreen(onBack: () -> Unit) {
 
     // ملفات واردة من المشاركة الخارجية: تُلحق بقائمة الدمج **فور وصولها**
     // حتى والنموذج مفتوح — شارِك صوتية أخرى من أي تطبيق وستنضم للدمج هنا.
+    // ⚠️ الجمع مقيّد بدورة حياة الشاشة (STARTED): كان مجمّعاً دائم الحياة،
+    // فنموذجٌ مفتوح في خلفية النظام «يسرق» المشاركة بصمت من النموذج الظاهر.
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     LaunchedEffect(Unit) {
-        ShareIntake.pending.collect { queue ->
-            val shared = queue.firstOrNull() ?: return@collect
-            val duplicate = files.any { it.uri.toString() == shared.uri.toString() }
-            when {
-                duplicate -> Unit
-                files.isNotEmpty() && !(files + shared).all { AudioMerger.isMp3(it.name) } -> {
-                    message = "لدمج عدة ملفات يجب أن تكون جميعها MP3 — " +
-                        "«${shared.name}» لا يقبل الدمج مع المختار."
-                    isError = true
-                }
+        lifecycleOwner.lifecycle.repeatOnLifecycle(
+            androidx.lifecycle.Lifecycle.State.STARTED,
+        ) {
+            ShareIntake.pending.collect { queue ->
+                val shared = queue.firstOrNull() ?: return@collect
+                val duplicate = files.any { it.uri.toString() == shared.uri.toString() }
+                when {
+                    duplicate -> Unit
+                    // لا بوابة صيغة بعد اليوم: الدمج يقبل أي صيغ (إعادة ترميز
+                    // AAC/M4A عند الحاجة) — فقط حدّ العدد يبقى.
+                    files.size >= AudioMerger.maxFiles -> {
+                        message = "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد " +
+                            "— لم يُضف «${shared.name}»."
+                        isError = true
+                    }
 
-                files.size >= AudioMerger.maxFiles -> {
-                    message = "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد " +
-                        "— لم يُضف «${shared.name}»."
-                    isError = true
+                    else -> {
+                        files.add(shared)
+                        if (title.isBlank()) title = smartTitleFromFileName(shared.name)
+                    }
                 }
-
-                else -> {
-                    files.add(shared)
-                    if (title.isBlank()) title = smartTitleFromFileName(shared.name)
-                }
+                ShareIntake.consumeFirst()
             }
-            ShareIntake.consumeFirst()
         }
     }
 
@@ -221,15 +226,8 @@ fun AddLessonScreen(onBack: () -> Unit) {
         val existing = files.map { it.uri.toString() }.toSet()
         val combined = files + picked.filter { it.uri.toString() !in existing }
 
-        // الدمج المباشر (لصق الإطارات) لا يصح إلا لملفات MP3.
-        if (combined.size > 1) {
-            val bad = combined.firstOrNull { !AudioMerger.isMp3(it.name) }
-            if (bad != null) {
-                message = "لدمج عدة ملفات يجب أن تكون جميعها MP3 — «${bad.name}» ليس كذلك."
-                isError = true
-                return@rememberLauncherForActivityResult
-            }
-        }
+        // قيد «MP3 فقط» أُلغي: الدمج يقبل أي صيغ (لصق مباشر إن كانت كلها
+        // MP3، وإلا فكّ وإعادة ترميز AAC/M4A) — لا عبء تحويل على المشرف.
         if (combined.size > AudioMerger.maxFiles) {
             message = "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد — أُبقي أولها."
             isError = true
@@ -302,18 +300,44 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     )
                 } else {
                     // عدّة ملفات = درس واحد متّصل: يُدمج محليّاً أوّلاً (لا
-                    // يحتاج شبكة) ثم يدخل الطابور ملفّاً واحداً.
+                    // يحتاج شبكة) ثم يدخل الطابور ملفّاً واحداً. كل الملفات
+                    // MP3 → لصق إطارات بلا إعادة ترميز؛ غير ذلك أو ترميزات
+                    // MP3 متنافرة → فكّ الجميع وإعادة ترميز AAC/M4A — الدمج
+                    // يصحّ مهما اختلفت الصيغ والناتج صيغة واحدة.
                     merging = true
+                    val stamp = System.currentTimeMillis()
                     val locals = files.map { context.copyUriToCache(it.uri, it.name) }
-                    val out = File(context.cacheDir, "merged_${System.currentTimeMillis()}.mp3")
+                    var mergedName = "merged.mp3"
                     val merged = withContext(Dispatchers.IO) {
-                        AudioMerger.mergeMp3(inputs = locals, outputPath = out.absolutePath)
+                        if (files.all { AudioMerger.isMp3(it.name) }) {
+                            try {
+                                AudioMerger.mergeMp3(
+                                    inputs = locals,
+                                    outputPath = File(
+                                        context.cacheDir,
+                                        "merged_$stamp.mp3",
+                                    ).absolutePath,
+                                )
+                            } catch (_: Mp3FormatException) {
+                                mergedName = "merged.m4a"
+                                AudioTranscodeMerger.mergeToM4a(
+                                    locals,
+                                    File(context.cacheDir, "merged_$stamp.m4a").absolutePath,
+                                )
+                            }
+                        } else {
+                            mergedName = "merged.m4a"
+                            AudioTranscodeMerger.mergeToM4a(
+                                locals,
+                                File(context.cacheDir, "merged_$stamp.m4a").absolutePath,
+                            )
+                        }
                     }
                     locals.forEach { runCatching { it.delete() } }
                     merging = false
                     UploadQueue.enqueueLocalFile(
                         file = merged,
-                        fileName = "merged.mp3",
+                        fileName = mergedName,
                         title = snapshotTitle,
                         categoryId = categoryId!!,
                         subcategoryId = subcategoryId!!,
@@ -364,10 +388,12 @@ fun AddLessonScreen(onBack: () -> Unit) {
             } catch (e: Exception) {
                 queuing = false
                 merging = false
-                message = if (e is Mp3FormatException) {
-                    "تعذّر دمج الملفات — تأكد أنها ملفات MP3 سليمة."
-                } else {
-                    "تعذّر تجهيز الدرس: ${e.message ?: e}"
+                message = when (e) {
+                    is AudioTranscodeMerger.UnsupportedAudioException ->
+                        e.message ?: "تعذّر فكّ أحد الملفات الصوتية."
+                    is Mp3FormatException ->
+                        "تعذّر دمج الملفات — أحدها ليس ملفاً صوتياً سليماً."
+                    else -> "تعذّر تجهيز الدرس: ${e.message ?: e}"
                 }
                 isError = true
             }
@@ -396,17 +422,23 @@ fun AddLessonScreen(onBack: () -> Unit) {
             onDismiss = { showRecorder = false },
             onRecorded = { file, name ->
                 showRecorder = false
-                // التسجيل (m4a) لا يُدمج مع ملفات — يحلّ محلّ الاختيار الحالي.
-                files.clear()
-                files.add(
-                    PickedFile(
-                        uri = android.net.Uri.fromFile(file),
-                        name = name,
-                        size = file.length(),
-                    ),
-                )
-                message = ""
-                isError = false
+                // التسجيل (m4a) صار يقبل الدمج كأي صيغة أخرى: يُلحق بالقائمة
+                // بدل أن يمحوها — سجّل مقاطع متتابعة أو اخلطها بملفات مختارة.
+                if (files.size >= AudioMerger.maxFiles) {
+                    message = "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد " +
+                        "— لم يُضف التسجيل."
+                    isError = true
+                } else {
+                    files.add(
+                        PickedFile(
+                            uri = android.net.Uri.fromFile(file),
+                            name = name,
+                            size = file.length(),
+                        ),
+                    )
+                    message = ""
+                    isError = false
+                }
             },
         )
     }

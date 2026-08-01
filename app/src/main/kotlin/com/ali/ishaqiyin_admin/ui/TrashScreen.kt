@@ -132,12 +132,16 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
         onBack = onBack,
         actions = {
             // تفريغ السلة دفعة واحدة: زرّ للمالك وحده (والخادم يتحقق أيضاً).
-            if (isOwner && items.isNotEmpty()) {
-                IconButton(onClick = { emptying = true }, enabled = !busy) {
+            // يظهر دائماً كي يعرف المالك مكانه، ويتعطّل فقط والسلة فارغة.
+            if (isOwner) {
+                IconButton(
+                    onClick = { emptying = true },
+                    enabled = !busy && items.isNotEmpty(),
+                ) {
                     Icon(
                         Icons.Filled.DeleteSweep,
                         contentDescription = "تفريغ السلة",
-                        tint = kDanger,
+                        tint = if (items.isEmpty()) kMuted else kDanger,
                     )
                 }
             }

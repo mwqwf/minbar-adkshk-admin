@@ -83,6 +83,10 @@ fun AdminTranscriptImagesEditor(
         CropImageOptions(
             activityTitle = "قصّ صورة الصفحة",
             cropMenuCropButtonTitle = "تم",
+            // نافذة القصّ تبدأ مغطّية الصورة كاملة (حتى الأعلى والأسفل) —
+            // الهامش الافتراضي كان يوهم أن الأطراف خارج متناول القصّ.
+            initialCropWindowPaddingRatio = 0f,
+            guidelines = com.canhub.cropper.CropImageView.Guidelines.ON,
         ),
     )
 
