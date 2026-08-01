@@ -2049,21 +2049,37 @@ async function deletePathsBestEffort(paths, reason, targetId) {
   return { failed, cleanupJobId };
 }
 
+// 🗑️ سلة المحذوفات: الحذف نقلٌ لا إعدام — الوثيقة (ومعها نصّها المشروح)
+// تنتقل إلى deleted_lessons وملفات التخزين تبقى كما هي، فتصحّ الاستعادة
+// بنقرة. الحذف النهائي (يدوي أو بعد TRASH_RETENTION_MS) هو وحده ما يمسح
+// الملفات. (درسٌ من فاجعة 2026-08-01: حذفٌ بالخطأ استلزم إنقاذاً من
+// soft-delete التخزين ونافذة الساعة في Firestore.)
+const TRASH_COLLECTION = "deleted_lessons";
+const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 async function deleteLessonHandler(data, context) {
   const actor = await assertAuthorized(context);
   const lessonId = requireString(data && data.lessonId, "lessonId", 1, 180);
   const lessonRef = db.collection("lessons").doc(lessonId);
   const reviewRef = db.collection("owner_lesson_reviews").doc(lessonId);
-  const [lessonSnap, reviewSnap] = await Promise.all([
+  const transcriptRef = db.collection("lesson_transcripts").doc(lessonId);
+  const [lessonSnap, reviewSnap, transcriptSnap] = await Promise.all([
     lessonRef.get(),
     reviewRef.get(),
+    transcriptRef.get(),
   ]);
   if (!lessonSnap.exists) return { ok: true, alreadyDeleted: true };
-  const paths = lessonStoragePaths(unwrapLegacy(lessonSnap.data()));
   const batch = db.batch();
+  batch.set(db.collection(TRASH_COLLECTION).doc(lessonId), {
+    lesson: lessonSnap.data(),
+    transcript: transcriptSnap.exists ? transcriptSnap.data() : null,
+    deletedBy: actor.email,
+    deletedAt: admin.firestore.FieldValue.serverTimestamp(),
+    deletedAtMs: Date.now(),
+    purgeAfterMs: Date.now() + TRASH_RETENTION_MS,
+  });
   batch.delete(lessonRef);
-  // النص المشروح المرافق يُحذف مع درسه (الوثيقة + صور مجلده في التخزين).
-  batch.delete(db.collection("lesson_transcripts").doc(lessonId));
+  batch.delete(transcriptRef);
   if (reviewSnap.exists) {
     batch.update(reviewRef, {
       status: "deleted",
@@ -2073,20 +2089,90 @@ async function deleteLessonHandler(data, context) {
     });
   }
   await batch.commit();
-  await bucket.deleteFiles({ prefix: `lesson_transcripts/${lessonId}/` })
-    .catch(() => {});
-  const cleanup = await deletePathsBestEffort(paths, "delete_lesson", lessonId);
-  await auditOwnerAction(actor.email, "delete_lesson", lessonId, {
-    cleanupPending: cleanup.failed.length > 0,
-    cleanupJobId: cleanup.cleanupJobId,
-  });
-  return {
-    ok: true,
-    id: lessonId,
-    cleanupPending: cleanup.failed.length > 0,
-    cleanupJobId: cleanup.cleanupJobId,
-  };
+  await auditOwnerAction(actor.email, "trash_lesson", lessonId, {});
+  return { ok: true, id: lessonId, trashed: true };
 }
+
+/** استعادة درس من السلة: تعيد الوثيقة ونصّها المشروح كما كانا. */
+exports.restoreDeletedLesson = functions.https.onCall(async (data, context) => {
+  const actor = await assertAuthorized(context);
+  const lessonId = requireString(data && data.lessonId, "lessonId", 1, 180);
+  const trashRef = db.collection(TRASH_COLLECTION).doc(lessonId);
+  const snap = await trashRef.get();
+  if (!snap.exists) {
+    throw new functions.https.HttpsError("not-found", "العنصر غير موجود في السلة.");
+  }
+  const value = snap.data() || {};
+  const lesson = value.lesson;
+  if (!lesson || typeof lesson !== "object") {
+    throw new functions.https.HttpsError("internal", "بيانات السلة غير مكتملة.");
+  }
+  const batch = db.batch();
+  batch.set(db.collection("lessons").doc(lessonId), lesson);
+  if (value.transcript && typeof value.transcript === "object") {
+    batch.set(db.collection("lesson_transcripts").doc(lessonId), value.transcript);
+  }
+  batch.delete(trashRef);
+  await batch.commit();
+  await auditOwnerAction(actor.email, "restore_lesson", lessonId, {});
+  return { ok: true, id: lessonId };
+});
+
+/** الحذف النهائي من السلة: يمسح الوثيقة وملفات التخزين معاً. */
+async function purgeTrashedLesson(trashDoc, actorEmail) {
+  const value = trashDoc.data() || {};
+  const lesson = unwrapLegacy(value.lesson || {});
+  const paths = lessonStoragePaths(lesson);
+  const transcript = value.transcript || {};
+  (Array.isArray(transcript.images) ? transcript.images : []).forEach((item) => {
+    const path = item && item.path && storagePathFromUrl(item.path);
+    if (path) paths.push(path);
+  });
+  await trashDoc.ref.delete();
+  await bucket.deleteFiles({ prefix: `lesson_transcripts/${trashDoc.id}/` })
+    .catch(() => {});
+  const cleanup = await deletePathsBestEffort(paths, "purge_lesson", trashDoc.id);
+  if (actorEmail) {
+    await auditOwnerAction(actorEmail, "purge_lesson", trashDoc.id, {
+      cleanupPending: cleanup.failed.length > 0,
+    });
+  }
+  return cleanup;
+}
+
+exports.purgeDeletedLesson = functions
+  .runWith({ timeoutSeconds: 120, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    const actor = await assertAuthorized(context);
+    const lessonId = requireString(data && data.lessonId, "lessonId", 1, 180);
+    const snap = await db.collection(TRASH_COLLECTION).doc(lessonId).get();
+    if (!snap.exists) return { ok: true, alreadyDeleted: true };
+    const cleanup = await purgeTrashedLesson(snap, actor.email);
+    return { ok: true, id: lessonId, cleanupPending: cleanup.failed.length > 0 };
+  });
+
+/** تنظيف يومي: ما تجاوز مدة بقائه في السلة (30 يوماً) يُحذف نهائياً. */
+exports.purgeExpiredTrash = functions
+  .runWith({ timeoutSeconds: 300, memory: "512MB" })
+  .pubsub.schedule("40 3 * * *")
+  .timeZone("Asia/Riyadh")
+  .onRun(async () => {
+    const snap = await db.collection(TRASH_COLLECTION)
+      .where("purgeAfterMs", "<", Date.now())
+      .limit(100)
+      .get();
+    for (const doc of snap.docs) {
+      await purgeTrashedLesson(doc, "").catch((error) => {
+        console.error("trash purge failed", doc.id, error);
+      });
+    }
+    if (snap.size > 0) {
+      await auditOwnerAction("system", "purge_expired_trash", "", {
+        purged: snap.size,
+      });
+    }
+    return null;
+  });
 
 exports.deleteLesson = functions.runWith({ timeoutSeconds: 120, memory: "512MB" })
   .https.onCall(deleteLessonHandler);
@@ -2099,6 +2185,40 @@ async function deleteRefsInBatches(refs) {
     refs.slice(offset, offset + 400).forEach((ref) => batch.delete(ref));
     await batch.commit();
   }
+}
+
+/**
+ * نقل دفعة دروس إلى سلة المحذوفات (تستعملها عمليات الحذف التعاقبي):
+ * الوثيقة + نصّها المشروح يُحفظان في السلة وملفات التخزين لا تُمسّ —
+ * فحذف قسم بالخطأ لم يعد كارثة.
+ */
+async function trashLessonDocs(lessonDocs, actorEmail) {
+  if (!lessonDocs.length) return 0;
+  const transcriptSnaps = await db.getAll(
+    ...lessonDocs.map((doc) => db.collection("lesson_transcripts").doc(doc.id)),
+  );
+  const transcriptById = new Map(transcriptSnaps.map((s) => [s.id, s]));
+  const now = Date.now();
+  for (let offset = 0; offset < lessonDocs.length; offset += 150) {
+    const batch = db.batch();
+    lessonDocs.slice(offset, offset + 150).forEach((doc) => {
+      const transcriptSnap = transcriptById.get(doc.id);
+      batch.set(db.collection(TRASH_COLLECTION).doc(doc.id), {
+        lesson: doc.data(),
+        transcript: transcriptSnap && transcriptSnap.exists
+          ? transcriptSnap.data()
+          : null,
+        deletedBy: actorEmail,
+        deletedAt: admin.firestore.FieldValue.serverTimestamp(),
+        deletedAtMs: now,
+        purgeAfterMs: now + TRASH_RETENTION_MS,
+      });
+      batch.delete(doc.ref);
+      batch.delete(db.collection("lesson_transcripts").doc(doc.id));
+    });
+    await batch.commit();
+  }
+  return lessonDocs.length;
 }
 
 exports.deleteSubcategoryCascade = functions.runWith({ timeoutSeconds: 540, memory: "512MB" })
@@ -2124,34 +2244,18 @@ exports.deleteSubcategoryCascade = functions.runWith({ timeoutSeconds: 540, memo
     [...lessonsSnap.docs, ...wrappedLessonsSnap.docs]
       .forEach((doc) => lessonMap.set(doc.id, doc));
     const lessons = [...lessonMap.values()];
-    const paths = lessons.flatMap(
-      (doc) => lessonStoragePaths(unwrapLegacy(doc.data())),
-    );
-    const refs = lessons.map((doc) => doc.ref);
-    lessons.forEach((doc) => {
-      refs.push(db.collection("lesson_transcripts").doc(doc.id));
-    });
-    if (subcategorySnap.exists) refs.push(subcategorySnap.ref);
-    await deleteRefsInBatches(refs);
-    for (const doc of lessons) {
-      await bucket.deleteFiles({ prefix: `lesson_transcripts/${doc.id}/` })
-        .catch(() => {});
-    }
-    const cleanup = await deletePathsBestEffort(
-      paths,
-      "delete_subcategory_cascade",
-      subcategoryId,
-    );
+    // دروس القسم تنتقل إلى السلة (لا حذف نهائي ولا مساس بالتخزين) —
+    // فحذف قسم بالخطأ قابل للتراجع درساً درساً من سلة المحذوفات.
+    await trashLessonDocs(lessons, actor.email);
+    if (subcategorySnap.exists) await subcategorySnap.ref.delete();
     await auditOwnerAction(actor.email, "delete_subcategory_cascade", subcategoryId, {
-      lessonsDeleted: lessons.length,
-      cleanupPending: cleanup.failed.length > 0,
-      cleanupJobId: cleanup.cleanupJobId,
+      lessonsTrashed: lessons.length,
     });
     return {
       ok: true,
       id: subcategoryId,
       lessonsDeleted: lessons.length,
-      cleanupPending: cleanup.failed.length > 0,
+      cleanupPending: false,
     };
   });
 
@@ -2202,34 +2306,31 @@ exports.deleteCategoryCascade = functions.runWith({ timeoutSeconds: 540, memory:
     }
     const lessons = [...lessonMap.values()];
     const books = [...bookMap.values()];
-    const paths = lessons.flatMap((doc) => lessonStoragePaths(unwrapLegacy(doc.data())));
+    // دروس القسم كلّها تنتقل إلى السلة (قابلة للاستعادة)؛ الكتب تُحذف كما
+    // كانت (لا واجهة لها في التطبيقين وملفاتها PDF قليلة).
+    await trashLessonDocs(lessons, actor.email);
+    const bookPaths = [];
     books.forEach((doc) => {
       const value = unwrapLegacy(doc.data());
       [value.storagePath, value.pdfStoragePath, value.fileUrl, value.url]
         .map(storagePathFromUrl)
         .filter(Boolean)
-        .forEach((path) => paths.push(path));
+        .forEach((path) => bookPaths.push(path));
     });
     const refs = [
-      ...lessons.map((doc) => doc.ref),
-      ...lessons.map((doc) => db.collection("lesson_transcripts").doc(doc.id)),
       ...books.map((doc) => doc.ref),
       ...subcategories.map((doc) => doc.ref),
     ];
     if (categorySnap.exists) refs.push(categorySnap.ref);
     await deleteRefsInBatches(refs);
-    for (const doc of lessons) {
-      await bucket.deleteFiles({ prefix: `lesson_transcripts/${doc.id}/` })
-        .catch(() => {});
-    }
     const cleanup = await deletePathsBestEffort(
-      paths,
+      bookPaths,
       "delete_category_cascade",
       categoryId,
     );
     await auditOwnerAction(actor.email, "delete_category_cascade", categoryId, {
       subcategoriesDeleted: subcategories.length,
-      lessonsDeleted: lessons.length,
+      lessonsTrashed: lessons.length,
       booksDeleted: books.length,
       cleanupPending: cleanup.failed.length > 0,
       cleanupJobId: cleanup.cleanupJobId,

@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.GppMaybe
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HowToVote
+import androidx.compose.material.icons.filled.RestoreFromTrash
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.automirrored.filled.ManageSearch
@@ -68,6 +69,7 @@ import com.ali.ishaqiyin_admin.data.Lesson
 import com.ali.ishaqiyin_admin.data.OwnerReviewRepository
 import com.ali.ishaqiyin_admin.data.Subcategory
 import com.ali.ishaqiyin_admin.data.TranscriptsRepository
+import com.ali.ishaqiyin_admin.data.TrashRepository
 import com.ali.ishaqiyin_admin.data.SubmissionsRepository
 import com.ali.ishaqiyin_admin.ui.chat.ProfileDialog
 import kotlinx.coroutines.async
@@ -223,6 +225,8 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
         .collectAsState(initial = 0)
     val pendingTranscripts by remember { TranscriptsRepository.watchPendingCount() }
         .collectAsState(initial = 0)
+    val trashCount by remember { TrashRepository.watchCount() }
+        .collectAsState(initial = 0)
     // شارة «المساهمات» = الدروس الصوتية + النصوص المشروحة المعلّقة معاً.
     val pendingSubmissions = pendingAudioSubmissions + pendingTranscripts
     // عدد المميّزة السارية فقط (ما انتهت مدّته لا يُعدّ).
@@ -265,6 +269,12 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
             ActionSpec(
                 Icons.Filled.HowToVote, kGold, "المساهمات",
                 "دروس ونصوص المستمعين", pendingSubmissions, Routes.SUBMISSIONS,
+            ),
+        )
+        add(
+            ActionSpec(
+                Icons.Filled.RestoreFromTrash, kDanger, "سلة المحذوفات",
+                "استعادة الدروس المحذوفة (30 يوماً)", trashCount, Routes.TRASH,
             ),
         )
         add(

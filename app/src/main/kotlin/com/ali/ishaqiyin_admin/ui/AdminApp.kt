@@ -101,6 +101,7 @@ object Routes {
     const val SUPERVISORS = "supervisors"
     const val SUBMISSIONS = "submissions"
     const val TRANSCRIPT_INTAKE = "transcript_intake"
+    const val TRASH = "trash"
     const val OWNER_REVIEW = "owner_review"
     const val FEATURED = "featured"
     const val CHAT = "chat"
@@ -247,6 +248,7 @@ private fun AdminNavHost(isOwner: Boolean) {
         composable(Routes.TRANSCRIPT_INTAKE) {
             TranscriptIntakeScreen(onBack = { nav.popBackStack() })
         }
+        composable(Routes.TRASH) { TrashScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.OWNER_REVIEW) { OwnerReviewScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.FEATURED) { FeaturedScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.CHAT) { ChatScreen(isOwner = isOwner, nav = nav) }

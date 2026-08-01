@@ -239,7 +239,8 @@ fun ManageAllScreen(onBack: () -> Unit) {
         is PendingAction.DeleteLesson -> ConfirmDialog(
             title = "تأكيد الحذف",
             body = "هل أنت متأكد من حذف \"${action.item.title}\"؟\n\n" +
-                "سيُحذف الدرس وملفّه الصوتي من التخزين نهائياً. لا يمكن التراجع.",
+                "ينتقل الدرس إلى «سلة المحذوفات» ويبقى قابلاً للاستعادة " +
+                "30 يوماً قبل حذفه النهائي تلقائياً.",
             confirmLabel = "حذف",
             confirmColor = kDanger,
             onDismiss = { pending = null },

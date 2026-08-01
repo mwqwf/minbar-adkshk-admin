@@ -74,6 +74,14 @@
             </intent-filter>
         </activity>
 
+        <!-- شاشة قصّ الصور (مكتبة القصّ): تتطلّب سمة AppCompat — بلا هذا
+             السطر كانت تنهار فور فتحها لأن سمة التطبيق Compose فقط. -->
+        <activity
+            android:name="com.canhub.cropper.CropImageActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar"
+            tools:replace="android:theme,android:exported" />
+
         <!-- شاشة المكالمة: تظهر فوق شاشة القفل وتوقظ الشاشة عند الرنين،
              ولا تُترك أثراً في «الأخيرة» بعد انتهاء المكالمة. -->
         <activity

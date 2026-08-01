@@ -548,6 +548,14 @@ service cloud.firestore {
         && request.resource.data.fcmToken.size() <= 4096;
     }
 
+    // 🗑️ سلة المحذوفات: الدروس المحذوفة تبقى 30 يوماً قابلة للاستعادة.
+    // القراءة للمشرفين، والكتابة عبر الدوال حصراً (النقل/الاستعادة/الحذف
+    // النهائي كلها معاملات خادمية).
+    match /deleted_lessons/{lessonId} {
+      allow read: if canManageContent();
+      allow write: if false;
+    }
+
     // قائمة الدروس المشبوهة سرية تماماً عن بقية المشرفين.
     match /owner_lesson_reviews/{reviewId} {
       allow read: if isOwner();
