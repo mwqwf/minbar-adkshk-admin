@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -270,12 +271,15 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
                     Box(
                         Modifier
                             .fillMaxWidth()
-                            .background(kDanger.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
+                            .background(
+                                MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
+                                RoundedCornerShape(12.dp),
+                            )
                             .padding(12.dp),
                     ) {
                         Text(
                             error!!,
-                            color = kDanger,
+                            color = MaterialTheme.colorScheme.error,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -317,7 +321,7 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
                     "الإجراءات",
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
-                    color = kTealDark,
+                    color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(bottom = 12.dp),
                 )
             }
@@ -510,21 +514,34 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
         }
     }
 
+    // 🎨 البطاقة تحتفظ بهويّتها الفيروزيّة في الوضعين: تدرّج مصمت فوق الفاتح
+    // كما هو، ونظيره الداكن المرتفع فوق الداكن (لا لوح أبيض فوق خلفيّة ليل)،
+    // ومحتواها يتبع ما تحته لا لوناً ثابتاً.
+    val scheme = MaterialTheme.colorScheme
+    val darkTheme = isAdminDarkTheme()
+    val cardBrush = if (darkTheme) {
+        Brush.horizontalGradient(listOf(scheme.surfaceContainerHighest, scheme.surfaceVariant))
+    } else {
+        Brush.horizontalGradient(listOf(kTeal, kTealDark))
+    }
+    val onCard = if (darkTheme) scheme.onSurface else Color.White
+
     Column(
         Modifier
             .fillMaxWidth()
-            .background(
-                Brush.horizontalGradient(listOf(kTeal, kTealDark)),
-                RoundedCornerShape(16.dp),
-            )
+            .background(cardBrush, RoundedCornerShape(16.dp))
             .padding(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.Campaign, contentDescription = null, tint = Color.White)
+            Icon(
+                Icons.Filled.Campaign,
+                contentDescription = null,
+                tint = if (darkTheme) scheme.primary else Color.White,
+            )
             Spacer(Modifier.size(8.dp))
             Text(
                 "مهامّي اليوم",
-                color = Color.White,
+                color = onCard,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
             )
@@ -533,7 +550,7 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
         if (tasks.isEmpty()) {
             Text(
                 "لا مهام — عملك مكتمل ✅",
-                color = Color.White,
+                color = onCard,
                 fontSize = 14.sp,
                 modifier = Modifier.padding(vertical = 6.dp),
             )
@@ -549,13 +566,13 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
                     Icon(
                         task.icon,
                         contentDescription = null,
-                        tint = Color.White,
+                        tint = onCard,
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.size(10.dp))
                     Text(
                         task.text,
-                        color = Color.White,
+                        color = onCard,
                         fontSize = 14.sp,
                         lineHeight = 20.sp,
                         modifier = Modifier.weight(1f),
@@ -564,6 +581,44 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
             }
         }
     }
+}
+
+/**
+ * 🎨 ألوان بطاقات الشبكة. لونها **دلاليّ** لا زخرفيّ: يميّز كلّ بطاقة عن
+ * جارتها، فلا يجوز أن يلتقي لونان في درجة واحدة عند التكيّف مع الداكن.
+ * قيم الوضع الفاتح تبقى كما هي حرفاً بحرف.
+ */
+private class GridColors(
+    val teal: Color,
+    val tealDeep: Color,
+    val blue: Color,
+    val gold: Color,
+    val danger: Color,
+    val orange: Color,
+    val purple: Color,
+    val green: Color,
+)
+
+/**
+ * بنفسجيّ «التحليلات» على الداكن: لا سلّم بنفسجيّاً في `Theme.kt`، وهذه
+ * الدرجة تعطي 8.65 على السطح الداكن وتبقى متمايزة عن بقيّة ألوان الشبكة.
+ */
+private val PurpleOnDark = Color(0xFFC9A2E8)
+
+@Composable
+private fun gridColors(): GridColors {
+    val scheme = MaterialTheme.colorScheme
+    val dark = isAdminDarkTheme()
+    return GridColors(
+        teal = if (dark) scheme.tertiary else kTeal,
+        tealDeep = if (dark) scheme.onTertiaryContainer else kTealDark,
+        blue = adminBlue,
+        gold = adminGold,
+        danger = if (dark) scheme.error else kDanger,
+        orange = adminOrange,
+        purple = if (dark) PurpleOnDark else kPurple,
+        green = adminGreen,
+    )
 }
 
 @Composable
@@ -583,6 +638,7 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
         it.featuredUntilMs == null || it.featuredUntilMs > System.currentTimeMillis()
     }
     val suspicious by DashboardBadges.suspicious(isOwner).collectAsState()
+    val c = gridColors()
 
     data class ActionSpec(
         val icon: ImageVector,
@@ -596,67 +652,67 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
     val cards = buildList {
         add(
             ActionSpec(
-                Icons.Filled.Groups, kTeal, "مجموعة الإدارة",
+                Icons.Filled.Groups, c.teal, "مجموعة الإدارة",
                 "دردشة المالك والمشرفين", chatUnread, Routes.CHAT,
             ),
         )
         add(
             ActionSpec(
-                Icons.Filled.Forum, kBlue, "الرسائل الخاصّة",
+                Icons.Filled.Forum, c.blue, "الرسائل الخاصّة",
                 "مراسلة مشرف على حدة", dmUnread, Routes.DM_LIST,
             ),
         )
         add(
             ActionSpec(
-                Icons.Filled.HowToVote, kGold, "المساهمات",
+                Icons.Filled.HowToVote, c.gold, "المساهمات",
                 "دروس ونصوص المستمعين", pendingSubmissions, Routes.SUBMISSIONS,
             ),
         )
         add(
             ActionSpec(
-                Icons.Filled.RestoreFromTrash, kDanger, "سلة المحذوفات",
+                Icons.Filled.RestoreFromTrash, c.danger, "سلة المحذوفات",
                 "استعادة الدروس المحذوفة (30 يوماً)", trashCount, Routes.TRASH,
             ),
         )
         add(
             ActionSpec(
-                Icons.Filled.LibraryMusic, kOrange, "إضافة درس صوتي",
+                Icons.Filled.LibraryMusic, c.orange, "إضافة درس صوتي",
                 "رفع ملفات أو تسجيل مباشر", 0, Routes.ADD_LESSON,
             ),
         )
         add(
             ActionSpec(
-                Icons.Filled.AccountTree, kTealDark, "إدارة الأقسام",
+                Icons.Filled.AccountTree, c.tealDeep, "إدارة الأقسام",
                 "إنشاء رئيسي وفرعي", 0, Routes.MANAGE_SECTIONS,
             ),
         )
         add(
             ActionSpec(
-                Icons.AutoMirrored.Filled.ManageSearch, kBlue, "التعديل والبحث",
+                Icons.AutoMirrored.Filled.ManageSearch, c.blue, "التعديل والبحث",
                 "تعديل وحذف وجدولة", 0, Routes.MANAGE_ALL,
             ),
         )
         add(
             ActionSpec(
-                Icons.Filled.Star, kGold, "مختارات المنبر",
+                Icons.Filled.Star, c.gold, "مختارات المنبر",
                 "الدروس المميّزة ومدّتها", featuredActive, Routes.FEATURED,
             ),
         )
         add(
             ActionSpec(
-                Icons.Filled.Insights, kPurple, "التحليلات والأثر",
+                Icons.Filled.Insights, c.purple, "التحليلات والأثر",
                 "الاستماع والأقسام النشطة", 0, Routes.ANALYTICS,
             ),
         )
         add(
             ActionSpec(
-                Icons.Filled.Forum, kGreen, "تفاعل المستمعين",
+                Icons.Filled.Forum, c.green, "تفاعل المستمعين",
                 "الملاحظات والبلاغات", 0, Routes.FEEDBACK,
             ),
         )
         add(
             ActionSpec(
-                Icons.Filled.VerifiedUser, kTeal,
+                Icons.Filled.VerifiedUser, c.teal,
                 if (isOwner) "الحساب والمشرفون" else "الحساب والصلاحية",
                 if (isOwner) "الاعتماد والحظر والحذف" else "صلاحيتك وخروجك",
                 0, Routes.ADMINS,
@@ -666,7 +722,7 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
         if (isOwner) {
             add(
                 ActionSpec(
-                    Icons.Filled.GppMaybe, kDanger, "الدروس المشبوهة",
+                    Icons.Filled.GppMaybe, c.danger, "الدروس المشبوهة",
                     "مراجعة خاصة بالمالك", suspicious.size, Routes.OWNER_REVIEW,
                 ),
             )
@@ -704,13 +760,20 @@ private fun ActionCard(
     badge: Int,
     onClick: () -> Unit,
 ) {
+    // التلوين الخفيف يذوب في الليل: تُرفع نسبته على الداكن وحده كي تبقى
+    // البطاقة بطاقةً — أمّا على الفاتح فالنسب كما كانت حرفاً بحرف.
+    val dark = isAdminDarkTheme()
+    val fillAlpha = if (dark) 0.12f else 0.05f
+    val strokeAlpha = if (dark) 0.32f else 0.22f
+    val wellAlpha = if (dark) 0.20f else 0.14f
+
     Surface(
-        color = color.copy(alpha = 0.05f),
+        color = color.copy(alpha = fillAlpha),
         shape = RoundedCornerShape(20.dp),
         modifier = Modifier
             .fillMaxWidth()
             .height(122.dp)
-            .border(1.dp, color.copy(alpha = 0.22f), RoundedCornerShape(20.dp))
+            .border(1.dp, color.copy(alpha = strokeAlpha), RoundedCornerShape(20.dp))
             .clickable(onClick = onClick),
     ) {
         Column(Modifier.padding(14.dp)) {
@@ -718,7 +781,7 @@ private fun ActionCard(
                 Box(
                     Modifier
                         .size(44.dp)
-                        .background(color.copy(alpha = 0.14f), RoundedCornerShape(14.dp)),
+                        .background(color.copy(alpha = wellAlpha), RoundedCornerShape(14.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(24.dp))
@@ -732,7 +795,9 @@ private fun ActionCard(
                     ) {
                         Text(
                             if (badge > 99) "+99" else "$badge",
-                            color = Color.White,
+                            // الشارة قرصٌ مصمت بلون البطاقة: رقمها يتبع
+                            // إضاءته (حبر داكن فوق ذهب الليل لا أبيض).
+                            color = contentColorOn(color),
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                         )
@@ -746,7 +811,7 @@ private fun ActionCard(
                 overflow = TextOverflow.Ellipsis,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,
-                color = kTealDark,
+                color = MaterialTheme.colorScheme.primary,
             )
             if (subtitle.isNotEmpty()) {
                 Spacer(Modifier.height(2.dp))
@@ -755,7 +820,7 @@ private fun ActionCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     fontSize = 11.5.sp,
-                    color = kMuted,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }

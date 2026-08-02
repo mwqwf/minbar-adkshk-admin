@@ -41,6 +41,8 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Tab
@@ -103,8 +105,8 @@ fun SubmissionsScreen(onBack: () -> Unit) {
         Column(Modifier.padding(padding).fillMaxSize()) {
             TabRow(
                 selectedTabIndex = tab,
-                containerColor = Color.White,
-                contentColor = kTeal,
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.primary,
             ) {
                 Tab(
                     selected = tab == 0,
@@ -128,7 +130,16 @@ private fun TabLabel(label: String, pending: Int) {
         Text(label, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         if (pending > 0) {
             Spacer(Modifier.size(6.dp))
-            Badge(containerColor = kOrange) { Text("$pending") }
+            // في الفاتح يبقى لون المحتوى كما كان (لون التبويب) فلا يتغيّر
+            // المظهر، وفي الداكن يصير البرتقالي فاتحاً فيحتاج حبراً داكناً.
+            Badge(
+                containerColor = adminOrange,
+                contentColor = if (isAdminDarkTheme()) {
+                    contentColorOn(adminOrange)
+                } else {
+                    LocalContentColor.current
+                },
+            ) { Text("$pending") }
         }
     }
 }
@@ -190,7 +201,7 @@ private fun BulkDecisionBar(
     if (pendingVisible == 0 && !busy) return
     Card(
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
     ) {
         Column(Modifier.padding(12.dp)) {
@@ -213,7 +224,7 @@ private fun BulkDecisionBar(
                             "لحسم عدّة مساهمات معاً فعّل التحديد المتعدّد."
                         },
                         fontSize = 11.sp,
-                        color = kMuted,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 Spacer(Modifier.size(6.dp))
@@ -238,7 +249,9 @@ private fun BulkDecisionBar(
                         onClick = onApprove,
                         enabled = !busy && selectedCount > 0,
                         shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                        ),
                         modifier = Modifier.weight(1f),
                     ) {
                         Icon(
@@ -257,11 +270,15 @@ private fun BulkDecisionBar(
                         Icon(
                             Icons.Filled.Close,
                             contentDescription = null,
-                            tint = kDanger,
+                            tint = MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(17.dp),
                         )
                         Spacer(Modifier.size(4.dp))
-                        Text("رفض المحدَّد", fontSize = 12.sp, color = kDanger)
+                        Text(
+                            "رفض المحدَّد",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.error,
+                        )
                     }
                 }
                 TextButton(onClick = onSelectAll, enabled = !busy) {
@@ -277,9 +294,16 @@ private fun BulkDecisionBar(
             }
             if (busy) {
                 Spacer(Modifier.size(8.dp))
-                LinearProgressIndicator(Modifier.fillMaxWidth(), color = kTeal)
+                LinearProgressIndicator(
+                    Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.primary,
+                )
                 Spacer(Modifier.size(6.dp))
-                Text("جارٍ التنفيذ… $done من $total", fontSize = 12.sp, color = kMuted)
+                Text(
+                    "جارٍ التنفيذ… $done من $total",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -532,7 +556,9 @@ private fun AudioSubmissionsContent() {
                 val isPlaying = player.playingId == s.id && player.playing
                 Card(
                     shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                    ),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(Modifier.padding(12.dp)) {
@@ -553,7 +579,7 @@ private fun AudioSubmissionsContent() {
                             Box(
                                 Modifier
                                     .size(44.dp)
-                                    .background(kBoxBg, CircleShape)
+                                    .background(MaterialTheme.colorScheme.surfaceContainer, CircleShape)
                                     .padding(2.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
@@ -565,7 +591,7 @@ private fun AudioSubmissionsContent() {
                                             Icons.Filled.PlayArrow
                                         },
                                         contentDescription = if (isPlaying) "إيقاف" else "استماع",
-                                        tint = kTeal,
+                                        tint = MaterialTheme.colorScheme.primary,
                                     )
                                 }
                             }
@@ -576,7 +602,7 @@ private fun AudioSubmissionsContent() {
                                 Text(
                                     "${s.categoryName} ← ${s.subcategoryName}",
                                     fontSize = 12.sp,
-                                    color = kMuted,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                             StatusChip(s.status)
@@ -596,7 +622,7 @@ private fun AudioSubmissionsContent() {
                                     ""
                                 },
                             fontSize = 12.sp,
-                            color = kMuted,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         if (s.note.isNotEmpty()) {
                             Spacer(Modifier.size(4.dp))
@@ -609,7 +635,7 @@ private fun AudioSubmissionsContent() {
                             Text(
                                 "سبب الرفض: ${s.rejectReason}",
                                 fontSize = 12.sp,
-                                color = kDanger,
+                                color = MaterialTheme.colorScheme.error,
                             )
                         }
                         Spacer(Modifier.size(8.dp))
@@ -623,7 +649,9 @@ private fun AudioSubmissionsContent() {
                                     onClick = { approving = s },
                                     enabled = !busy && !bulkBusy,
                                     shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                    ),
                                     modifier = Modifier.weight(1f),
                                 ) {
                                     Icon(
@@ -654,7 +682,7 @@ private fun AudioSubmissionsContent() {
                                     Icon(
                                         Icons.Filled.Close,
                                         contentDescription = "رفض",
-                                        tint = kDanger,
+                                        tint = MaterialTheme.colorScheme.error,
                                     )
                                 }
                             }
@@ -1026,7 +1054,9 @@ private fun TranscriptSubmissionsContent() {
                 val isPlaying = player.playingId == s.lessonId && player.playing
                 Card(
                     shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                    ),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(Modifier.padding(12.dp)) {
@@ -1047,7 +1077,7 @@ private fun TranscriptSubmissionsContent() {
                             Box(
                                 Modifier
                                     .size(44.dp)
-                                    .background(kBoxBg, CircleShape)
+                                    .background(MaterialTheme.colorScheme.surfaceContainer, CircleShape)
                                     .padding(2.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
@@ -1063,7 +1093,7 @@ private fun TranscriptSubmissionsContent() {
                                         } else {
                                             "الاستماع لصوتية الدرس"
                                         },
-                                        tint = kTeal,
+                                        tint = MaterialTheme.colorScheme.primary,
                                     )
                                 }
                             }
@@ -1079,11 +1109,15 @@ private fun TranscriptSubmissionsContent() {
                                         Icon(
                                             Icons.Filled.MenuBook,
                                             contentDescription = null,
-                                            tint = kMuted,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.size(14.dp),
                                         )
                                         Spacer(Modifier.size(4.dp))
-                                        Text(s.bookTitle, fontSize = 12.sp, color = kMuted)
+                                        Text(
+                                            s.bookTitle,
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
                                     }
                                 }
                             }
@@ -1098,7 +1132,11 @@ private fun TranscriptSubmissionsContent() {
                         )
                         if (s.sourceRef.isNotEmpty()) {
                             Spacer(Modifier.size(4.dp))
-                            Text("المقطع: ${s.sourceRef}", fontSize = 12.sp, color = kMuted)
+                            Text(
+                                "المقطع: ${s.sourceRef}",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                         if (s.text.isNotEmpty()) {
                             Spacer(Modifier.size(8.dp))
@@ -1106,7 +1144,7 @@ private fun TranscriptSubmissionsContent() {
                             Box(
                                 Modifier
                                     .fillMaxWidth()
-                                    .background(kBoxBg, RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
                                     .clickable { expanded = !expanded }
                                     .padding(10.dp),
                             ) {
@@ -1138,7 +1176,7 @@ private fun TranscriptSubmissionsContent() {
                         Text(
                             "المساهم: ${s.submitterName.ifEmpty { "بدون اسم" }}",
                             fontSize = 12.sp,
-                            color = kMuted,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         if (s.note.isNotEmpty()) {
                             Spacer(Modifier.size(4.dp))
@@ -1149,7 +1187,7 @@ private fun TranscriptSubmissionsContent() {
                             Text(
                                 "⚠️ للدرس نص معتمد سابق — الاعتماد يستبدله.",
                                 fontSize = 12.sp,
-                                color = kOrange,
+                                color = adminOrange,
                             )
                         }
                         if (!s.isPending && s.status == "rejected" &&
@@ -1159,7 +1197,7 @@ private fun TranscriptSubmissionsContent() {
                             Text(
                                 "سبب الرفض: ${s.rejectReason}",
                                 fontSize = 12.sp,
-                                color = kDanger,
+                                color = MaterialTheme.colorScheme.error,
                             )
                         }
                         Spacer(Modifier.size(8.dp))
@@ -1173,7 +1211,9 @@ private fun TranscriptSubmissionsContent() {
                                     onClick = { approving = s },
                                     enabled = !busy && !bulkBusy,
                                     shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                    ),
                                     modifier = Modifier.weight(1f),
                                 ) {
                                     Icon(
@@ -1204,7 +1244,7 @@ private fun TranscriptSubmissionsContent() {
                                     Icon(
                                         Icons.Filled.Close,
                                         contentDescription = "رفض",
-                                        tint = kDanger,
+                                        tint = MaterialTheme.colorScheme.error,
                                     )
                                 }
                             }
@@ -1260,7 +1300,7 @@ private fun SubmissionImagesRow(
             Box(
                 Modifier
                     .size(96.dp)
-                    .background(kBoxBg, RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
                     .clickable(enabled = url != null) { url?.let(onOpen) },
                 contentAlignment = Alignment.Center,
             ) {
@@ -1268,7 +1308,7 @@ private fun SubmissionImagesRow(
                     CircularProgressIndicator(
                         modifier = Modifier.size(20.dp),
                         strokeWidth = 2.dp,
-                        color = kTeal,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                 } else {
                     AsyncImage(
@@ -1336,7 +1376,7 @@ private fun EditTranscriptDialog(
                     Text(
                         "⚠️ للدرس نص معتمد سابق — الاعتماد يستبدله.",
                         fontSize = 12.sp,
-                        color = kOrange,
+                        color = adminOrange,
                     )
                     Spacer(Modifier.height(8.dp))
                 }
@@ -1371,7 +1411,7 @@ private fun EditTranscriptDialog(
                     Text(
                         "انقر الصورة لعرضها كاملةً ومقابلة النص بها.",
                         fontSize = 11.sp,
-                        color = kMuted,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(6.dp))
                     SubmissionImagesRow(
@@ -1414,7 +1454,7 @@ private fun EditTranscriptDialog(
                             CircularProgressIndicator(
                                 modifier = Modifier.size(16.dp),
                                 strokeWidth = 2.dp,
-                                color = kTeal,
+                                color = MaterialTheme.colorScheme.primary,
                             )
                             Spacer(Modifier.size(6.dp))
                             Text("جارٍ الاستخراج…")
@@ -1446,7 +1486,9 @@ private fun EditTranscriptDialog(
                 },
                 enabled = text.trim().length >= 10 ||
                     (keepImages && submission.imagePaths.isNotEmpty()),
-                colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                ),
             ) { Text("اعتماد المعدَّل") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } },
@@ -1462,10 +1504,10 @@ private fun EditTranscriptDialog(
 @Composable
 private fun StatusChip(status: String) {
     val (color, label) = when (status) {
-        "approved" -> kGreen to "نُشرت"
-        "approved_edited" -> kTeal to "نُشرت معدَّلة"
-        "rejected" -> kDanger to "مرفوضة"
-        else -> kOrange to "معلّقة"
+        "approved" -> adminGreen to "نُشرت"
+        "approved_edited" -> MaterialTheme.colorScheme.primary to "نُشرت معدَّلة"
+        "rejected" -> MaterialTheme.colorScheme.error to "مرفوضة"
+        else -> adminOrange to "معلّقة"
     }
     Box(
         Modifier
@@ -1536,7 +1578,9 @@ private fun EditAndPublishDialog(
                     onPublish(title.trim(), c, s)
                 },
                 enabled = title.trim().isNotEmpty() && category != null && subcategory != null,
-                colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                ),
             ) { Text("نشر المعدَّل") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } },
@@ -1560,7 +1604,7 @@ private fun RejectDialog(
                 Text(
                     "يصل السبب للمساهم كما هو — اكتبه بلطف ووضوح.",
                     fontSize = 12.sp,
-                    color = kMuted,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(8.dp))
                 (presets + "_other").forEach { option ->
@@ -1602,7 +1646,9 @@ private fun RejectDialog(
                 // الزر بدل تركه يفشل برسالة مبهمة.
                 enabled = selected != null &&
                     !(selected == "_other" && note.trim().length < 2),
-                colors = ButtonDefaults.buttonColors(containerColor = kDanger),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                ),
             ) { Text("رفض") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } },

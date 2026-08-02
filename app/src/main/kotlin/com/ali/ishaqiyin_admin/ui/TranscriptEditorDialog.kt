@@ -35,6 +35,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -255,7 +256,7 @@ fun TranscriptEditorDialog(
                 Text(
                     lessonTitle,
                     fontSize = 12.sp,
-                    color = kMuted,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
             }
@@ -265,14 +266,14 @@ fun TranscriptEditorDialog(
                 Box(
                     Modifier.fillMaxWidth().height(120.dp),
                     contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator(color = kTeal) }
+                ) { CircularProgressIndicator(color = MaterialTheme.colorScheme.primary) }
             } else {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text(
                         "النص الأصلي من الكتاب الذي تشرحه هذه الصوتية — " +
                             "يظهر للمستمعين في شاشة التشغيل.",
                         fontSize = 12.sp,
-                        color = kMuted,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(10.dp))
                     AdminTextField(
@@ -313,7 +314,7 @@ fun TranscriptEditorDialog(
                             Icon(
                                 Icons.Filled.AddPhotoAlternate,
                                 contentDescription = "إرفاق صورة",
-                                tint = kTeal,
+                                tint = MaterialTheme.colorScheme.primary,
                             )
                         }
                     }
@@ -335,7 +336,10 @@ fun TranscriptEditorDialog(
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier
                                                 .fillMaxSize()
-                                                .background(kBoxBg, RoundedCornerShape(8.dp))
+                                                .background(
+                                                    MaterialTheme.colorScheme.surfaceContainer,
+                                                    RoundedCornerShape(8.dp),
+                                                )
                                                 .clickable { viewingImage = image.model },
                                         )
                                         // رقم الترتيب — أيّ صفحة أولاً (وهو ترتيب الدمج).
@@ -344,12 +348,18 @@ fun TranscriptEditorDialog(
                                                 .align(Alignment.TopStart)
                                                 .padding(4.dp)
                                                 .size(18.dp)
-                                                .background(kTeal, CircleShape),
+                                                .background(
+                                                    MaterialTheme.colorScheme.primary,
+                                                    CircleShape,
+                                                ),
                                             contentAlignment = Alignment.Center,
                                         ) {
                                             Text(
                                                 "${i + 1}",
-                                                color = Color.White,
+                                                // ذهب الوضع الداكن سطح فاتح — رقمه حبر داكن.
+                                                color = contentColorOn(
+                                                    MaterialTheme.colorScheme.primary,
+                                                ),
                                                 fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold,
                                             )
@@ -396,7 +406,11 @@ fun TranscriptEditorDialog(
                                             Icon(
                                                 Icons.Filled.Crop,
                                                 contentDescription = "قصّ",
-                                                tint = if (image.isLocal) kTeal else kMuted,
+                                                tint = if (image.isLocal) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                },
                                                 modifier = Modifier.size(15.dp),
                                             )
                                         }
@@ -424,7 +438,7 @@ fun TranscriptEditorDialog(
                                 "رتّب الصور بالأسهم (أيّها أولاً) — الدمج يلصقها " +
                                     "عموديّاً بهذا الترتيب.",
                                 fontSize = 11.sp,
-                                color = kMuted,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Spacer(Modifier.height(4.dp))
                             OutlinedButton(
@@ -460,7 +474,7 @@ fun TranscriptEditorDialog(
                                     CircularProgressIndicator(
                                         modifier = Modifier.size(15.dp),
                                         strokeWidth = 2.dp,
-                                        color = kTeal,
+                                        color = MaterialTheme.colorScheme.primary,
                                     )
                                     Spacer(Modifier.width(6.dp))
                                     Text("جارٍ الدمج…")
@@ -513,7 +527,7 @@ fun TranscriptEditorDialog(
                                     CircularProgressIndicator(
                                         modifier = Modifier.size(15.dp),
                                         strokeWidth = 2.dp,
-                                        color = kTeal,
+                                        color = MaterialTheme.colorScheme.primary,
                                     )
                                     Spacer(Modifier.width(6.dp))
                                     Text("جارٍ الاستخراج…")
@@ -535,7 +549,11 @@ fun TranscriptEditorDialog(
                             onClick = { confirmRemove = true },
                             enabled = !saving,
                         ) {
-                            Text("حذف النص المشروح نهائياً", color = kDanger, fontSize = 13.sp)
+                            Text(
+                                "حذف النص المشروح نهائياً",
+                                color = MaterialTheme.colorScheme.error,
+                                fontSize = 13.sp,
+                            )
                         }
                     }
                 }
@@ -579,7 +597,9 @@ fun TranscriptEditorDialog(
                     }
                 },
                 enabled = !loading && !saving,
-                colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                ),
             ) { Text(if (saving) "جارٍ الحفظ…" else "حفظ") }
         },
         dismissButton = {

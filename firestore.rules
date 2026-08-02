@@ -123,6 +123,28 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // إعداد تذكير التحديث في التطبيق العام. القراءة عامّة (يقرؤه كل مستخدم
+    // مرّة كل ست ساعات ويحفظه محليّاً)، والكتابة للمالك وحده: ضبط حدّ أدنى
+    // للإصدار قرارُ إصدارٍ لا قرار محتوى، وخطؤه يُظهر تذكيراً لكل المستخدمين.
+    match /app_config/{id} {
+      allow read: if true;
+      allow write: if isOwner()
+        && request.resource.data.keys().hasOnly([
+          'latestVersionCode', 'minSupportedVersionCode', 'message', 'storeUrl',
+          'updatedAt', 'updatedBy',
+        ])
+        && request.resource.data.get('latestVersionCode', 0) is int
+        && request.resource.data.get('minSupportedVersionCode', 0) is int
+        // الحدّ الأدنى لا يتجاوز الأحدث: عكسه يجعل التذكير القويّ دائماً
+        // لكل المستخدمين بمن فيهم من على أحدث نسخة.
+        && request.resource.data.get('minSupportedVersionCode', 0)
+           <= request.resource.data.get('latestVersionCode', 0)
+        && request.resource.data.get('message', '') is string
+        && request.resource.data.get('message', '').size() <= 300
+        && request.resource.data.get('storeUrl', '') is string
+        && request.resource.data.get('storeUrl', '').size() <= 512;
+    }
+
     // تنبيهات الإدارة: المالك يرى الكل، والمشرف يرى تنبيهه والعامة فقط.
     match /admin_alerts/{id} {
       allow read: if isOwner()

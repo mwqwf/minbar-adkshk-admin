@@ -33,6 +33,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -89,6 +90,12 @@ fun ReorderLessonsDialog(
 ) {
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
+    // نفس قاعدة AdminScaffold: شريط علويّ بلون اللوحة الأوّل في الفاتح،
+    // وحاوية سطح مرتفعة في الداكن — شريط ذهبيّ كامل يبهر البصر هناك.
+    val scheme = MaterialTheme.colorScheme
+    val dark = isAdminDarkTheme()
+    val barColor = if (dark) scheme.surfaceContainerHigh else scheme.primary
+    val onBarColor = if (dark) scheme.onSurface else scheme.onPrimary
 
     var loading by remember { mutableStateOf(true) }
     var saving by remember { mutableStateOf(false) }
@@ -159,7 +166,7 @@ fun ReorderLessonsDialog(
                             snack("أدخل موضعاً بين 1 و${items.size}.")
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                    colors = ButtonDefaults.buttonColors(containerColor = scheme.primary),
                 ) { Text("نقل") }
             },
             dismissButton = {
@@ -181,7 +188,7 @@ fun ReorderLessonsDialog(
                             Text(
                                 subcategoryName,
                                 fontSize = 12.sp,
-                                color = Color.White.copy(alpha = 0.85f),
+                                color = onBarColor.copy(alpha = 0.85f),
                                 maxLines = 1,
                             )
                         }
@@ -191,17 +198,17 @@ fun ReorderLessonsDialog(
                             Icon(
                                 Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "رجوع",
-                                tint = Color.White,
+                                tint = onBarColor,
                             )
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = kTeal,
-                        titleContentColor = Color.White,
+                        containerColor = barColor,
+                        titleContentColor = onBarColor,
                     ),
                 )
             },
-            containerColor = kBg,
+            containerColor = scheme.background,
             modifier = Modifier.fillMaxSize(),
         ) { padding ->
             Column(Modifier.padding(padding).fillMaxHeight()) {
@@ -209,7 +216,7 @@ fun ReorderLessonsDialog(
                     Box(
                         Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center,
-                    ) { CircularProgressIndicator(color = kTeal) }
+                    ) { CircularProgressIndicator(color = scheme.primary) }
                     return@Column
                 }
                 if (items.size < 2) {
@@ -220,7 +227,7 @@ fun ReorderLessonsDialog(
                         Text(
                             "هذا القسم فيه أقل من درسين — لا شيء يُرتَّب.",
                             textAlign = TextAlign.Center,
-                            color = kMuted,
+                            color = scheme.onSurfaceVariant,
                         )
                     }
                     return@Column
@@ -229,7 +236,7 @@ fun ReorderLessonsDialog(
                     "استعمل الأسهم أو قائمة النقل لوضع كل درس في مكانه، أو " +
                         "جرّب الترتيب الآلي بالأرقام — لا يُحفظ شيء قبل ضغط «حفظ الترتيب».",
                     fontSize = 12.sp,
-                    color = kMuted,
+                    color = scheme.onSurfaceVariant,
                     lineHeight = 20.sp,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
@@ -280,7 +287,9 @@ fun ReorderLessonsDialog(
                         var menuOpen by remember(lesson.id) { mutableStateOf(false) }
                         Card(
                             shape = RoundedCornerShape(10.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            colors = CardDefaults.cardColors(
+                                containerColor = scheme.surface,
+                            ),
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Row(
@@ -290,14 +299,17 @@ fun ReorderLessonsDialog(
                                 Box(
                                     Modifier
                                         .size(28.dp)
-                                        .background(kTeal.copy(alpha = 0.12f), CircleShape),
+                                        .background(
+                                            scheme.primary.copy(alpha = 0.12f),
+                                            CircleShape,
+                                        ),
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Text(
                                         "${index + 1}",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = kTeal,
+                                        color = scheme.primary,
                                     )
                                 }
                                 Spacer(Modifier.size(8.dp))
@@ -316,7 +328,7 @@ fun ReorderLessonsDialog(
                                         Icons.Filled.ArrowUpward,
                                         contentDescription = "أعلى",
                                         modifier = Modifier.size(18.dp),
-                                        tint = kTeal,
+                                        tint = scheme.primary,
                                     )
                                 }
                                 IconButton(
@@ -327,7 +339,7 @@ fun ReorderLessonsDialog(
                                         Icons.Filled.ArrowDownward,
                                         contentDescription = "أسفل",
                                         modifier = Modifier.size(18.dp),
-                                        tint = kTeal,
+                                        tint = scheme.primary,
                                     )
                                 }
                                 Box {
@@ -339,7 +351,7 @@ fun ReorderLessonsDialog(
                                             Icons.Filled.LowPriority,
                                             contentDescription = "نقل إلى…",
                                             modifier = Modifier.size(18.dp),
-                                            tint = kMuted,
+                                            tint = scheme.onSurfaceVariant,
                                         )
                                     }
                                     DropdownMenu(
@@ -412,7 +424,7 @@ fun ReorderLessonsDialog(
                     },
                     enabled = !saving && dirty,
                     shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                    colors = ButtonDefaults.buttonColors(containerColor = scheme.primary),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp),

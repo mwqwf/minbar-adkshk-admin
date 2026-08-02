@@ -102,6 +102,9 @@ object Routes {
     const val ANALYTICS = "analytics"
     const val FEEDBACK = "feedback"
     const val ADMINS = "admins"
+
+    /** ضبط تذكير التحديث في التطبيق العام — للمالك وحده. */
+    const val UPDATE_CONFIG = "update_config"
     const val SUPERVISORS = "supervisors"
     const val SUBMISSIONS = "submissions"
     const val TRANSCRIPT_INTAKE = "transcript_intake"
@@ -417,6 +420,15 @@ private fun AdminNavHost(isOwner: Boolean) {
             )
         }
         composable(Routes.FEEDBACK) { FeedbackScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.UPDATE_CONFIG) {
+            // حارس مزدوج: القاعدة على الخادم تمنع غير المالك من الكتابة،
+            // وهنا نمنعه من رؤية شاشة لا يستطيع استعمالها أصلاً.
+            if (isOwner) {
+                UpdateConfigScreen(onBack = { nav.popBackStack() })
+            } else {
+                LaunchedEffect(Unit) { nav.popBackStack() }
+            }
+        }
         composable(Routes.ADMINS) {
             AdminsScreen(
                 isOwner = isOwner,

@@ -172,7 +172,14 @@ private val AdminShapes = Shapes(
 
 @Composable
 fun MinbarAdminTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    // ⚠️ الافتراضي **فاتح** لا `isSystemInDarkTheme()` عمداً، وهو ما كانت
+    // عليه اللوحة دائماً. `AdminDarkColors` أدناه مكتملة وصحيحة التباين،
+    // لكنّ عشرات الشاشات ما زالت تحمل ألواناً فاتحة ثابتة (Color.White
+    // للبطاقات، kTeal/kMuted/kDanger…)، فتشغيل الوضع الداكن قبل إتمام
+    // تحويلها يُنتج بطاقات بيضاء فوق خلفيّة داكنة — أسوأ من غياب الوضع
+    // الداكن أصلاً. متى اكتمل التحويل يكفي إرجاع `isSystemInDarkTheme()`
+    // هنا. لا تُرجعه قبل ذلك.
+    darkTheme: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     MaterialTheme(

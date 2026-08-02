@@ -12,6 +12,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -21,7 +22,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -71,7 +71,9 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
         ) {
             Card(
                 shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(16.dp)) {
@@ -79,7 +81,7 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                         "إنشاء قسم رئيسي",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        color = kTeal,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.height(12.dp))
                     AdminTextField(
@@ -125,17 +127,27 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                         },
                         enabled = !busyCat,
                         shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                        ),
                         modifier = Modifier.fillMaxWidth().height(50.dp),
                     ) {
-                        if (busyCat) Spin() else Text("إنشاء القسم الرئيسي")
+                        // الدوّار بلون محتوى الزرّ: أبيض في الفاتح كما كان،
+                        // وحبر داكن فوق ذهب الوضع الداكن كي يُرى.
+                        if (busyCat) {
+                            Spin(color = MaterialTheme.colorScheme.onPrimary)
+                        } else {
+                            Text("إنشاء القسم الرئيسي")
+                        }
                     }
                 }
             }
             Spacer(Modifier.height(16.dp))
             Card(
                 shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(16.dp)) {
@@ -143,7 +155,7 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                         "إنشاء قسم فرعي",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        color = kTeal,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.height(12.dp))
                     AdminTextField(
@@ -199,10 +211,16 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                         },
                         enabled = !busySub,
                         shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                        ),
                         modifier = Modifier.fillMaxWidth().height(50.dp),
                     ) {
-                        if (busySub) Spin() else Text("إنشاء القسم الفرعي")
+                        if (busySub) {
+                            Spin(color = MaterialTheme.colorScheme.onPrimary)
+                        } else {
+                            Text("إنشاء القسم الفرعي")
+                        }
                     }
                 }
             }

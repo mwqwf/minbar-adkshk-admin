@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -38,6 +39,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -133,7 +135,7 @@ fun AlertsScreen(
             body = "هذا تنبيه عامّ — سيختفي عن جميع المشرفين لا عنك وحدك، " +
                 "ولا يمكن التراجع.",
             confirmLabel = "حذف للجميع",
-            confirmColor = kDanger,
+            confirmColor = MaterialTheme.colorScheme.error,
             onDismiss = { confirmPublicDelete = null },
             onConfirm = {
                 confirmPublicDelete = null
@@ -166,7 +168,11 @@ fun AlertsScreen(
                 Modifier.padding(padding).fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("لا تنبيهات — كلّ شيء تحت السيطرة ✅", fontSize = 16.sp, color = kMuted)
+                Text(
+                    "لا تنبيهات — كلّ شيء تحت السيطرة ✅",
+                    fontSize = 16.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             return@AdminScaffold
         }
@@ -189,6 +195,16 @@ fun AlertsScreen(
                     }
                 }
 
+                // الدائرة الباهتة (المقروء) تُظهر خلفيّة الشاشة من تحتها،
+                // فأيقونتها تتبع السطح لا اللون المصمت — وإلّا اختفى الحبر
+                // الداكن فوق ذهب الليل الشفّاف.
+                val bubble = MaterialTheme.colorScheme.primary
+                val bubbleIcon = when {
+                    unread -> contentColorOn(bubble)
+                    isAdminDarkTheme() -> MaterialTheme.colorScheme.onSurface
+                    else -> Color.White
+                }
+
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -200,7 +216,7 @@ fun AlertsScreen(
                         Modifier
                             .size(40.dp)
                             .background(
-                                if (unread) kTeal else kTeal.copy(alpha = 0.35f),
+                                if (unread) bubble else bubble.copy(alpha = 0.35f),
                                 CircleShape,
                             ),
                         contentAlignment = Alignment.Center,
@@ -208,7 +224,7 @@ fun AlertsScreen(
                         Icon(
                             iconFor(alert.type),
                             contentDescription = null,
-                            tint = androidx.compose.ui.graphics.Color.White,
+                            tint = bubbleIcon,
                             modifier = Modifier.size(20.dp),
                         )
                     }
@@ -223,10 +239,14 @@ fun AlertsScreen(
                         }
                     }
                     Column(horizontalAlignment = Alignment.End) {
-                        Text(ago(alert.createdAtMs), fontSize = 11.sp, color = kMuted)
+                        Text(
+                            ago(alert.createdAtMs),
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         if (unread) {
                             Spacer(Modifier.size(4.dp))
-                            Box(Modifier.size(9.dp).background(kOrange, CircleShape))
+                            Box(Modifier.size(9.dp).background(adminOrange, CircleShape))
                         }
                     }
                     if (deletable) {
@@ -242,7 +262,7 @@ fun AlertsScreen(
                             Icon(
                                 Icons.Filled.Delete,
                                 contentDescription = "حذف التنبيه",
-                                tint = kDanger,
+                                tint = MaterialTheme.colorScheme.error,
                             )
                         }
                     }

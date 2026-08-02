@@ -27,6 +27,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -41,7 +42,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -229,7 +229,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                     "سيُحذف ${doomedSubs.size} قسماً فرعياً و$doomedLessons درساً، " +
                     "وملفاتها الصوتية من التخزين نهائياً. لا يمكن التراجع.",
                 confirmLabel = "حذف",
-                confirmColor = kDanger,
+                confirmColor = MaterialTheme.colorScheme.error,
                 onDismiss = { pending = null },
                 onConfirm = {
                     pending = null
@@ -252,7 +252,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                     "سيُحذف $doomedLessons درساً وملفاتها الصوتية من التخزين نهائياً. " +
                     "لا يمكن التراجع.",
                 confirmLabel = "حذف",
-                confirmColor = kDanger,
+                confirmColor = MaterialTheme.colorScheme.error,
                 onDismiss = { pending = null },
                 onConfirm = {
                     pending = null
@@ -273,7 +273,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                 "ينتقل الدرس إلى «سلة المحذوفات» ويبقى قابلاً للاستعادة " +
                 "30 يوماً قبل حذفه النهائي تلقائياً.",
             confirmLabel = "حذف",
-            confirmColor = kDanger,
+            confirmColor = MaterialTheme.colorScheme.error,
             onDismiss = { pending = null },
             onConfirm = {
                 pending = null
@@ -398,7 +398,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                     Icon(
                         Icons.Filled.SwapVert,
                         contentDescription = null,
-                        tint = kTeal,
+                        tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.size(6.dp))
@@ -406,7 +406,12 @@ fun ManageAllScreen(onBack: () -> Unit) {
                 }
             }
             Spacer(Modifier.size(6.dp))
-            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = kTeal)
+            if (loading) {
+                LinearProgressIndicator(
+                    Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             when {
                 empty -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("لا توجد نتائج")
@@ -419,7 +424,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                         Text(
                             "ابحث بأي كلمة أو رقم، أو اختر قسماً لعرض دروسه —\n" +
                                 "مثال: «3 الفقه» يجد الدرس رقم 3 في قسم الفقه.",
-                            color = kMuted,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         )
                     }
@@ -467,7 +472,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                                     "أحدث ${foundLessons.size} درساً — ابحث بأي كلمة أو رقم، " +
                                         "أو اختر قسماً لعرض دروسه (مثال: «3 الفقه»).",
                                     fontSize = 12.sp,
-                                    color = kMuted,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(bottom = 6.dp),
                                 )
                             }
@@ -478,7 +483,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                                 Modifier
                                     .fillMaxWidth()
                                     .background(
-                                        kTeal.copy(alpha = 0.07f),
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.07f),
                                         RoundedCornerShape(10.dp),
                                     )
                                     .padding(horizontal = 10.dp, vertical = 8.dp),
@@ -487,7 +492,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                                 Icon(
                                     Icons.AutoMirrored.Filled.MenuBook,
                                     contentDescription = null,
-                                    tint = kTeal,
+                                    tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(16.dp),
                                 )
                                 Spacer(Modifier.size(6.dp))
@@ -495,7 +500,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                                     "أيقونة الكتاب بجانب كل درس تضيف/تعدّل «النص " +
                                         "المشروح» الذي يظهر للمستمعين في شاشة التشغيل.",
                                     fontSize = 12.sp,
-                                    color = kMuted,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }
@@ -556,7 +561,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
 private fun SimpleRow(title: String, onEdit: () -> Unit, onDelete: () -> Unit) {
     Card(
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
     ) {
         Row(
@@ -565,10 +570,18 @@ private fun SimpleRow(title: String, onEdit: () -> Unit, onDelete: () -> Unit) {
         ) {
             Text(title, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
             IconButton(onClick = onEdit) {
-                Icon(Icons.Filled.Edit, contentDescription = "تعديل", tint = kTeal)
+                Icon(
+                    Icons.Filled.Edit,
+                    contentDescription = "تعديل",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
             }
             IconButton(onClick = onDelete) {
-                Icon(Icons.Filled.Delete, contentDescription = "حذف", tint = kDanger)
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "حذف",
+                    tint = MaterialTheme.colorScheme.error,
+                )
             }
         }
     }
@@ -585,9 +598,11 @@ private fun LessonRow(
     onTranscript: () -> Unit,
 ) {
     val scheduled = (lesson.publishAtMs ?: 0) > System.currentTimeMillis()
+    // برتقالي الجدولة: نظيره الفاتح في الوضع الداكن.
+    val scheduleColor = adminOrange
     Card(
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -598,28 +613,40 @@ private fun LessonRow(
                 overflow = TextOverflow.Ellipsis,
             )
             if (subcategoryName.isNotEmpty()) {
-                Text("القسم الفرعي: $subcategoryName", fontSize = 12.sp, color = kMuted)
+                Text(
+                    "القسم الفرعي: $subcategoryName",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (lesson.views > 0) {
-                    Text("${lesson.views} استماع", fontSize = 12.sp, color = kTeal)
+                    Text(
+                        "${lesson.views} استماع",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                 }
                 if (scheduled) {
                     Spacer(Modifier.size(8.dp))
                     Icon(
                         Icons.Filled.Schedule,
                         contentDescription = null,
-                        tint = kOrange,
+                        tint = scheduleColor,
                         modifier = Modifier.size(14.dp),
                     )
-                    Text(" مجدول", fontSize = 12.sp, color = kOrange)
+                    Text(" مجدول", fontSize = 12.sp, color = scheduleColor)
                 }
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onToggleFeatured) {
                     Icon(
                         if (lesson.featured) Icons.Filled.Star else Icons.Filled.StarBorder,
                         contentDescription = if (lesson.featured) "إلغاء التمييز" else "تمييز",
-                        tint = if (lesson.featured) kGold else kMuted,
+                        tint = if (lesson.featured) {
+                            adminGold
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                     )
                 }
                 // الجدولة أُزيلت؛ يبقى «نشر الآن» لأيّ درس بقي مجدولاً سابقاً.
@@ -627,21 +654,29 @@ private fun LessonRow(
                     Icon(
                         Icons.Filled.Schedule,
                         contentDescription = "نشر الآن",
-                        tint = kOrange,
+                        tint = scheduleColor,
                     )
                 }
                 IconButton(onClick = onTranscript) {
                     Icon(
                         Icons.AutoMirrored.Filled.MenuBook,
                         contentDescription = "النص المشروح",
-                        tint = kTeal,
+                        tint = MaterialTheme.colorScheme.primary,
                     )
                 }
                 IconButton(onClick = onEdit) {
-                    Icon(Icons.Filled.Edit, contentDescription = "تعديل", tint = kTeal)
+                    Icon(
+                        Icons.Filled.Edit,
+                        contentDescription = "تعديل",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
                 }
                 IconButton(onClick = onDelete) {
-                    Icon(Icons.Filled.Delete, contentDescription = "حذف", tint = kDanger)
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = "حذف",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }
