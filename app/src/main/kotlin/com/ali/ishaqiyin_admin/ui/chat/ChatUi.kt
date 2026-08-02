@@ -23,7 +23,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -70,12 +72,59 @@ object ChatColors {
     /** فقاعة رسائلي (أخضر فاتح بنمط واتساب) وحدودها. */
     val mineBubble = Color(0xFFD9FDD3)
     val mineBubbleBorder = Color.Transparent
-    val wallpaperInk = Color(0xFF6B7C83).copy(alpha = 0.12f)
+
+    /**
+     * حبر الخلفيّة المزخرفة — شفافيّة واتساب الفعليّة (≈0.05): زخرفة تُحسّ
+     * ولا تُرى كشبكة. (كانت 0.12 فيظهر التكرار للعين ويتضاعف التباين حيث
+     * تتقاطع الأشكال.)
+     */
+    val wallpaperInk = Color(0xFF6B7C83).copy(alpha = 0.055f)
+
+    /**
+     * ألوان الرسالة الصوتيّة بنمط واتساب — رماديّات محايدة **لا** لون
+     * السمة التركوازيّ: الأزرق [readBlue] محجوز لعلامتَي القراءة ولميكروفون
+     * «سمعها المتلقّي» وحدهما، فوجوده في الموجة يُربكه بمعنى ✓✓.
+     */
+    val waveRest = Color(0xFFB9C1C6)
+    val wavePlayed = Color(0xFF54656F)
+
+    /** ميكروفون رسالة واردة **لم أسمعها بعد** (أخضر واتساب). */
+    val micUnheard = Color(0xFF00A884)
+
+    /** ميكروفون محايد: رسالتي قبل أن يسمعها أحد، والواردة بعد سماعها. */
+    val micIdle = Color(0xFF8696A0)
+
+    /** نصّ الوقت/المدّة/الحالة تحت الفقاعة. */
+    val metaText = Color(0xFF46586A)
+
+    /** اقتباس الردّ: شريط جانبيّ وخلفيّة داخل فقاعتي وفقاعة غيري. */
+    val quoteBarMine = Color(0xFF06CF9C)
+    val quoteBgMine = Color(0xFFD1F4CC)
+    val quoteBgOther = Color.Black.copy(alpha = 0.05f)
+}
+
+/** عدد محارف الخلفيّة المشتقّة من هويّة منبر (أيقونة التطبيق واللوحة). */
+private const val WALLPAPER_GLYPHS = 8
+
+/**
+ * مولّد تشويش **حتميّ بالفهرس**: نفس (الصفّ، العمود، الملح) يعطي نفس القيمة
+ * أبداً — فيثبت نمط الخلفيّة بين إعادات التركيب (لا عشوائيّة حقيقيّة تُعيد
+ * رسم زخرفة مختلفة مع كلّ رسالة جديدة).
+ */
+private fun tileNoise(row: Int, column: Int, salt: Int): Float {
+    var h = (row * 73856093) xor (column * 19349663) xor (salt * 83492791)
+    h = h xor (h ushr 13)
+    h *= 1274126177
+    h = h xor (h ushr 16)
+    return (h and 0x7FFFFFFF) / 2147483647f
 }
 
 /**
- * خلفية دردشة خفيفة بنمط رسومات واتساب المتكرّرة. تُرسم بالـCanvas فلا
- * تضيف صورة كبيرة إلى APK، ويستعملها الخاص والمجموعة من المصدر نفسه.
+ * خلفية دردشة بنمط واتساب: نثر كثيف من محارف هويّة منبر (منبر، كتاب مفتوح،
+ * ميكروفون، موجات صوت، نجمة ثمانيّة، معيَّن مزخرف، دائرة تشغيل، قوس محراب)
+ * بزوايا وأحجام ومواضع متفاوتة، فلا تظهر شبكة متكرّرة للعين. كلّ التفاوت من
+ * [tileNoise] الحتميّ. تُرسم بالـCanvas فلا تضيف صورة كبيرة إلى APK،
+ * ويستعملها الخاصّ والمجموعة من المصدر نفسه.
  */
 @Composable
 fun WhatsAppChatBackground(
@@ -84,74 +133,198 @@ fun WhatsAppChatBackground(
 ) {
     Box(modifier.background(ChatColors.bg)) {
         Canvas(Modifier.fillMaxSize()) {
-            val tile = 58.dp.toPx()
+            val tile = 76.dp.toPx()
             val stroke = 1.dp.toPx()
-            val icon = 23.dp.toPx()
+            val jitter = 10.dp.toPx()
+            val base = 26.dp.toPx()
             val rows = (size.height / tile).toInt() + 2
             val columns = (size.width / tile).toInt() + 2
             for (row in -1..rows) {
                 for (column in -1..columns) {
-                    val x = column * tile + if ((row and 1) == 0) 0f else tile / 2f
-                    val y = row * tile
-                    val center = Offset(x + tile / 2f, y + tile / 2f)
-                    when (kotlin.math.abs(row * 7 + column) % 4) {
-                        0 -> {
-                            val topLeft = Offset(center.x - icon / 2f, center.y - icon * 0.36f)
-                            drawRoundRect(
-                                color = ChatColors.wallpaperInk,
-                                topLeft = topLeft,
-                                size = Size(icon, icon * 0.72f),
-                                cornerRadius = CornerRadius(icon * 0.16f),
-                                style = Stroke(stroke),
-                            )
-                            drawLine(
-                                ChatColors.wallpaperInk,
-                                Offset(topLeft.x + icon * 0.22f, topLeft.y + icon * 0.72f),
-                                Offset(topLeft.x + icon * 0.12f, topLeft.y + icon * 0.9f),
-                                stroke,
-                            )
-                        }
-                        1 -> {
-                            drawCircle(
-                                color = ChatColors.wallpaperInk,
-                                radius = icon * 0.38f,
-                                center = center,
-                                style = Stroke(stroke),
-                            )
-                            drawLine(
-                                ChatColors.wallpaperInk,
-                                Offset(center.x - icon * 0.27f, center.y + icon * 0.27f),
-                                Offset(center.x + icon * 0.27f, center.y - icon * 0.27f),
-                                stroke,
-                            )
-                        }
-                        2 -> {
-                            val star = Path()
-                            repeat(10) { point ->
-                                val angle = -Math.PI / 2 + point * Math.PI / 5
-                                val radius = if (point % 2 == 0) icon * 0.42f else icon * 0.18f
-                                val px = center.x + kotlin.math.cos(angle).toFloat() * radius
-                                val py = center.y + kotlin.math.sin(angle).toFloat() * radius
-                                if (point == 0) star.moveTo(px, py) else star.lineTo(px, py)
-                            }
-                            star.close()
-                            drawPath(star, ChatColors.wallpaperInk, style = Stroke(stroke))
-                        }
-                        else -> {
-                            val plane = Path().apply {
-                                moveTo(center.x - icon * 0.43f, center.y - icon * 0.25f)
-                                lineTo(center.x + icon * 0.44f, center.y)
-                                lineTo(center.x - icon * 0.43f, center.y + icon * 0.25f)
-                                lineTo(center.x - icon * 0.12f, center.y)
-                                close()
-                            }
-                            drawPath(plane, ChatColors.wallpaperInk, style = Stroke(stroke))
-                        }
+                    val shift = if ((row and 1) == 0) 0f else tile / 2f
+                    val center = Offset(
+                        column * tile + tile / 2f + shift +
+                            (tileNoise(row, column, 3) - 0.5f) * 2f * jitter,
+                        row * tile + tile / 2f +
+                            (tileNoise(row, column, 5) - 0.5f) * 2f * jitter,
+                    )
+                    val glyph = (tileNoise(row, column, 7) * WALLPAPER_GLYPHS)
+                        .toInt().coerceIn(0, WALLPAPER_GLYPHS - 1)
+                    val angle = (tileNoise(row, column, 11) - 0.5f) * 70f
+                    val icon = base * (0.78f + tileNoise(row, column, 13) * 0.5f)
+                    rotate(angle, center) {
+                        drawWallpaperGlyph(glyph, center, icon, stroke)
                     }
                 }
             }
         }
         content()
+    }
+}
+
+/** محرف خلفيّة واحد بحبر [ChatColors.wallpaperInk] الشفّاف. */
+private fun DrawScope.drawWallpaperGlyph(
+    index: Int,
+    center: Offset,
+    s: Float,
+    stroke: Float,
+) {
+    val ink = ChatColors.wallpaperInk
+    val line = Stroke(stroke)
+    val cx = center.x
+    val cy = center.y
+    when (index) {
+        // منبر بدرجاته.
+        0 -> drawPath(
+            Path().apply {
+                moveTo(cx - s * 0.46f, cy + s * 0.46f)
+                lineTo(cx - s * 0.46f, cy + s * 0.12f)
+                lineTo(cx - s * 0.14f, cy + s * 0.12f)
+                lineTo(cx - s * 0.14f, cy - s * 0.16f)
+                lineTo(cx + s * 0.18f, cy - s * 0.16f)
+                lineTo(cx + s * 0.18f, cy - s * 0.46f)
+                lineTo(cx + s * 0.46f, cy - s * 0.46f)
+                lineTo(cx + s * 0.46f, cy + s * 0.46f)
+                close()
+            },
+            ink,
+            style = line,
+        )
+        // كتاب مفتوح بصفحتين وخطّ الكعب.
+        1 -> {
+            drawPath(
+                Path().apply {
+                    moveTo(cx, cy - s * 0.3f)
+                    lineTo(cx - s * 0.46f, cy - s * 0.16f)
+                    lineTo(cx - s * 0.46f, cy + s * 0.32f)
+                    lineTo(cx, cy + s * 0.18f)
+                    lineTo(cx + s * 0.46f, cy + s * 0.32f)
+                    lineTo(cx + s * 0.46f, cy - s * 0.16f)
+                    close()
+                },
+                ink,
+                style = line,
+            )
+            drawLine(ink, Offset(cx, cy - s * 0.3f), Offset(cx, cy + s * 0.18f), stroke)
+        }
+        // ميكروفون بحامله.
+        2 -> {
+            drawRoundRect(
+                color = ink,
+                topLeft = Offset(cx - s * 0.15f, cy - s * 0.46f),
+                size = Size(s * 0.3f, s * 0.56f),
+                cornerRadius = CornerRadius(s * 0.15f),
+                style = line,
+            )
+            drawArc(
+                color = ink,
+                startAngle = 0f,
+                sweepAngle = 180f,
+                useCenter = false,
+                topLeft = Offset(cx - s * 0.32f, cy - s * 0.26f),
+                size = Size(s * 0.64f, s * 0.56f),
+                style = line,
+            )
+            drawLine(ink, Offset(cx, cy + s * 0.3f), Offset(cx, cy + s * 0.46f), stroke)
+        }
+        // موجات صوت خارجة من نقطة.
+        3 -> {
+            repeat(3) { ring ->
+                val r = s * (0.18f + 0.14f * ring)
+                drawArc(
+                    color = ink,
+                    startAngle = -55f,
+                    sweepAngle = 110f,
+                    useCenter = false,
+                    topLeft = Offset(cx - r, cy - r),
+                    size = Size(r * 2f, r * 2f),
+                    style = line,
+                )
+            }
+            drawCircle(ink, s * 0.07f, Offset(cx - s * 0.24f, cy))
+        }
+        // نجمة ثمانيّة (زخرفة الأيقونتين).
+        4 -> {
+            val star = Path()
+            repeat(16) { point ->
+                val angle = -Math.PI / 2 + point * Math.PI / 8
+                val radius = if (point % 2 == 0) s * 0.46f else s * 0.2f
+                val px = cx + kotlin.math.cos(angle).toFloat() * radius
+                val py = cy + kotlin.math.sin(angle).toFloat() * radius
+                if (point == 0) star.moveTo(px, py) else star.lineTo(px, py)
+            }
+            star.close()
+            drawPath(star, ink, style = line)
+        }
+        // معيَّن مزخرف بمعيَّن داخليّ.
+        5 -> {
+            drawPath(
+                Path().apply {
+                    moveTo(cx, cy - s * 0.46f)
+                    lineTo(cx + s * 0.4f, cy)
+                    lineTo(cx, cy + s * 0.46f)
+                    lineTo(cx - s * 0.4f, cy)
+                    close()
+                },
+                ink,
+                style = line,
+            )
+            drawPath(
+                Path().apply {
+                    moveTo(cx, cy - s * 0.2f)
+                    lineTo(cx + s * 0.17f, cy)
+                    lineTo(cx, cy + s * 0.2f)
+                    lineTo(cx - s * 0.17f, cy)
+                    close()
+                },
+                ink,
+                style = line,
+            )
+        }
+        // دائرة تشغيل.
+        6 -> {
+            drawCircle(ink, s * 0.4f, center, style = line)
+            drawPath(
+                Path().apply {
+                    moveTo(cx - s * 0.12f, cy - s * 0.19f)
+                    lineTo(cx + s * 0.21f, cy)
+                    lineTo(cx - s * 0.12f, cy + s * 0.19f)
+                    close()
+                },
+                ink,
+                style = line,
+            )
+        }
+        // قوس محراب.
+        else -> {
+            drawArc(
+                color = ink,
+                startAngle = 180f,
+                sweepAngle = 180f,
+                useCenter = false,
+                topLeft = Offset(cx - s * 0.32f, cy - s * 0.44f),
+                size = Size(s * 0.64f, s * 0.64f),
+                style = line,
+            )
+            drawLine(
+                ink,
+                Offset(cx - s * 0.32f, cy - s * 0.12f),
+                Offset(cx - s * 0.32f, cy + s * 0.44f),
+                stroke,
+            )
+            drawLine(
+                ink,
+                Offset(cx + s * 0.32f, cy - s * 0.12f),
+                Offset(cx + s * 0.32f, cy + s * 0.44f),
+                stroke,
+            )
+            drawLine(
+                ink,
+                Offset(cx - s * 0.44f, cy + s * 0.44f),
+                Offset(cx + s * 0.44f, cy + s * 0.44f),
+                stroke,
+            )
+        }
     }
 }
 

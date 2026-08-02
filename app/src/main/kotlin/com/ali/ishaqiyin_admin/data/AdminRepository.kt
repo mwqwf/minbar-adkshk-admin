@@ -9,6 +9,8 @@ import com.google.firebase.functions.FirebaseFunctionsException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
+import java.security.MessageDigest
 
 /**
  * كل عمليات القراءة/الكتابة على Firestore لإدارة محتوى منبر.
@@ -21,6 +23,12 @@ object AdminRepository {
 
     private const val DASH_COL = "dashboard_admins"
     private const val OWNER_CODES_COL = "dashboard_owner_codes"
+
+    /**
+     * مهلة انتظار تأكيد الخادم لكتابة قسم. بعدها نُعلن للمشرف أنّ الطلب
+     * محفوظ وسيُرسَل عند عودة الشبكة بدل تركه أمام مؤشّر لا ينتهي.
+     */
+    private const val SECTION_WRITE_TIMEOUT_MS = 12_000L
 
     // ---------------- جلب ----------------
     suspend fun fetchCategories(): List<Category> {
@@ -40,6 +48,31 @@ object AdminRepository {
         return snap.documents
             .map { Lesson.fromDoc(it.id, it.dataMap()) }
             .sortedByDescending { it.createdAtMs }
+    }
+
+    /**
+     * دروس قسم فرعي واحد — استعلام مقيَّد بدل جلب **كلّ** الدروس ثم ترشيحها
+     * على الجهاز (شاشة إعادة الترتيب كانت تقرأ المجموعة كاملة لعرض قسم واحد).
+     *
+     * بلا `orderBy` فلا يلزم فهرس مركّب؛ الفرز يبقى محليّاً عند المستدعي.
+     * ويُستعلم عن الشكلين: الحقل الجذري في الوثائق الحديثة، والحقل المتداخل
+     * في الوثائق القديمة المغلَّفة `{data:{...}}`. وإن لم يُعِد الشكلان شيئاً
+     * (شكل أقدم يخزّن `subcategory._id`) نعود للجلب الكامل مرّة واحدة كي لا
+     * يختفي درس من شاشة الترتيب.
+     */
+    suspend fun fetchSubcategoryLessons(subcategoryId: String): List<Lesson> {
+        val col = db.collection("lessons")
+        val found = LinkedHashMap<String, Lesson>()
+        listOf("subcategoryId", "data.subcategoryId").forEach { field ->
+            runCatching { col.whereEqualTo(field, subcategoryId).get().await() }
+                .getOrNull()
+                ?.documents
+                ?.forEach { found[it.id] = Lesson.fromDoc(it.id, it.dataMap()) }
+        }
+        if (found.isEmpty()) {
+            return fetchLessons().filter { it.subcategoryId == subcategoryId }
+        }
+        return found.values.toList()
     }
 
     // ---------------- مشرفو لوحة التحكّم (dashboard_admins) ----------------
@@ -158,20 +191,66 @@ object AdminRepository {
     }
 
     // ---------------- إضافة ----------------
-    suspend fun addCategory(name: String) {
-        db.collection("categories").add(
-            mapOf("name" to name.trim(), "createdAt" to nowIso()),
-        ).await()
+    /**
+     * مفتاح ثابت مشتقّ من محتوى القسم يُستعمل **معرّفاً للوثيقة**: نفس الاسم
+     * (ونفس الأب للفرعي) يعطي المعرّف نفسه، فتُصبح الكتابة تكراريّة الأمان.
+     *
+     * ⚠️ سبب وجوده: كتابة Firestore لا تكتمل إلا بتأكيد الخادم، لكنّ الكاش
+     * الدائم يسجّلها محليّاً ويرسلها عند عودة الشبكة **حتى لو أُلغيت
+     * الكوروتين**. فمشرفٌ ظنّ أنّ الإنشاء فشل فأعاد الاسم نفسه كان يُنشئ
+     * قسمين متطابقين. بالمعرّف المشتقّ تُكتب المحاولتان فوق وثيقة واحدة —
+     * نظير `clientKey` في [addLesson].
+     */
+    private fun sectionKey(prefix: String, vararg parts: String): String {
+        val raw = parts.joinToString("|") {
+            it.trim().lowercase().replace(Regex("\\s+"), " ")
+        }
+        val digest = MessageDigest.getInstance("SHA-1").digest(raw.toByteArray(Charsets.UTF_8))
+        return prefix + digest.joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 
-    suspend fun addSubcategory(name: String, categoryId: String) {
-        db.collection("subcategories").add(
+    /**
+     * يكتب وثيقة قسم بمعرّف مشتقّ ويعيد `true` إن أكّدها الخادم قبل المهلة.
+     * `false` تعني «محفوظة محليّاً وستُرسَل عند عودة الشبكة» لا «فشلت».
+     */
+    private suspend fun writeSection(
+        collection: String,
+        key: String,
+        data: Map<String, Any?>,
+    ): Boolean {
+        val task = db.collection(collection).document(key).set(data)
+        // بلا شبكة: الكتابة سُجِّلت محليّاً بالفعل ولن يصل تأكيد أبداً —
+        // لا ننتظر المهلة كاملة أمام المشرف.
+        if (!NetworkMonitor.online.value) return false
+        return withTimeoutOrNull(SECTION_WRITE_TIMEOUT_MS) {
+            task.await()
+            true
+        } ?: false
+    }
+
+    suspend fun addCategory(name: String): Boolean {
+        val clean = name.trim()
+        val key = sectionKey("cat_", clean)
+        return writeSection(
+            "categories",
+            key,
+            mapOf("name" to clean, "createdAt" to nowIso(), "clientKey" to key),
+        )
+    }
+
+    suspend fun addSubcategory(name: String, categoryId: String): Boolean {
+        val clean = name.trim()
+        val key = sectionKey("sub_", categoryId, clean)
+        return writeSection(
+            "subcategories",
+            key,
             mapOf(
-                "name" to name.trim(),
+                "name" to clean,
                 "categoryId" to categoryId,
                 "createdAt" to nowIso(),
+                "clientKey" to key,
             ),
-        ).await()
+        )
     }
 
     suspend fun addLesson(
@@ -179,6 +258,13 @@ object AdminRepository {
         categoryId: String,
         subcategoryId: String,
         audioUrl: String,
+        /**
+         * اسما القسم الرئيسي والفرعي وقت الإضافة. يُخزَّنان في الوثيقة كي
+         * تبقى نسختها في `deleted_lessons` (تُنسخ كما هي) دالّةً على قسمها،
+         * فيميّز المشرف بين دروس متشابهة العناوين في سلة المحذوفات.
+         */
+        categoryName: String = "",
+        subcategoryName: String = "",
         audioStoragePath: String? = null,
         addedBy: String = "",
         featured: Boolean = false,
@@ -202,6 +288,8 @@ object AdminRepository {
             "audioUrl" to audioUrl,
             "createdAt" to (createdAtMs?.let(::isoOf) ?: nowIso()),
         )
+        if (categoryName.isNotBlank()) data["categoryName"] = categoryName.trim()
+        if (subcategoryName.isNotBlank()) data["subcategoryName"] = subcategoryName.trim()
         if (!audioStoragePath.isNullOrEmpty()) data["audioStoragePath"] = audioStoragePath
         if (featured) {
             data["featured"] = true

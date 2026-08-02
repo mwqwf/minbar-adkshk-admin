@@ -27,6 +27,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -48,6 +49,7 @@ import com.ali.ishaqiyin_admin.data.LessonUploadWorker
 import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.ali.ishaqiyin_admin.data.PendingUpload
 import com.ali.ishaqiyin_admin.data.UploadQueue
+import com.ali.ishaqiyin_admin.data.arabicReason
 import com.ali.ishaqiyin_admin.data.formatBytes
 import kotlinx.coroutines.delay
 
@@ -285,6 +287,29 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                 color = kMuted,
                 lineHeight = 18.sp,
             )
+            // «إعادة محاولة الكل»: بعد انقطاع طويل قد يُركن عدّة دروس معاً،
+            // فإعادتها واحداً واحداً عبء بلا سبب — تُرفع عنها جميعاً حالة
+            // الركن ثمّ يوقَظ العامل مرّة واحدة فيمضي بها بالدور.
+            val parkedItems = items.filter { it.parked }
+            if (parkedItems.size > 1) {
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = {
+                        parkedItems.forEach { UploadQueue.unpark(it.id) }
+                        LessonUploadWorker.kick(context)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = null,
+                        tint = kTeal,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Text("إعادة محاولة الكل (${parkedItems.size})")
+                }
+            }
             Spacer(Modifier.height(12.dp))
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -323,6 +348,13 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                             )
                             if (item.lastError != null || item.parked) {
                                 Spacer(Modifier.height(3.dp))
+                                // السبب محفوظ في العنصر وكان يُخفى خلف نصّ
+                                // ثابت. يُعرض الآن مترجماً: العربيّ كما هو،
+                                // ورسالة Firebase الخام تسقط إلى صياغة
+                                // عربية مفهومة بدل إنجليزية تُقلق بلا فائدة.
+                                val reason = item.lastError
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?.let { RuntimeException(it).arabicReason() }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
                                         Icons.Filled.ErrorOutline,
@@ -332,14 +364,23 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                                     )
                                     Spacer(Modifier.size(4.dp))
                                     Text(
-                                        if (item.parked) {
-                                            "توقّف الرفع — أعد المحاولة أو ألغِه"
-                                        } else {
-                                            "تعذّر الرفع — أعد المحاولة"
+                                        buildString {
+                                            append(
+                                                if (item.parked) {
+                                                    "توقّف الرفع — أعد المحاولة أو ألغِه"
+                                                } else {
+                                                    "تعذّر الرفع — أعد المحاولة"
+                                                },
+                                            )
+                                            if (reason != null) {
+                                                append("\nالسبب: ")
+                                                append(reason)
+                                            }
                                         },
                                         fontSize = 10.5.sp,
+                                        lineHeight = 15.sp,
                                         color = kDanger,
-                                        maxLines = 1,
+                                        maxLines = 3,
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                 }

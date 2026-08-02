@@ -42,17 +42,34 @@ object StorageService {
     fun isCancellation(e: Throwable): Boolean =
         e is StorageException && e.errorCode == StorageException.ERROR_CANCELED
 
+    /**
+     * نوع المحتوى من الامتداد.
+     *
+     * ⚠️ الافتراضي **صوتيّ** لا `application/octet-stream`: قواعد التخزين
+     * تشترط `contentType.matches('audio/.*')` على مسار `lessons/`، فكلّ
+     * امتداد خارج القائمة كان يُرفض بـERROR_NOT_AUTHORIZED — رسالة توحي
+     * بنقص صلاحية لا بصيغة ملفّ. والحالات واقعيّة: امتداد صوتيّ غير مغطّى
+     * (.wma/.mka/.m4b/.oga) يظهره محدّد الصوت العامّ، وملفّ يصل بالمشاركة من
+     * مزوّد لا يعرض DISPLAY_NAME فيبقى بلا نقطة ولا امتداد أصلاً.
+     * أنواع الكتب (pdf) تبقى كما هي.
+     */
     fun mimeForExt(ext: String): String = when (ext.lowercase()) {
         "mp3" -> "audio/mpeg"
         "wav" -> "audio/wav"
-        "ogg" -> "audio/ogg"
+        "ogg", "oga" -> "audio/ogg"
         "opus" -> "audio/opus"
         "aac" -> "audio/aac"
-        "m4a" -> "audio/mp4"
+        "m4a", "m4b", "mp4" -> "audio/mp4"
         "amr" -> "audio/amr"
         "flac" -> "audio/flac"
+        "wma" -> "audio/x-ms-wma"
+        "mka" -> "audio/x-matroska"
+        "weba", "webm" -> "audio/webm"
+        "3gp", "3gpp" -> "audio/3gpp"
+        "aif", "aiff" -> "audio/aiff"
+        "mid", "midi" -> "audio/midi"
         "pdf" -> "application/pdf"
-        else -> "application/octet-stream"
+        else -> "audio/mpeg"
     }
 
     /**

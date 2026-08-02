@@ -1,6 +1,7 @@
 package com.ali.ishaqiyin_admin.ui.chat
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,7 +36,6 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -82,14 +82,23 @@ import com.ali.ishaqiyin_admin.data.MediaState
 import com.ali.ishaqiyin_admin.data.MediaStatus
 import com.ali.ishaqiyin_admin.data.formatBytes
 import com.ali.ishaqiyin_admin.util.openLocalFile
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import kotlin.math.roundToInt
 
 /** بادئة مفاتيح معاينة التسجيل الجاري (ملفّ مؤقّت لا يُستأنف). */
 const val PREVIEW_KEY_PREFIX = "preview:"
+
+/**
+ * خطأ تشغيل مقروناً **بمفتاح المقطع الذي فشل** — لا بالمقطع النشط: المشغّل
+ * يفرغ مفتاحه النشط فور الفشل، فربط الرسالة بالمفتاح النشط كان يجعلها
+ * غير قابلة للظهور أصلاً.
+ */
+data class PlaybackError(val key: String, val message: String)
 
 /**
  * مشغّل صوت مشترك — مشغّل واحد فقط يعمل في أيّ لحظة (مثل واتساب).
@@ -129,13 +138,26 @@ object SharedAudioPlayer {
     @Volatile
     var onCompleted: ((String) -> Unit)? = null
 
-    /** آخر خطأ تشغيل — تعرضه الفقاعة بدل الصمت المُربك. */
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error
+    /**
+     * آخر خطأ تشغيل مع مفتاح صاحبه — تعرضه فقاعته بدل الصمت المُربك، ويبقى
+     * ظاهراً بعد [stop] لأنّه لا يعتمد على [activeKey] إطلاقاً.
+     */
+    private val _error = MutableStateFlow<PlaybackError?>(null)
+    val error: StateFlow<PlaybackError?> = _error
 
     fun clearError() {
         _error.value = null
     }
+
+    /**
+     * نافذة التشغيل التلقائي: تُفتح لحظة انتهاء مقطع ويستمرّ فيها التنزيل
+     * المؤجَّل للمقطع التالي. أيّ [playFile] يصل داخلها بينما اختار المشرف
+     * مقطعاً آخر (أو أوقف عمداً) يُهمَل — فلا يُخطف ما يسمعه بعد انتظار طويل.
+     */
+    private const val AUTO_WINDOW_MS = 20_000L
+
+    @Volatile
+    private var autoWindowUntil = 0L
 
     private fun ensure(context: Context): ExoPlayer {
         player?.let { return it }
@@ -161,10 +183,13 @@ object SharedAudioPlayer {
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
-                    // كان الفشل صامتاً تماماً: لا تشغيل ولا رسالة، فيظنّ
-                    // المشرف أنّ التطبيق معطّل. الآن يُعلَن سببه.
+                    // ⚠️ المفتاح يُلتقط **قبل** stop(): هي تفرّغ _activeKey،
+                    // وربط الرسالة بالمفتاح النشط كان يجعل شرط عرضها
+                    // (activeKey == key) خاطئاً دائماً — ففشل التشغيل كان
+                    // صامتاً تماماً بلا أيّ رسالة رغم وجود نصوصها.
+                    val failedKey = _activeKey.value
                     Log.w(TAG, "playback failed: ${error.errorCodeName}", error)
-                    _error.value = when (error.errorCode) {
+                    val message = when (error.errorCode) {
                         PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
                             "الملفّ الصوتي غير موجود — أعد تنزيله."
                         PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
@@ -178,6 +203,9 @@ object SharedAudioPlayer {
                         else -> "تعذّر تشغيل المقطع."
                     }
                     stop()
+                    // بعد stop() كي لا تمحوه، ومقروناً بمفتاح الرسالة الفاشلة
+                    // فتظهر على فقاعتها هي وحدها.
+                    if (failedKey != null) _error.value = PlaybackError(failedKey, message)
                 }
 
                 override fun onPlaybackStateChanged(state: Int) {
@@ -192,6 +220,8 @@ object SharedAudioPlayer {
                         stop()
                         if (finished != null) {
                             savedPositions.remove(finished)
+                            // نافذة يُحرَس فيها التشغيل التلقائي المؤجَّل.
+                            autoWindowUntil = SystemClock.elapsedRealtime() + AUTO_WINDOW_MS
                             onCompleted?.invoke(finished)
                         }
                     }
@@ -229,9 +259,19 @@ object SharedAudioPlayer {
     }
 
     fun playFile(context: Context, key: String, file: File) {
+        // ⚠️ حارس التشغيل التلقائي المؤجَّل — داخل المشغّل لا في الشاشات، كي
+        // يغطّي مستدعيَيه (شاشة المجموعة والخاصّ) بمنطق واحد: إن وصل الطلب
+        // بعد تنزيل طويل داخل نافذة الانتقال التلقائي، وكان المشرف قد بدأ
+        // مقطعاً آخر أو أوقفه عمداً أثناء الانتظار، يُهمَل الطلب.
+        val current = _activeKey.value
+        if (SystemClock.elapsedRealtime() < autoWindowUntil && current != null && current != key) {
+            Log.d(TAG, "auto-play ignored: user moved to $current")
+            autoWindowUntil = 0L
+            return
+        }
         val p = ensure(context)
         _error.value = null
-        if (_activeKey.value == key) {
+        if (current == key) {
             p.play()
             return
         }
@@ -384,7 +424,9 @@ fun AudioBubblePlayer(
             ?: fallbackWaveform(messageId.ifEmpty { attachment.url })
     }
 
-    // شارة الاستماع تُسجَّل مرّة واحدة عند أوّل تشغيل فعليّ لرسالة ليست لي.
+    // شارة الاستماع تُكتب مرّة واحدة عند **تشغيل فعليّ**، لا عند ضغطة الزرّ:
+    // الضغطة قد لا تُنتج صوتاً (ملفّ تالف أو ترميز غير مدعوم) فتُكتب
+    // listenedBy زوراً، وقواعد Firestore تمنع إزالتها فلا تراجع عنها.
     // مقيَّدة بالرسائل الصوتيّة: الشارة لا تُرسم أصلاً لمرفقات الصوت العامّة،
     // فكتابتها لها ضربٌ في Firestore بلا أيّ أثر مرئيّ.
     var reported by remember(messageId) { mutableStateOf(false) }
@@ -395,45 +437,52 @@ fun AudioBubblePlayer(
         }
     }
 
-    val scheme = MaterialTheme.colorScheme
-    val playedColor = scheme.primary
-    val restColor = scheme.onSurfaceVariant.copy(alpha = if (mine) 0.48f else 0.56f)
-    val controlColor = scheme.onSurfaceVariant.copy(alpha = 0.82f)
-    val metaColor = scheme.onSurfaceVariant.copy(alpha = 0.82f)
+    // حدث التشغيل الفعليّ من المشغّل (أو أوّل تقدّم في الموضع) هو ما يسجّل.
+    LaunchedEffect(active, playing, positionMs > 0L) {
+        if (active && (playing || positionMs > 0L)) reportListened()
+    }
+
     val displayBars = remember(bars) { resampleWaveform(bars, DISPLAY_WAVE_BARS) }
-    val showError = playbackError != null && activeKey == key
+    // الخطأ مقرون بمفتاح رسالته، فيظهر على فقاعتها هي وحدها ولا يمحوه stop().
+    val errorText = playbackError?.takeIf { it.key == key }?.message
+    val showError = errorText != null
+
+    // انتظار التنزيل الجاري — يلغيه زرّ ✕ داخل حلقة التقدّم فيتوقّف التشغيل
+    // المؤجَّل بعده. (النقل نفسه يديره ChatMediaStore بنطاقه الخاصّ، ولا واجهة
+    // لإلغائه اليوم — يبقى الملفّ الجزئي محفوظاً ويُستأنف لاحقاً كما هو.)
+    var downloadJob by remember(key) { mutableStateOf<Job?>(null) }
 
     val controlClick: () -> Unit = {
-        scope.launch {
-            SharedAudioPlayer.clearError()
+        SharedAudioPlayer.clearError()
+        downloadJob = scope.launch {
             when {
                 status.state == MediaState.Downloading -> Unit
                 status.state == MediaState.Failed -> {
                     ChatMediaStore.retry(attachment)?.let { file ->
-                        reportListened()
                         SharedAudioPlayer.playFile(context, key, file)
                     }
                 }
                 !status.isReady -> {
                     ChatMediaStore.download(attachment)?.let { file ->
-                        reportListened()
                         SharedAudioPlayer.playFile(context, key, file)
                     }
                 }
                 active && playing -> SharedAudioPlayer.pause()
                 else -> status.file?.let { file ->
-                    reportListened()
                     SharedAudioPlayer.playFile(context, key, file)
                 }
             }
         }
     }
 
-    // واتساب لا يعكس الموجة نفسها في الرسائل الصادرة؛ يغيّر ترتيب العناصر:
-    // الواردة = صورة، موجة، تشغيل. الصادرة = موجة، تشغيل، صورة.
+    // واتساب لا يعكس الموجة نفسها في الرسائل الصادرة؛ يغيّر ترتيب العناصر،
+    // وزرّ التشغيل **ملاصق للصورة** دائماً:
+    // الواردة = صورة، تشغيل، موجة. الصادرة = تشغيل، موجة، صورة.
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         Row(
-            Modifier.width(292.dp),
+            // عرض مرن لا 292dp ثابتة: كانت الفقاعة تملأ شاشة 320dp حتى
+            // تلامس حوافّها.
+            Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (!mine) {
@@ -446,46 +495,47 @@ fun AudioBubblePlayer(
                     senderPhoto = senderPhoto,
                     listened = listened,
                     mine = false,
-                    tint = controlColor,
                 )
-                Spacer(Modifier.width(7.dp))
+                Spacer(Modifier.width(6.dp))
             }
 
-            AudioWaveformTrack(
-                bars = displayBars,
-                progress = progress,
-                playedColor = playedColor,
-                restColor = restColor,
-                dotColor = if (isVoice) ChatColors.readBlue else playedColor,
-                enabled = active && total > 0,
-                messageTime = messageTime,
-                pending = pending,
-                readByAll = readByAll,
-                mine = mine,
-                statusText = if (showError) {
-                    playbackError.orEmpty()
-                } else {
-                    statusLine(status, position, total, attachment)
-                },
-                statusIsError = showError,
-                metaColor = metaColor,
-                errorColor = scheme.error,
-                onSeek = { fraction -> SharedAudioPlayer.seekTo((fraction * total).toLong()) },
-                modifier = Modifier.weight(1f),
-            )
-
-            Spacer(Modifier.width(5.dp))
             AudioControl(
                 status = status,
                 active = active,
                 playing = playing,
-                tint = controlColor,
-                progressTint = scheme.primary,
                 onClick = controlClick,
+                onCancel = {
+                    downloadJob?.cancel()
+                    downloadJob = null
+                },
+            )
+            Spacer(Modifier.width(2.dp))
+
+            AudioWaveformTrack(
+                bars = displayBars,
+                progress = progress,
+                // واتساب يقبل النقر والسحب على مقطع منزَّل لم يُشغَّل بعد
+                // ويبدأ منه؛ الشرط القديم (active) كان يجمّد الموجة.
+                enabled = status.isReady && total > 0,
+                messageTime = messageTime,
+                pending = pending,
+                readByAll = readByAll,
+                mine = mine,
+                statusText = errorText ?: statusLine(status, position, total, attachment),
+                statusIsError = showError,
+                onSeek = { fraction ->
+                    val target = (fraction * total).toLong()
+                    if (!active) {
+                        status.file?.let { SharedAudioPlayer.playFile(context, key, it) }
+                    }
+                    SharedAudioPlayer.seekTo(target)
+                    reportListened()
+                },
+                modifier = Modifier.weight(1f),
             )
 
             if (mine) {
-                Spacer(Modifier.width(7.dp))
+                Spacer(Modifier.width(6.dp))
                 AudioIdentity(
                     active = active,
                     speed = speed,
@@ -495,7 +545,6 @@ fun AudioBubblePlayer(
                     senderPhoto = senderPhoto,
                     listened = listened,
                     mine = true,
-                    tint = controlColor,
                 )
             }
         }
@@ -512,16 +561,15 @@ private fun AudioIdentity(
     senderPhoto: String,
     listened: Boolean,
     mine: Boolean,
-    tint: Color,
 ) {
     Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
         when {
-            active -> SpeedChip(speed)
+            active -> SpeedChip(speed, mine)
             isVoice -> VoiceAvatar(senderUid, senderName, senderPhoto, listened, mine)
             else -> Icon(
                 Icons.Filled.MusicNote,
                 contentDescription = null,
-                tint = tint,
+                tint = ChatColors.wavePlayed,
                 modifier = Modifier.size(27.dp),
             )
         }
@@ -532,9 +580,6 @@ private fun AudioIdentity(
 private fun AudioWaveformTrack(
     bars: List<Int>,
     progress: Float,
-    playedColor: Color,
-    restColor: Color,
-    dotColor: Color,
     enabled: Boolean,
     messageTime: String,
     pending: Boolean,
@@ -542,8 +587,6 @@ private fun AudioWaveformTrack(
     mine: Boolean,
     statusText: String,
     statusIsError: Boolean,
-    metaColor: Color,
-    errorColor: Color,
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -551,18 +594,36 @@ private fun AudioWaveformTrack(
         WaveformSeekBar(
             bars = bars,
             progress = progress,
-            played = playedColor,
-            rest = restColor,
             enabled = enabled,
             onSeek = onSeek,
-            dot = dotColor,
         )
         Spacer(Modifier.height(1.dp))
+        // ترتيب واتساب: المدّة (أو حالة التنزيل) على حافة البداية، والوقت ثمّ
+        // ✓✓ على حافة النهاية. (كان معكوساً تماماً.)
         Row(
             Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // نصوص الحالة عربيّة («جارٍ التنزيل… 40%»، «اضغط للتنزيل • 2.3MB»)
+            // والصفّ كلّه مفروض LTR، فتُعاد إليها RTL وحدها كي تستقرّ النقطة
+            // والنسبة في موضعهما الصحيح. (الوزن يُحسب في نطاق الصفّ نفسه:
+            // محتوى CompositionLocalProvider ليس RowScope.)
+            val statusModifier = Modifier.weight(1f)
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                Text(
+                    text = statusText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Start,
+                    fontSize = 12.sp,
+                    color = if (statusIsError) ChatColors.rose else ChatColors.metaText,
+                    modifier = statusModifier,
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+            Text(messageTime, fontSize = 12.sp, color = ChatColors.metaText)
             if (mine) {
+                Spacer(Modifier.width(3.dp))
                 Icon(
                     when {
                         pending -> Icons.Filled.Schedule
@@ -570,61 +631,80 @@ private fun AudioWaveformTrack(
                         else -> Icons.Filled.Done
                     },
                     contentDescription = null,
-                    tint = if (readByAll && !pending) ChatColors.readBlue else metaColor,
+                    tint = if (readByAll && !pending) {
+                        ChatColors.readBlue
+                    } else {
+                        ChatColors.metaText
+                    },
                     modifier = Modifier.size(14.dp),
                 )
-                Spacer(Modifier.width(3.dp))
             }
-            Text(messageTime, fontSize = 11.sp, color = metaColor)
-            Spacer(Modifier.weight(1f))
-            Text(
-                text = statusText,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.End,
-                fontSize = 11.sp,
-                color = if (statusIsError) errorColor else metaColor,
-            )
         }
     }
 }
 
+/**
+ * زرّ التشغيل بنمط واتساب: أيقونة 24dp بلا خلفيّة داخل مساحة لمس 40dp،
+ * وأثناء التنزيل حلقة تقدّم بداخلها ✕ للإلغاء لا حلقة صامتة.
+ */
 @Composable
 private fun AudioControl(
     status: MediaStatus,
     active: Boolean,
     playing: Boolean,
-    tint: Color,
-    progressTint: Color,
     onClick: () -> Unit,
+    onCancel: () -> Unit,
 ) {
     Box(
-        Modifier.size(42.dp).clickable(onClick = onClick),
+        Modifier.size(40.dp),
         contentAlignment = Alignment.Center,
     ) {
         if (status.state == MediaState.Downloading) {
-            CircularProgressIndicator(
-                progress = { (status.progress / 100).toFloat() },
-                strokeWidth = 2.4.dp,
-                color = progressTint,
-                modifier = Modifier.size(25.dp),
-            )
+            Box(
+                Modifier.size(24.dp).clickable(onClick = onCancel),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(
+                    progress = { (status.progress / 100).toFloat() },
+                    strokeWidth = 2.dp,
+                    color = ChatColors.wavePlayed,
+                    trackColor = ChatColors.waveRest,
+                    modifier = Modifier.size(24.dp),
+                )
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "إلغاء التنزيل",
+                    tint = ChatColors.wavePlayed,
+                    modifier = Modifier.size(13.dp),
+                )
+            }
         } else {
-            Icon(
-                when {
-                    !status.isReady -> Icons.Filled.Download
-                    active && playing -> Icons.Filled.Pause
-                    else -> Icons.Filled.PlayArrow
-                },
-                contentDescription = null,
-                tint = tint,
-                modifier = Modifier.size(36.dp),
-            )
+            Box(
+                Modifier.size(40.dp).clickable(onClick = onClick),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    when {
+                        !status.isReady -> Icons.Filled.Download
+                        active && playing -> Icons.Filled.Pause
+                        else -> Icons.Filled.PlayArrow
+                    },
+                    contentDescription = null,
+                    tint = ChatColors.wavePlayed,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
         }
     }
 }
 
-/** صورة المرسل الدائريّة مع ميكروفون سماوي كما في مرجع واتساب. */
+/**
+ * صورة المرسل الدائريّة مع ميكروفون بمعنى واتساب الدقيق — والمعنى **مختلف**
+ * بين الاتجاهين، فلا تصحّ قاعدة واحدة لهما:
+ * - رسالتي: أزرق إن سمعها المتلقّي، ورماديّ قبل ذلك.
+ * - رسالة غيري: **أخضر** ما لم أسمعها بعد (مؤشّر «غير مسموعة»، وهو غرض
+ *   الميزة كلّه)، ورماديّ بعد سماعي.
+ */
 @Composable
 private fun VoiceAvatar(
     uid: String,
@@ -633,53 +713,68 @@ private fun VoiceAvatar(
     listened: Boolean,
     mine: Boolean,
 ) {
-    val scheme = MaterialTheme.colorScheme
     Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
         MemberAvatar(uid = uid, name = name, photo = photo, radius = 22)
         Box(
             Modifier
                 .align(if (mine) Alignment.BottomStart else Alignment.BottomEnd)
                 .size(19.dp)
-                .background(if (mine) ChatColors.mineBubble else scheme.surface, CircleShape),
+                .background(
+                    if (mine) ChatColors.mineBubble else ChatColors.surface,
+                    CircleShape,
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 Icons.Filled.Mic,
                 contentDescription = null,
-                tint = if (listened) ChatColors.readBlue else scheme.onSurfaceVariant,
+                tint = when {
+                    mine && listened -> ChatColors.readBlue
+                    mine -> ChatColors.micIdle
+                    !listened -> ChatColors.micUnheard
+                    else -> ChatColors.micIdle
+                },
                 modifier = Modifier.size(15.dp),
             )
         }
     }
 }
 
-/** رقاقة سرعة التشغيل 1×/1.5×/2× (تحلّ محلّ الصورة أثناء التشغيل). */
+/**
+ * رقاقة سرعة التشغيل 1x/1.5x/2x (تحلّ محلّ الصورة أثناء التشغيل): كبسولة
+ * رماديّة محايدة فوق الوارد وخضراء باهتة فوق الصادر — لا تركوازيّ السمة.
+ * منطق الدورة وحفظ السرعة في AppPrefs كما هما (مطابقان لواتساب).
+ */
 @Composable
-private fun SpeedChip(speed: Float) {
-    val scheme = MaterialTheme.colorScheme
+private fun SpeedChip(speed: Float, mine: Boolean) {
     Box(
         Modifier
-            .background(scheme.surfaceVariant, RoundedCornerShape(10.dp))
+            .background(
+                if (mine) Color(0xFFC5EDBC) else Color(0xFFE7E7E7),
+                RoundedCornerShape(10.dp),
+            )
             .clickable {
                 val steps = listOf(1f, 1.5f, 2f)
                 val next = steps[(steps.indexOf(speed) + 1) % steps.size]
                 SharedAudioPlayer.setSpeed(next)
             }
-            .padding(horizontal = 7.dp, vertical = 3.dp),
+            .padding(horizontal = 8.dp, vertical = 3.dp),
     ) {
         Text(
-            "${if (speed % 1f == 0f) speed.toInt().toString() else speed}×",
-            fontSize = 11.sp,
+            "${if (speed % 1f == 0f) speed.toInt().toString() else speed}x",
+            fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
-            color = scheme.primary,
+            color = ChatColors.wavePlayed,
         )
     }
 }
 
 /**
- * موجة صوتيّة قابلة للسحب بنمط واتساب الحديث: أعمدة نحيفة بفجوات واضحة
- * وزوايا دائريّة، المسموع منها بلون بارز، ونقطة سحب ظاهرة دائماً عند
- * موضع التقدّم. تبقى الموجة نفسها من اليسار إلى اليمين في الوارد والصادر.
+ * موجة صوتيّة قابلة للسحب بنمط واتساب: أعمدة **ثابتة العرض 2dp** بفجوة 2dp
+ * وزوايا دائريّة — عددها يُحسب من العرض المتاح لا مثبّتاً على 48 عموداً
+ * (فكان العمود يتضخّم على الشاشات العريضة حتى تبدو الموجة أعمدة عريضة
+ * متباعدة). لونان رماديّان محايدان ونقطة سحب مصمتة بلونهما: الأزرق محجوز
+ * لعلامات القراءة وميكروفون «سمعها المتلقّي» فلا يُربك معناه هنا.
  *
  * عند اكتمال التشغيل يعود [progress] إلى صفر (المشغّل يفرّغ مقطعه النشط)،
  * فترجع الموجة كاملةً بلون واحد لا نصف ملوّنة.
@@ -688,14 +783,9 @@ private fun SpeedChip(speed: Float) {
 private fun WaveformSeekBar(
     bars: List<Int>,
     progress: Float,
-    played: Color,
-    rest: Color,
     enabled: Boolean,
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier,
-    // نقطة السحب: زرقاء لرسالة صوتيّة لم أسمعها بعد (سلوك واتساب)، وإلا
-    // بلون المسموع.
-    dot: Color = played,
 ) {
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     Canvas(
@@ -717,34 +807,35 @@ private fun WaveformSeekBar(
                 }
             },
     ) {
-        val count = bars.size.coerceAtLeast(1)
-        // كثافة واتساب الحقيقيّة: فجوة ضيّقة وعمود بعرضها تقريباً — موجة
-        // متّصلة بصريّاً لا أعمدة متناثرة. (لا عمود «متضخّم» عند المؤشّر:
-        // واتساب يكتفي بنقطة السحب علامةً للموضع.)
-        val gap = 1.5.dp.toPx()
-        val barWidth = ((size.width - gap * (count - 1)) / count).coerceAtLeast(1.dp.toPx())
+        val barWidth = 2.dp.toPx()
+        val gap = 2.dp.toPx()
+        val step = barWidth + gap
+        val count = ((size.width + gap) / step).toInt().coerceIn(1, 128)
         val minHeight = 3.dp.toPx()
         val playedBars = (progress * count).toInt()
-        bars.forEachIndexed { i, value ->
-            val ratio = value.coerceIn(0, 100) / 100f
-            val h = (size.height * (0.14f + 0.86f * ratio)).coerceAtLeast(minHeight)
-            val left = if (rtl) {
-                size.width - (i + 1) * barWidth - i * gap
+        val lastSource = bars.lastIndex.coerceAtLeast(0)
+        for (i in 0 until count) {
+            // عيّنة الموجة تُختار بالتناسب مهما اختلف عدد الأعمدة عن عدد العيّنات.
+            val source = if (count == 1) {
+                0
             } else {
-                i * (barWidth + gap)
+                (i.toFloat() * lastSource / (count - 1)).roundToInt().coerceIn(0, lastSource)
             }
+            val ratio = bars.getOrElse(source) { 30 }.coerceIn(0, 100) / 100f
+            val h = (size.height * (0.14f + 0.86f * ratio)).coerceAtLeast(minHeight)
+            val left = if (rtl) size.width - (i + 1) * step + gap else i * step
             drawRoundRect(
-                color = if (i < playedBars) played else rest,
+                color = if (i < playedBars) ChatColors.wavePlayed else ChatColors.waveRest,
                 topLeft = Offset(left, (size.height - h) / 2f),
                 size = Size(barWidth, h),
                 cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
             )
         }
         // تبقى نقطة البداية ظاهرة قبل التشغيل؛ enabled تتحكم بالسحب فقط.
-        val r = 5.5.dp.toPx()
+        val r = 2.5.dp.toPx()
         val x = if (rtl) size.width - progress * size.width else progress * size.width
         drawCircle(
-            color = dot,
+            color = ChatColors.wavePlayed,
             radius = r,
             center = Offset(x.coerceIn(r, (size.width - r).coerceAtLeast(r)), size.height / 2f),
         )

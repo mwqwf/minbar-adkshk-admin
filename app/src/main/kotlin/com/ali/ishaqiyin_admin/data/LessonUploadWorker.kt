@@ -91,6 +91,9 @@ class LessonUploadWorker(
             UploadQueue.setProgress(UploadProgress(item.id, item.title, 0))
             try {
                 val url = uploadWithResume(item, file)
+                // يُحفظ مسار ما رُفع فور نجاحه: به وحده يستطيع الإلغاء لاحقاً
+                // حذف الملفّ من التخزين إن رُكن العنصر قبل إنشاء وثيقته.
+                UploadQueue.update(item.id) { it.copy(uploadedPath = url.second) }
                 if (UploadQueue.consumeCancelled(item.id) || UploadQueue.byId(item.id) == null) {
                     // ألغاه المشرف أثناء الرفع: لا يُنشر، ويُحذف ما رُفع
                     // كي لا يبقى ملفّ يتيم في التخزين.
@@ -104,6 +107,10 @@ class LessonUploadWorker(
                     title = item.title,
                     categoryId = item.categoryId,
                     subcategoryId = item.subcategoryId,
+                    // اسما القسمين: بلاهما يكتبهما الخادم فارغَين فيسقط سطر
+                    // القسم من نسخة الدرس في «سلة المحذوفات».
+                    categoryName = item.categoryName,
+                    subcategoryName = item.subcategoryName,
                     audioUrl = url.first,
                     audioStoragePath = url.second,
                     addedBy = item.addedBy,
@@ -144,27 +151,31 @@ class LessonUploadWorker(
                     return Result.retry()
                 }
                 val attempts = item.attempts + 1
+                // السبب يُترجَم مرّة واحدة هنا: رسالة Firebase الخام
+                // بالإنجليزية كانت تُحفظ ثم تُعرض للمشرف كما هي.
+                val reason = e.arabicReason()
                 Log.w(TAG, "upload failed (${attempts}) for ${item.id}: $e")
                 if (attempts >= MAX_ATTEMPTS) {
-                    // فشل مستمرّ غير شبكيّ (قسم محذوف/صلاحية) — يُركن صراحةً
-                    // فيخرج من دور الرفع ويبقى معروضاً ليقرّر المشرف،
-                    // وينتقل الطابور لما بعده بدل أن يدور عليه بلا نهاية.
+                    // فشل مستمرّ غير شبكيّ (رفض صلاحية، أو صيغة ملفّ ترفضها
+                    // قواعد التخزين) — يُركن صراحةً فيخرج من دور الرفع ويبقى
+                    // معروضاً ليقرّر المشرف، وينتقل الطابور لما بعده بدل أن
+                    // يدور عليه بلا نهاية.
                     UploadQueue.update(item.id) {
                         it.copy(
                             attempts = attempts,
-                            lastError = e.message ?: "تعذّر الرفع",
+                            lastError = reason,
                             parked = true,
                         )
                     }
                     // بلا إشعار هنا كان الدرس الميّت يبدو للمشرف «بانتظار
                     // الدور» إلى الأبد — الركن يخرجه من الدور فلا يُرفع أبداً.
-                    notifyUploadParked(item, e.message)
+                    notifyUploadParked(item, reason)
                 } else {
                     // فشل غير شبكيّ ⇒ الجلسة نفسها قد تكون منتهية الصلاحية،
                     // فتُمسح كي تبدأ المحاولة التالية جلسة جديدة بدل الدوران
                     // على الفشل ذاته.
                     UploadQueue.update(item.id) {
-                        it.copy(attempts = attempts, lastError = e.message, sessionUri = null)
+                        it.copy(attempts = attempts, lastError = reason, sessionUri = null)
                     }
                     UploadQueue.setProgress(null)
                     return Result.retry()
@@ -211,6 +222,9 @@ class LessonUploadWorker(
         val cleanName = file.name.removePrefix("${item.id}_")
         val storagePath = "lessons/${item.queuedAtMs}_$cleanName"
         val ref = FirebaseStorage.getInstance().reference.child(storagePath)
+        // نوع المحتوى: [StorageService.mimeForExt] يعيد نوعاً صوتياً دائماً
+        // لمسار الدروس — الاسم بلا امتداد (ملفّ وصل بالمشاركة من مزوّد لا
+        // يعرض DISPLAY_NAME) لم يعد يُرفض من قواعد التخزين.
         val metadata = StorageMetadata.Builder()
             .setContentType(StorageService.mimeForExt(item.fileName.substringAfterLast('.', "")))
             .build()

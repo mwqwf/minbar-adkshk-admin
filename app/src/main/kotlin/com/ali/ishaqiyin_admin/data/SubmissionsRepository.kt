@@ -55,6 +55,9 @@ data class LessonSubmission(
     }
 }
 
+/** حصيلة قرار جماعي على مساهمات صوتية: كم نُفِّذ وكم أخفق. */
+data class BulkSubmissionResult(val done: Int, val failed: Int)
+
 /**
  * 🗳️ مراجعة مساهمات المستمعين: يوافق المشرف كما هي، أو يعدّل
  * (العنوان/الأقسام) ثم ينشر، أو يرفض بسبب يصل المساهم إشعاراً.
@@ -132,5 +135,44 @@ object SubmissionsRepository {
         if (s.isPending) return
         functions.getHttpsCallable("deleteSubmission")
             .call(mapOf("submissionId" to s.id)).await()
+    }
+
+    /**
+     * نشر جماعي للمساهمات المحدَّدة كما هي. [onProgress] يتلقّى (المنجز،
+     * الإجمالي) لتحريك شريط التقدّم كما في «اعتماد الكل» عند المالك.
+     * كلّ مساهمة نداء مستقلّ فلا يُسقط فشلُ واحدة البقيّةَ.
+     */
+    suspend fun bulkApprove(
+        items: List<LessonSubmission>,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+    ): BulkSubmissionResult {
+        val targets = items.filter { it.isPending }
+        var done = 0
+        var failed = 0
+        targets.forEachIndexed { index, s ->
+            runCatching { approveAndPublish(s) }
+                .onSuccess { done++ }
+                .onFailure { failed++ }
+            onProgress(index + 1, targets.size)
+        }
+        return BulkSubmissionResult(done, failed)
+    }
+
+    /** رفض جماعي بسبب واحد يصل كل المساهمين المعنيّين. */
+    suspend fun bulkReject(
+        items: List<LessonSubmission>,
+        reason: String,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+    ): BulkSubmissionResult {
+        val targets = items.filter { it.isPending }
+        var done = 0
+        var failed = 0
+        targets.forEachIndexed { index, s ->
+            runCatching { reject(s, reason) }
+                .onSuccess { done++ }
+                .onFailure { failed++ }
+            onProgress(index + 1, targets.size)
+        }
+        return BulkSubmissionResult(done, failed)
     }
 }

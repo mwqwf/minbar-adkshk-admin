@@ -98,14 +98,13 @@ fun ReorderLessonsDialog(
     val listState = rememberLazyListState()
 
     LaunchedEffect(subcategoryId) {
-        runCatching { AdminRepository.fetchLessons() }
-            .onSuccess { all ->
+        // استعلام مقيَّد بالقسم الفرعي بدل جلب **كلّ** دروس القاعدة ثم
+        // ترشيحها على الجهاز. الفرز يبقى محليّاً فلا يلزم فهرس مركّب.
+        runCatching { AdminRepository.fetchSubcategoryLessons(subcategoryId) }
+            .onSuccess { found ->
                 items.clear()
                 // ترتيب العرض = ترتيب التطبيق الافتراضي (الأقدم أولاً).
-                items.addAll(
-                    all.filter { it.subcategoryId == subcategoryId }
-                        .sortedBy { it.createdAtMs },
-                )
+                items.addAll(found.sortedBy { it.createdAtMs })
             }
             .onFailure { snack("تعذّر جلب دروس القسم.") }
         loading = false

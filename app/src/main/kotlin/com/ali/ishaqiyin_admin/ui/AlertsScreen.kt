@@ -1,6 +1,7 @@
 package com.ali.ishaqiyin_admin.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,10 +15,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.GppMaybe
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Insights
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.HorizontalDivider
@@ -41,16 +45,27 @@ import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminAlert
 import com.ali.ishaqiyin_admin.data.AdminAlertsFeed
 import com.ali.ishaqiyin_admin.data.arabicReason
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * شاشة «تنبيهاتك»: **الاطّلاع نفسه يُميّز الكلّ مقروءاً** فتختفي التنبيهات
- * عن هذا المشرف وحده في الزيارة التالية (وتبقى عند غيره). لقطة الجلسة
- * تُبقي المعروض ثابتاً أثناء الزيارة كي لا يختفي التنبيه من تحت العين
- * لحظة تمييزه، والجديد الوارد أثناء الفتح يُضاف حيّاً ويُميّز بدوره.
+ * شاشة «تنبيهاتك».
+ *
+ * كلّ صفّ **قابل للنقر** ويفتح هدفه الفعلي (مساهمة، نصّ مشروح، مراجعة
+ * المالك…) بنفس خريطة توجيه الإشعارات في `NotificationRoute` — التنبيه إشارة
+ * إلى عمل، لا نصّاً يُقرأ ويُنسى.
+ *
+ * ولأنّ التنبيه المقروء يختفي عن صاحبه، لا نُميّز شيئاً مقروءاً بمجرّد فتح
+ * الشاشة: يُميَّز الصفّ عند **ظهوره الفعلي** داخل القائمة (وبعد لحظة كي لا
+ * يُحتسب تمريرٌ خاطف)، أو دفعةً واحدة بزرّ صريح في الشريط. والتمييز البصري
+ * لغير المقروء يبقى طوال الزيارة فلا يختفي شيء من تحت عين المشرف.
  */
 @Composable
-fun AlertsScreen(isOwner: Boolean, onBack: () -> Unit) {
+fun AlertsScreen(
+    isOwner: Boolean,
+    onBack: () -> Unit,
+    onOpen: (String) -> Unit = {},
+) {
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
     var confirmPublicDelete by remember { mutableStateOf<AdminAlert?>(null) }
@@ -58,19 +73,20 @@ fun AlertsScreen(isOwner: Boolean, onBack: () -> Unit) {
         .collectAsState(initial = emptyList())
     val me = AdminAlertsFeed.myEmail
 
-    // لقطة الزيارة: كلّ ما ظهر منذ فتح الشاشة يبقى معروضاً حتى الخروج.
+    // لقطة الزيارة: كلّ ما ظهر منذ فتح الشاشة يبقى معروضاً حتى الخروج —
+    // ولا تُحدَّث نسخته بعد التمييز، فتظلّ إشارة «غير مقروء» ظاهرة للزائر.
     val session = remember { androidx.compose.runtime.mutableStateMapOf<String, AdminAlert>() }
     LaunchedEffect(live) {
-        live.forEach { session[it.id] = it }
-        // الاطّلاع = قراءة: يُميَّز الوارد فوراً (كتابة محليّة لا تنتظر
-        // الشبكة)، ويُحدَّث النموذج المحلّي كي يخفت التمييز البصري.
-        val unread = live.filter { !it.isReadBy(me) }
-        if (unread.isNotEmpty()) {
-            AdminAlertsFeed.markAllRead(unread)
-            unread.forEach { session[it.id] = it.copy(readBy = it.readBy + me) }
+        live.forEach { alert ->
+            if (!session.containsKey(alert.id)) session[alert.id] = alert
         }
     }
     val alerts = session.values.sortedByDescending { it.createdAtMs }
+
+    // ما مُيّز مقروءاً في هذه الزيارة — يمنع إعادة الكتابة كلّما عاد الصفّ
+    // إلى الظهور بالتمرير (النسخة المعروضة تبقى «غير مقروءة» عمداً).
+    val marked = remember { mutableSetOf<String>() }
+    var markedAll by remember { mutableStateOf(false) }
 
     /** الحذف يمحو الوثيقة نفسها لا علامة قراءتي — لذا يُعلَن فشله. */
     fun deleteNow(alert: AdminAlert) {
@@ -79,6 +95,34 @@ fun AlertsScreen(isOwner: Boolean, onBack: () -> Unit) {
             runCatching { AdminAlertsFeed.delete(alert) }
                 .onFailure { snack("تعذّر حذف التنبيه: ${it.arabicReason()}") }
         }
+    }
+
+    /**
+     * فتح هدف التنبيه: يُبنى المسار من نوعه ومعرّفه بنفس خريطة الإشعارات،
+     * ويُميَّز مقروءاً لأنّ المشرف عالجه فعلاً. تنبيه بلا شاشة (تهنئة أو
+     * موجز) لا يُسقط شيئاً — يُعلَن أنّه للعلم فقط.
+     */
+    fun openTarget(alert: AdminAlert) {
+        val route = NotificationRoute.routeFor { key ->
+            when (key) {
+                NotificationRoute.KEY_TYPE -> alert.type
+                NotificationRoute.KEY_REF,
+                NotificationRoute.KEY_SUBMISSION,
+                NotificationRoute.KEY_LESSON,
+                NotificationRoute.KEY_REVIEW,
+                NotificationRoute.KEY_CANDIDATE,
+                -> alert.refId
+
+                else -> null
+            }
+        }
+        marked.add(alert.id)
+        AdminAlertsFeed.markRead(alert)
+        if (route == null) {
+            snack("هذا التنبيه للعلم فقط — لا شاشة مرتبطة به.")
+            return
+        }
+        onOpen(route)
     }
 
     // تنبيه المالك العامّ (email فارغ) يعود لكلّ المشرفين، وحذفه يمحوه عنهم
@@ -101,6 +145,21 @@ fun AlertsScreen(isOwner: Boolean, onBack: () -> Unit) {
     AdminScaffold(
         title = "تنبيهاتك",
         onBack = onBack,
+        actions = {
+            if (!markedAll && alerts.any { !it.isReadBy(me) }) {
+                IconButton(
+                    onClick = {
+                        val unread = alerts.filter { !it.isReadBy(me) }
+                        AdminAlertsFeed.markAllRead(unread)
+                        unread.forEach { marked.add(it.id) }
+                        markedAll = true
+                        snack("مُيّزت التنبيهات مقروءة.")
+                    },
+                ) {
+                    Icon(Icons.Filled.DoneAll, contentDescription = "تمييز الكل مقروءاً")
+                }
+            }
+        },
     ) { padding ->
         if (alerts.isEmpty()) {
             Box(
@@ -119,9 +178,21 @@ fun AlertsScreen(isOwner: Boolean, onBack: () -> Unit) {
                 val alert = alerts[index]
                 val unread = !alert.isReadBy(me)
                 val deletable = AdminAlertsFeed.canDelete(alert, isOwner)
+
+                // 👁️ الظهور الفعلي = القراءة: لا يُميَّز إلّا ما رُكّب في
+                // القائمة وبقي لحظة أمام العين — لا كلّ ما جلبه الاستعلام.
+                if (unread && !marked.contains(alert.id)) {
+                    LaunchedEffect(alert.id) {
+                        delay(900)
+                        marked.add(alert.id)
+                        AdminAlertsFeed.markRead(alert)
+                    }
+                }
+
                 Row(
                     Modifier
                         .fillMaxWidth()
+                        .clickable { openTarget(alert) }
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -184,11 +255,13 @@ fun AlertsScreen(isOwner: Boolean, onBack: () -> Unit) {
 
 private fun iconFor(type: String): ImageVector = when (type) {
     "submission" -> Icons.Filled.HowToVote
+    "transcript" -> Icons.AutoMirrored.Filled.MenuBook
     "milestone" -> Icons.Filled.EmojiEvents
     "owner_code" -> Icons.Filled.VerifiedUser
     "digest", "weekly_digest" -> Icons.Filled.Insights
     "engagement" -> Icons.AutoMirrored.Filled.TrendingUp
-    "suspicious_lesson" -> Icons.Filled.GppMaybe
+    "suspicious_lesson", "suspicious_scan" -> Icons.Filled.GppMaybe
+    "featured_expiring" -> Icons.Filled.Star
     else -> Icons.Filled.Campaign
 }
 

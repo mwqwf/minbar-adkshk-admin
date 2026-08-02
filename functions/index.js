@@ -245,12 +245,20 @@ async function logPublicNotification(title, body, data) {
     title: cleanString(title || "منبر ادكصهك", 100),
     body: cleanString(body, 500),
     type: cleanString(data && data.type || "manual", 40),
-    refId: cleanString(data && data.id, 160) || null,
+    // معرّف الهدف: المفاتيح الصريحة أولاً ثم `id` العام (توافق خلفي).
+    refId: cleanString(
+      data && (data.refId || data.id || data.lessonId
+        || data.subcategoryId || data.categoryId || data.bookId),
+      160,
+    ) || null,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
     createdAtMs: Date.now(),
   });
 }
 
+// ⚠️ لا مفتاح `click_action` في خريطة `data`: هو مخلَّف من نسخة الفلاتر
+// (كانت مكتبة flutter_local_notifications تقرؤه) وخامل تماماً على أندرويد
+// الأصلي — التوجيه هناك يقرأ `type` ومعرّف الهدف من الحمولة/الـextras.
 async function pushToTopic(title, body, data) {
   const t = cleanString(title || "منبر ادكصهك", 100);
   const b = cleanString(body, 500);
@@ -258,10 +266,7 @@ async function pushToTopic(title, body, data) {
   return admin.messaging().send({
     topic: TOPIC,
     notification: { title: t, body: b },
-    data: Object.assign(
-      { click_action: "FLUTTER_NOTIFICATION_CLICK" },
-      safeData(data),
-    ),
+    data: safeData(data),
     android: {
       priority: "high",
       notification: { channelId: "minbar_content", sound: "default" },
@@ -276,10 +281,7 @@ async function pushToCondition(title, body, data, condition) {
   return admin.messaging().send({
     condition,
     notification: { title: t, body: b },
-    data: Object.assign(
-      { click_action: "FLUTTER_NOTIFICATION_CLICK" },
-      safeData(data),
-    ),
+    data: safeData(data),
     android: {
       priority: "high",
       notification: { channelId: "minbar_content", sound: "default" },
@@ -296,10 +298,7 @@ async function pushToToken(token, title, body, data) {
         title: cleanString(title, 100),
         body: cleanString(body, 500),
       },
-      data: Object.assign(
-        { click_action: "FLUTTER_NOTIFICATION_CLICK" },
-        safeData(data),
-      ),
+      data: safeData(data),
       android: {
         priority: "high",
         notification: { channelId: "minbar_content", sound: "default" },
@@ -382,10 +381,7 @@ async function sendToAdminTargets(targets, title, body, data) {
         title: cleanString(title, 100),
         body: cleanString(body, 500),
       },
-      data: Object.assign(
-        { click_action: "FLUTTER_NOTIFICATION_CLICK" },
-        safeData(data),
-      ),
+      data: safeData(data),
       android: {
         priority: "high",
         notification: { channelId: "admin_alerts", sound: "default" },
@@ -418,6 +414,12 @@ exports.onLessonCreated = functions.firestore
   .document("lessons/{id}")
   .onCreate(async (snap) => {
     const d = unwrapLegacy(snap.data());
+    // ♻️ الاستعادة من السلة تُعيد كتابة وثيقة الدرس كما كانت فيُطلق هذا
+    // المُشغِّل ثانيةً. الوثيقة المستعادة تحمل publishNotified=true إن سبق
+    // إشعار نشرها، فلا يُعاد الإشعار — تماماً كما يفحصها
+    // dispatchScheduledLesson قبل الإرسال. بلا هذا الفحص كان درس قديم
+    // يصل لكل المستمعين بوصفه «درساً جديداً» بمجرّد التراجع عن حذفه.
+    if (d.publishNotified === true) return null;
     if (d.publishAt) {
       const at = Date.parse(d.publishAt);
       if (!Number.isNaN(at) && at > Date.now()) return null;
@@ -428,14 +430,20 @@ exports.onLessonCreated = functions.firestore
       await pushToCondition(
         "درس جديد",
         title || "أُضيف درس صوتي جديد",
-        { type: "lesson", id: snap.id, subId },
+        {
+          type: "lesson",
+          id: snap.id,
+          lessonId: snap.id,
+          subId,
+          subcategoryId: subId,
+        },
         `'${TOPIC}' in topics || 'sec_${subId}' in topics`,
       );
     } else {
       await pushToTopic(
         "درس جديد",
         title || "أُضيف درس صوتي جديد",
-        { type: "lesson", id: snap.id },
+        { type: "lesson", id: snap.id, lessonId: snap.id },
       );
     }
     // يمنع ازدواج الإشعار مع publishScheduledLessons عندما يكون publishAt
@@ -452,7 +460,7 @@ exports.onSubcategoryCreated = functions.firestore
     return pushToTopic(
       "قسم فرعي جديد",
       cleanString(d.name, 180) || "أُضيف قسم فرعي جديد",
-      { type: "subcategory", id: snap.id },
+      { type: "subcategory", id: snap.id, subcategoryId: snap.id },
     );
   });
 
@@ -463,7 +471,7 @@ exports.onCategoryCreated = functions.firestore
     return pushToTopic(
       "قسم جديد",
       cleanString(d.name, 180) || "أُضيف قسم رئيسي جديد",
-      { type: "category", id: snap.id },
+      { type: "category", id: snap.id, categoryId: snap.id },
     );
   });
 
@@ -474,7 +482,7 @@ exports.onBookCreated = functions.firestore
     return pushToTopic(
       "كتاب جديد",
       cleanString(d.name, 180) || "أُضيف كتاب جديد",
-      { type: "book", id: snap.id },
+      { type: "book", id: snap.id, bookId: snap.id },
     );
   });
 
@@ -504,6 +512,7 @@ exports.onLessonMilestone = functions.firestore
       pushToAdminsFiltered("🎉 إنجاز استماع جديد", body, {
         type: "engagement",
         lessonId: change.after.id,
+        refId: change.after.id,
       }, { excludeEmail: authorEmail }),
     ];
     if (authorEmail) {
@@ -515,6 +524,7 @@ exports.onLessonMilestone = functions.firestore
       tasks.push(pushToAdminsFiltered("🎉 إنجاز جديد لدرسك", body, {
         type: "engagement",
         lessonId: change.after.id,
+        refId: change.after.id,
       }, { targetEmail: authorEmail }));
     }
     await Promise.all(tasks);
@@ -558,14 +568,20 @@ async function dispatchScheduledLesson(doc, origin) {
       await pushToCondition(
         "درس جديد",
         title || "أُضيف درس صوتي جديد",
-        { type: "lesson", id: doc.id, subId },
+        {
+          type: "lesson",
+          id: doc.id,
+          lessonId: doc.id,
+          subId,
+          subcategoryId: subId,
+        },
         `'${TOPIC}' in topics || 'sec_${subId}' in topics`,
       );
     } else {
       await pushToTopic(
         "درس جديد",
         title || "أُضيف درس صوتي جديد",
-        { type: "lesson", id: doc.id },
+        { type: "lesson", id: doc.id, lessonId: doc.id },
       );
     }
     const batch = db.batch();
@@ -746,6 +762,7 @@ exports.sendFeedback = functions.https.onCall(async (data, context) => {
     pushToAdminsFiltered(alertTitle, alertBody, {
       type: "engagement",
       lessonId,
+      refId: lessonId,
       feedbackId: ref.id,
     }, { excludeEmail: authorEmail }),
   ];
@@ -759,6 +776,7 @@ exports.sendFeedback = functions.https.onCall(async (data, context) => {
     tasks.push(pushToAdminsFiltered("تفاعل جديد مع درسك", alertBody, {
       type: "engagement",
       lessonId,
+      refId: lessonId,
       feedbackId: ref.id,
     }, { targetEmail: authorEmail }));
   }
@@ -1950,12 +1968,16 @@ exports.onTranscriptSubmissionCreated = functions.firestore
       writeAdminAlert("", alertTitle, alertBody, {
         type: "transcript",
         submissionId: snap.id,
+        refId: snap.id,
         lessonId: cleanString(d.lessonId, 180),
       }),
+      // وجهة اللوحة صريحة: تبويب «النصوص المشروحة» في شاشة المراجعة.
       pushToAdmins(alertTitle, alertBody, {
         type: "transcript",
         submissionId: snap.id,
+        refId: snap.id,
         lessonId: cleanString(d.lessonId, 180),
+        route: "submissions",
       }),
     ]);
     return null;
@@ -1969,6 +1991,10 @@ exports.onTranscriptSubmissionDecided = functions.firestore
     if (before.status !== "pending" || after.status === "pending") return null;
     const token = cleanString(after.fcmToken, 4096);
     const lessonTitle = cleanString(after.lessonTitle, 160) || "الدرس";
+    // معرّف الدرس المرتبط بالاقتراح — قد يخلو منه سجلّ قديم، وسلسلة فارغة
+    // تُفسِد التوجيه (يسقط العميل على معرّف المساهمة فيبني شاشة ميتة)،
+    // لذا لا يُرسل المفتاح إلا صالحاً، ويرافقه `route` صريح دائماً.
+    const linkedLessonId = cleanString(after.lessonId, 180);
     if (after.status === "approved" || after.status === "approved_edited") {
       const edited = after.status === "approved_edited";
       const notificationTitle = edited
@@ -1979,9 +2005,11 @@ exports.onTranscriptSubmissionDecided = functions.firestore
         type: "transcript",
         id: change.after.id,
         refId: change.after.id,
-        lessonId: cleanString(after.lessonId, 180),
+        submissionId: change.after.id,
         result: after.status,
+        route: linkedLessonId ? "lesson" : "my-submissions",
       };
+      if (linkedLessonId) notificationData.lessonId = linkedLessonId;
       await Promise.all([
         clearAdminAlerts("transcript", change.after.id),
         writeUserNotification(after.uid, notificationTitle, notificationBody, notificationData),
@@ -1995,12 +2023,16 @@ exports.onTranscriptSubmissionDecided = functions.firestore
       const notificationBody = reason
         ? `لم يُعتمد نص «${lessonTitle}»: ${reason}`
         : `لم يُعتمد نص «${lessonTitle}».`;
+      // ⛳ الوجهة «مساهماتي» صراحةً: هنا يقرأ المستمع سبب عدم الاعتماد.
       const notificationData = {
         type: "transcript",
         id: change.after.id,
         refId: change.after.id,
+        submissionId: change.after.id,
         result: "rejected",
+        route: "my-submissions",
       };
+      if (linkedLessonId) notificationData.lessonId = linkedLessonId;
       await Promise.all([
         clearAdminAlerts("transcript", change.after.id),
         writeUserNotification(after.uid, notificationTitle, notificationBody, notificationData),
@@ -2108,7 +2140,15 @@ exports.restoreDeletedLesson = functions.https.onCall(async (data, context) => {
     throw new functions.https.HttpsError("internal", "بيانات السلة غير مكتملة.");
   }
   const batch = db.batch();
-  batch.set(db.collection("lessons").doc(lessonId), lesson);
+  // ♻️ وسم الاستعادة: مُشغِّلات الإنشاء تُطلق ثانيةً عند إعادة الكتابة،
+  // فيميّز هذا الوسمُ الدرسَ المستعاد من درس جديد فعلاً (يستعمله كاشف
+  // الشبهة كي لا يُعيد إزعاج المالك ببلاغ سبق أن رآه). لا يمسّ حقول
+  // المحتوى فبصمة المراجعة تبقى كما هي.
+  batch.set(db.collection("lessons").doc(lessonId), Object.assign({}, lesson, {
+    restoredAt: admin.firestore.FieldValue.serverTimestamp(),
+    restoredAtMs: Date.now(),
+    restoredBy: actor.email,
+  }));
   if (value.transcript && typeof value.transcript === "object") {
     batch.set(db.collection("lesson_transcripts").doc(lessonId), value.transcript);
   }
@@ -2461,10 +2501,14 @@ exports.onSubmissionCreated = functions.firestore
       writeAdminAlert("", alertTitle, alertBody, {
         type: "submission",
         submissionId: snap.id,
+        refId: snap.id,
       }),
+      // وجهة اللوحة صريحة: تبويب «المساهمات» في شاشة المراجعة.
       pushToAdmins(alertTitle, alertBody, {
         type: "submission",
         submissionId: snap.id,
+        refId: snap.id,
+        route: "submissions",
       }),
     ]);
     return null;
@@ -2484,13 +2528,17 @@ exports.onSubmissionDecided = functions.firestore
         ? "نُشرت مساهمتك بعد المراجعة"
         : "نُشرت مساهمتك";
       const notificationBody = `نُشر الدرس «${title}». شكراً لمساهمتك.`;
+      // معرّف الدرس المنشور فقط إن وُجد فعلاً — سلسلة فارغة تُفسد التوجيه.
+      const publishedLessonId = cleanString(after.publishedLessonId, 180);
       const notificationData = {
         type: "submission",
         id: change.after.id,
         refId: change.after.id,
-        lessonId: after.publishedLessonId || "",
+        submissionId: change.after.id,
         result: after.status,
+        route: publishedLessonId ? "lesson" : "my-submissions",
       };
+      if (publishedLessonId) notificationData.lessonId = publishedLessonId;
       await Promise.all([
         clearAdminAlerts("submission", change.after.id),
         writeUserNotification(after.uid, notificationTitle, notificationBody, notificationData),
@@ -2504,11 +2552,14 @@ exports.onSubmissionDecided = functions.firestore
       const notificationBody = reason
         ? `لم يُنشر «${title}»: ${reason}`
         : `لم يُنشر «${title}».`;
+      // ⛳ الوجهة «مساهماتي» صراحةً: لا درس منشوراً يُفتح بعد الرفض.
       const notificationData = {
         type: "submission",
         id: change.after.id,
         refId: change.after.id,
+        submissionId: change.after.id,
         result: "rejected",
+        route: "my-submissions",
       };
       await Promise.all([
         clearAdminAlerts("submission", change.after.id),
@@ -2647,7 +2698,13 @@ exports.onAdminDmMessageCreated = functions.firestore
       tokens,
       `رسالة خاصّة من ${senderName}`,
       preview,
-      { type: "admin_dm", threadId, senderId },
+      {
+        type: "admin_dm",
+        threadId,
+        messageId: snap.id,
+        senderId,
+        senderName,
+      },
     );
   });
 
@@ -3035,6 +3092,7 @@ async function recordSuspiciousLesson(
         type: "suspicious_lesson",
         reviewId: lessonId,
         lessonId,
+        refId: lessonId,
       }, true),
     ]);
   }
@@ -3043,12 +3101,22 @@ async function recordSuspiciousLesson(
 
 exports.onLessonSuspicionCreated = functions.firestore
   .document("lessons/{lessonId}")
-  .onCreate((snap, context) => recordSuspiciousLesson(
-    context.params.lessonId,
-    snap.data(),
-    "created",
-    true,
-  ));
+  .onCreate((snap, context) => {
+    const value = snap.data() || {};
+    // ♻️ الدرس المستعاد من السلة ليس محتوى جديداً: الفحص يجري كاملاً
+    // (فيبقى سجلّ المراجعة صحيحاً ومحدَّثاً) لكن بلا تنبيه فوريّ للمالك،
+    // فقد رأى هذا البلاغ نفسه يوم أُضيف الدرس أوّل مرّة. الوسم قصير العمر
+    // كي لا يُسكت الكشف عن أي إضافة لاحقة بالمعرّف نفسه.
+    const restoredAtMs = Number(value.restoredAtMs || 0);
+    const justRestored = restoredAtMs > 0
+      && Date.now() - restoredAtMs < 10 * 60 * 1000;
+    return recordSuspiciousLesson(
+      context.params.lessonId,
+      value,
+      justRestored ? "restored" : "created",
+      !justRestored,
+    );
+  });
 
 exports.onLessonSuspicionUpdated = functions.firestore
   .document("lessons/{lessonId}")
@@ -3355,24 +3423,50 @@ exports.sendNotification = functions.https.onCall(async (data, context) => {
 // ⭐ إنهاء تمييز الدروس التي انقضت مدّتها. التطبيق العام يُخفيها فوراً
 // بترشيح محلّي، وهذه تُنظّف الراية في القاعدة كي يستقيم المصدر ولا تظهر
 // عند النسخ القديمة التي لا تعرف featuredUntil.
+//
+// ⏳ وقبل السقوط بساعات: إنذار موجَّه إلى مَن أضاف الدرس («مدّده أو دعه
+// يسقط») — التمييز كان يسقط صامتاً فيفاجَأ صاحبه باختفاء درسه من
+// «مختارات المنبر». الإنذار مرّة واحدة لكل مدّة (وسم featuredExpiryWarnedFor
+// يحمل قيمة featuredUntil نفسها)، فتمديد المدّة يستحق إنذاراً جديداً.
+const FEATURED_WARN_BEFORE_MS = 6 * 60 * 60 * 1000;
+
 exports.expireFeaturedLessons = functions.pubsub
   .schedule("every 30 minutes")
   .timeZone("Asia/Riyadh")
   .onRun(async () => {
     const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
     const snap = await db.collection("lessons")
       .where("featured", "==", true)
       .get();
     let cleared = 0;
     let batch = db.batch();
     let pending = 0;
+    const warnings = [];
     for (const doc of snap.docs) {
       const value = doc.data() || {};
-      const until = value.featuredUntil || (value.data && value.data.featuredUntil);
+      const wrapped = value.data && typeof value.data === "object";
+      const inner = wrapped ? value.data : value;
+      const until = value.featuredUntil || (wrapped && value.data.featuredUntil);
       if (!until) continue; // تمييز دائم.
       const ms = Date.parse(until);
-      if (Number.isNaN(ms) || ms > Date.now()) continue;
-      const wrapped = value.data && typeof value.data === "object";
+      if (Number.isNaN(ms)) continue;
+      if (ms > nowMs) {
+        if (ms - nowMs > FEATURED_WARN_BEFORE_MS) continue;
+        const warnedFor = cleanString(inner.featuredExpiryWarnedFor, 60);
+        const target = normalizeEmail(inner.addedBy || inner.createdByEmail);
+        if (!target || warnedFor === String(until)) continue;
+        warnings.push({
+          ref: doc.ref,
+          id: doc.id,
+          wrapped,
+          until: String(until),
+          target,
+          title: cleanString(inner.title || inner.name, 180),
+          remainingMs: ms - nowMs,
+        });
+        continue;
+      }
       batch.update(doc.ref, wrapped
         ? {
           "data.featured": false,
@@ -3394,6 +3488,51 @@ exports.expireFeaturedLessons = functions.pubsub
     }
     if (pending > 0) await batch.commit();
     if (cleared > 0) console.log(`expireFeaturedLessons: cleared ${cleared}`);
+
+    let warned = 0;
+    for (const item of warnings) {
+      const hours = Math.max(
+        1,
+        Math.round(item.remainingMs / (60 * 60 * 1000)),
+      );
+      // صياغة عربية سليمة للعدد (ساعة/ساعتين/ساعات) لا «1 ساعات».
+      const hoursText = hours === 1
+        ? "ساعة واحدة"
+        : hours === 2 ? "ساعتين" : `${hours} ساعات`;
+      const alertTitle = "⭐ تمييز درسك يوشك أن ينتهي";
+      const alertBody = `تمييز «${item.title || "درسك"}» ينتهي بعد ${hoursText}`
+        + " تقريباً — مدّده أو دعه يسقط من مختارات المنبر.";
+      try {
+        await Promise.all([
+          writeAdminAlert(item.target, alertTitle, alertBody, {
+            type: "featured_expiring",
+            lessonId: item.id,
+            refId: item.id,
+            featuredUntil: item.until,
+          }),
+          pushToAdminsFiltered(alertTitle, alertBody, {
+            type: "featured_expiring",
+            lessonId: item.id,
+            refId: item.id,
+          }, { targetEmail: item.target }),
+        ]);
+        // الوسم بعد نجاح الإرسال وحده، كي تُعاد المحاولة في الدورة التالية
+        // إن فشل — ولا يتكرّر الإنذار إن نجح.
+        await item.ref.update(item.wrapped
+          ? {
+            "data.featuredExpiryWarnedFor": item.until,
+            "data.featuredExpiryWarnedAt": nowIso,
+          }
+          : {
+            featuredExpiryWarnedFor: item.until,
+            featuredExpiryWarnedAt: nowIso,
+          });
+        warned += 1;
+      } catch (error) {
+        console.error("featured expiry warning failed", item.id, error);
+      }
+    }
+    if (warned > 0) console.log(`expireFeaturedLessons: warned ${warned}`);
     return null;
   });
 
@@ -3533,7 +3672,7 @@ exports.onCodeRequested = functions.firestore
         pushToAdmins(
           "رمز اعتماد مشرف جديد",
           alertBody,
-          { type: "owner_code", candidateEmail: email },
+          { type: "owner_code", candidateEmail: email, refId: email },
           true,
         ),
       ]);

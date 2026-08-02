@@ -2,9 +2,12 @@ package com.ali.ishaqiyin_admin.data
 
 import android.content.Context
 import android.net.Uri
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -22,6 +25,9 @@ data class PendingUpload(
     val title: String,
     val categoryId: String,
     val subcategoryId: String,
+    /** اسما القسمين وقت الإضافة — يُرسَلان مع الدرس فيبقيان في وثيقته. */
+    val categoryName: String = "",
+    val subcategoryName: String = "",
     val sectionLabel: String,
     val featured: Boolean,
     /** نهاية مدّة التمييز إن ميّزه المشرف عند الإضافة (null = دائم). */
@@ -45,6 +51,12 @@ data class PendingUpload(
      * الرفع** — بلا هذا كان العامل يعيد رفعه بلا توقّف حين لا يبقى غيره.
      */
     val parked: Boolean = false,
+    /**
+     * مسار الملفّ الصوتي في التخزين بعد نجاح رفعه (قبل إنشاء الوثيقة).
+     * بلا هذا كان إلغاء عنصر **مركون نجح رفع صوته** يترك ملفاً حتى 100MB
+     * يتيماً في التخزين: لا وثيقة تشير إليه ولا واجهة ولا دالّة تمسحه.
+     */
+    val uploadedPath: String? = null,
     // «النص المشروح» الاختياري المرافق: يُنشر بعد إنشاء الدرس مباشرة.
     val transcriptText: String = "",
     val transcriptBookTitle: String = "",
@@ -61,6 +73,8 @@ data class PendingUpload(
         put("title", title)
         put("categoryId", categoryId)
         put("subcategoryId", subcategoryId)
+        put("categoryName", categoryName)
+        put("subcategoryName", subcategoryName)
         put("sectionLabel", sectionLabel)
         put("featured", featured)
         put("featuredUntilMs", featuredUntilMs ?: JSONObject.NULL)
@@ -73,6 +87,7 @@ data class PendingUpload(
         put("attempts", attempts)
         put("lastError", lastError ?: JSONObject.NULL)
         put("parked", parked)
+        put("uploadedPath", uploadedPath ?: JSONObject.NULL)
         put("transcriptText", transcriptText)
         put("transcriptBookTitle", transcriptBookTitle)
         put("transcriptSourceRef", transcriptSourceRef)
@@ -86,6 +101,8 @@ data class PendingUpload(
             title = o.optString("title"),
             categoryId = o.optString("categoryId"),
             subcategoryId = o.optString("subcategoryId"),
+            categoryName = o.optString("categoryName"),
+            subcategoryName = o.optString("subcategoryName"),
             sectionLabel = o.optString("sectionLabel"),
             featured = o.optBoolean("featured"),
             featuredUntilMs = o.optLong("featuredUntilMs").takeIf { it > 0L },
@@ -98,6 +115,7 @@ data class PendingUpload(
             attempts = o.optInt("attempts"),
             lastError = o.optString("lastError").takeIf { it.isNotEmpty() && it != "null" },
             parked = o.optBoolean("parked"),
+            uploadedPath = o.optString("uploadedPath").takeIf { it.isNotEmpty() && it != "null" },
             transcriptText = o.optString("transcriptText"),
             transcriptBookTitle = o.optString("transcriptBookTitle"),
             transcriptSourceRef = o.optString("transcriptSourceRef"),
@@ -161,6 +179,12 @@ object UploadQueue {
     val justEnqueued: StateFlow<JustEnqueued?> = _justEnqueued
 
     private val lock = Any()
+
+    /**
+     * نطاق خلفيّ صغير للتنظيف الذي لا يصحّ حجز خيط الواجهة به (حذف ملفّ
+     * صوتيّ يتيم من التخزين بعد إلغاء عنصر نجح رفعه ولم تُنشأ وثيقته).
+     */
+    private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun init(context: Context) {
         AppPrefs.init(context)
@@ -252,6 +276,8 @@ object UploadQueue {
         featured: Boolean,
         featuredUntilMs: Long?,
         addedBy: String,
+        categoryName: String = "",
+        subcategoryName: String = "",
         transcriptText: String = "",
         transcriptBookTitle: String = "",
         transcriptSourceRef: String = "",
@@ -270,6 +296,8 @@ object UploadQueue {
             title = title.trim(),
             categoryId = categoryId,
             subcategoryId = subcategoryId,
+            categoryName = categoryName.trim(),
+            subcategoryName = subcategoryName.trim(),
             sectionLabel = sectionLabel,
             featured = featured,
             featuredUntilMs = featuredUntilMs,
@@ -304,6 +332,8 @@ object UploadQueue {
         featuredUntilMs: Long?,
         addedBy: String,
         context: Context? = null,
+        categoryName: String = "",
+        subcategoryName: String = "",
         transcriptText: String = "",
         transcriptBookTitle: String = "",
         transcriptSourceRef: String = "",
@@ -319,6 +349,8 @@ object UploadQueue {
             title = title.trim(),
             categoryId = categoryId,
             subcategoryId = subcategoryId,
+            categoryName = categoryName.trim(),
+            subcategoryName = subcategoryName.trim(),
             sectionLabel = sectionLabel,
             featured = featured,
             featuredUntilMs = featuredUntilMs,
@@ -368,10 +400,20 @@ object UploadQueue {
         it.copy(parked = false, attempts = 0, lastError = null, sessionUri = null)
     }
 
-    /** إزالة بعد نجاح الرفع — تحذف النسخة المحليّة أيضاً. */
+    /**
+     * إزالة بعد نجاح الرفع — تحذف النسخة المحليّة **وصور النص المشروح** معها.
+     *
+     * ⚠️ صور الصفحات كانت تُحذف في العامل بعد نجاح نشر النص وحده، فكلّ مسار
+     * آخر (إلغاء المشرف من ورقة الطابور، إلغاء أثناء الرفع، أو فشل نشر النص
+     * الذي يُبتلع في `runCatching`) كان يترك نسخها في `filesDir/upload_queue`
+     * إلى الأبد — خلافاً لما يَعِد به حوار التأكيد نصّاً.
+     */
     fun remove(id: String) = synchronized(lock) {
         val list = load()
-        list.firstOrNull { it.id == id }?.let { runCatching { File(it.localPath).delete() } }
+        list.firstOrNull { it.id == id }?.let { item ->
+            runCatching { File(item.localPath).delete() }
+            item.transcriptImagePaths.forEach { path -> runCatching { File(path).delete() } }
+        }
         persist(list.filterNot { it.id == id })
         // تأكيد إضافة لعنصر لم يعد موجوداً يُربك: يُمسح مع خروجه.
         clearJustEnqueued(id)
@@ -402,12 +444,20 @@ object UploadQueue {
     /**
      * إلغاء يدويّ من المشرف — يوقف النقل الجاري إن كان هذا العنصر قيد
      * الرفع، ويمنع نشره حتى لو كان الرفع قد اكتمل لتوّه.
+     *
+     * وإن كان صوته قد رُفع فعلاً (عنصر مركون فشل إنشاء وثيقته) يُحذف الملفّ
+     * من التخزين في الخلفية: بلا ذلك يبقى ملفّ حتى 100MB بلا وثيقة تشير
+     * إليه ولا واجهة تعرضه ولا دالّة تنظّفه.
      */
     fun cancel(id: String) {
         cancelled.add(id)
+        val orphanPath = byId(id)?.uploadedPath?.takeIf { it.isNotEmpty() }
         activeCancel?.let { (activeId, stop) -> if (activeId == id) runCatching { stop() } }
         remove(id)
         if (_progress.value?.id == id) _progress.value = null
+        if (orphanPath != null) {
+            cleanupScope.launch { runCatching { StorageService.deleteFileOrThrow(orphanPath) } }
+        }
     }
 
     fun setProgress(p: UploadProgress?) {

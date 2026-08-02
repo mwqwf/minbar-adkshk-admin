@@ -254,14 +254,20 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly(metaIdentityKeys()))
         || (isChatModerator()
           && request.resource.data.keys().hasOnly(metaPinKeys()));
+      // ⚠️ الحقول تُقرأ بـ get(key, '') لا بالوصول المباشر: الوثيقة المدموجة
+      // قد تخلو من photoUrl (اسم المجموعة يُكتب وحده) أو من الحقلين معاً
+      // (أنشأها التثبيت أوّلاً)، والوصول المباشر إلى حقل غائب يُفشل الشرط
+      // كلّه فتُرفض كلّ محاولة من مشرف غير المالك بـPERMISSION_DENIED رغم أن
+      // الواجهة تعد بأن الاسم والصورة «متاحان لكلّ المشرفين». نفس نمط
+      // resource.data.get('listenedBy', []) المستعمل أعلاه.
       allow update: if isOwner()
         || (canManageContent()
           && request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(metaIdentityKeys())
-          && request.resource.data.name is string
-          && request.resource.data.name.size() <= 80
-          && request.resource.data.photoUrl is string
-          && request.resource.data.photoUrl.size() <= 2048)
+          && request.resource.data.get('name', '') is string
+          && request.resource.data.get('name', '').size() <= 80
+          && request.resource.data.get('photoUrl', '') is string
+          && request.resource.data.get('photoUrl', '').size() <= 2048)
         || (isChatModerator()
           && request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(metaPinKeys()));

@@ -314,6 +314,13 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                                 )
                             }
                         }
+                        // شريط التحكّم للمقطع الجاري: تقدّم وقفز ±٣٠ث وسرعة —
+                        // الحكم على درس طويل لا يحتمل سماعه كاملاً ولا الحكم بلا سماع.
+                        PreviewPlayerBar(
+                            state = player,
+                            id = review.id,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
                         if (review.reasons.isNotEmpty()) {
                             Spacer(Modifier.size(10.dp))
                             Text("أسباب الاشتباه:", fontWeight = FontWeight.SemiBold)

@@ -73,7 +73,13 @@ object OwnerReviewRepository {
     private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
 
     fun watchPending(): Flow<List<SuspiciousLessonReview>> =
-        db.collection("owner_lesson_reviews").querySnapshots().map { snapshot ->
+        // ترشيح خادميّ بدل جلب المجموعة كاملة ثمّ ترشيحها محليّاً.
+        // `whereIn` لا `whereEqualTo("pending")`: isPending تشمل "flagged"
+        // أيضاً، فقصرُها على "pending" كان يُسقط المراجعات المُعلَّمة صامتاً.
+        // الفرز يبقى محليّاً فلا يلزم فهرس مركّب.
+        db.collection("owner_lesson_reviews")
+            .whereIn("status", listOf("pending", "flagged"))
+            .querySnapshots().map { snapshot ->
             snapshot.documents
                 .map { SuspiciousLessonReview.fromDoc(it) }
                 .filter { it.isPending }

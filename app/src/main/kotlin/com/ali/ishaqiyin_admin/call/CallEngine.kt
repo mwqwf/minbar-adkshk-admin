@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -121,6 +122,21 @@ object CallEngine {
     /** مهلة التعافي بعد انقطاع مؤقّت للاتّصال. */
     private var reconnectJob: Job? = null
 
+    /**
+     * مراقبة المكالمات الواردة داخل التطبيق — **مستقلّة تماماً عن دورة حياة
+     * أيّ مكالمة**، فلا تلمسها [releaseAll] ولا [forceIdle].
+     */
+    private var incomingWatchJob: Job? = null
+
+    /** صاحب المراقبة الجارية — تُعاد إن تبدّل الحساب. */
+    private var incomingWatchUid = ""
+
+    /**
+     * المكالمات التي فُتحت لها شاشة رنين من هذا المسار — تمنع فتح شاشتين
+     * حين يصل إشعار FCM لنفس المكالمة. آخر [OPENED_INCOMING_MAX] يكفي.
+     */
+    private val openedIncomingIds = LinkedHashSet<String>()
+
     @Volatile
     private var router: CallAudioRouter? = null
 
@@ -140,6 +156,9 @@ object CallEngine {
      */
     private const val REMOTE_WRITE_TIMEOUT_MS = 5_000L
     private const val SIGNAL_WRITE_TIMEOUT_MS = 12_000L
+
+    /** سقف ذاكرة معرّفات المكالمات التي فُتحت شاشتها (حارس التكرار). */
+    private const val OPENED_INCOMING_MAX = 50
 
     private val myUid: String get() = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
 
@@ -295,6 +314,64 @@ object CallEngine {
         releaseAll()
         outcomeLogged = false
         _state.value = CallUiState()
+    }
+
+    /**
+     * 📞 كشف المكالمات الواردة **داخل التطبيق** دون انتظار FCM.
+     *
+     * ⚠️ ضروريّ لا تحسينيّ: إشعار المكالمة الواردة يرجع مبكّراً إن كانت
+     * الإشعارات معطّلة أو إذن `POST_NOTIFICATIONS` مرفوضاً — فلا شيء يظهر
+     * أصلاً ولو كان التطبيق مفتوحاً أمام المستخدم. ويغطّي هذا المسار أيضاً
+     * ضياع/إبطال رمز FCM وتأخّر الدفعة في وضع Doze.
+     *
+     * آمنة للاستدعاء المتكرّر: تُعاد المراقبة فقط إن تبدّل الحساب.
+     */
+    fun startIncomingWatch(context: Context) {
+        val me = myUid
+        if (me.isEmpty()) return
+        if (incomingWatchJob?.isActive == true && incomingWatchUid == me) return
+        incomingWatchJob?.cancel()
+        incomingWatchUid = me
+        val app = context.applicationContext
+        incomingWatchJob = scope.launch {
+            CallRepository.incomingCallsStream().collect { doc ->
+                val id = doc?.id.orEmpty()
+                if (doc == null || id.isEmpty()) return@collect
+                val current = _state.value
+                // مشغول أو تبنّيتُها أصلاً (من إشعار FCM مثلاً): لا شاشة ثانية.
+                if (current.busy || current.callId == id) return@collect
+                if (!markIncomingOpened(id)) return@collect
+                runCatching {
+                    app.startActivity(
+                        CallActivity.incomingIntent(
+                            context = app,
+                            callId = id,
+                            callerUid = doc.callerId,
+                            callerName = doc.callerName,
+                            callerPhoto = doc.callerPhoto,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    /** إيقاف كشف الوارد (تسجيل خروج) — الاستماع بلا حساب بلا معنى. */
+    fun stopIncomingWatch() {
+        incomingWatchJob?.cancel()
+        incomingWatchJob = null
+        incomingWatchUid = ""
+    }
+
+    /** @return `true` إن كانت هذه أوّل مرّة تُفتح فيها شاشة هذه المكالمة. */
+    private fun markIncomingOpened(callId: String): Boolean {
+        synchronized(openedIncomingIds) {
+            if (!openedIncomingIds.add(callId)) return false
+            while (openedIncomingIds.size > OPENED_INCOMING_MAX) {
+                openedIncomingIds.remove(openedIncomingIds.first())
+            }
+        }
+        return true
     }
 
     /** تبديل مكبّر الصوت (يطبّقه [CallService] على `AudioManager`). */
@@ -623,20 +700,22 @@ object CallEngine {
                         }
                     }
 
+                    // ⚠️ التسجيل بمهلة في كلّ فرع: بلا حدّ كانت كتابة السجلّ
+                    // تتعلّق على شبكة مقطوعة فلا يُستدعى `finish` بعدها.
                     CallStatus.DECLINED -> {
-                        logOutcome(_state.value, CallOutcome.Declined)
+                        logOutcomeBounded(_state.value, CallOutcome.Declined)
                         finish("رُفضت المكالمة")
                     }
 
                     CallStatus.MISSED -> {
-                        logOutcome(_state.value, CallOutcome.Missed)
+                        logOutcomeBounded(_state.value, CallOutcome.Missed)
                         finish("لم يُجب")
                     }
 
                     CallStatus.BUSY -> finish("الطرف الآخر مشغول")
 
                     CallStatus.ENDED -> {
-                        logOutcome(
+                        logOutcomeBounded(
                             _state.value,
                             if (_state.value.connectedAtMs > 0L) {
                                 CallOutcome.Answered
@@ -777,17 +856,40 @@ object CallEngine {
         }
     }
 
-    /** مهلة الرنين عند المتصل: تُقلب المكالمة «فائتة» إن لم يُجَب. */
+    /**
+     * مهلة الرنين عند المتصل: تُقلب المكالمة «فائتة» إن لم يُجَب.
+     *
+     * ⚠️ كلّ كتابة هنا **بمهلة**، والإنهاء في `finally` مهما فشل التسجيل:
+     * كتابة السجلّ كانت تنتظر تأكيد الخادم بلا حدّ، فإن فقد المتصل الشبكة
+     * أثناء الرنين تعلّقت المهمّة فلا يُستدعى [finish] — تبقى الشاشة على
+     * «يرنّ…» وتبقى [CallService] أماميّة تحجز الميكروفون والاتّصال، وتبقى
+     * الحالة `busy` فيُرفض بدء أيّ مكالمة جديدة إلى الأبد.
+     */
     private fun armRingTimeout(callId: String) {
         timeoutJob?.cancel()
         timeoutJob = scope.launch {
             delay(AppConfig.CALL_RING_TIMEOUT_MS)
-            if (_state.value.callId == callId && _state.value.phase == CallPhase.Dialing) {
+            val snapshot = _state.value
+            if (snapshot.callId != callId || snapshot.phase != CallPhase.Dialing) return@launch
+            try {
                 withTimeoutOrNull(REMOTE_WRITE_TIMEOUT_MS) {
                     runCatching { CallRepository.markMissed(callId) }
                 }
-                logOutcome(_state.value, CallOutcome.Missed)
-                finish("لم يُجب")
+                logOutcomeBounded(snapshot, CallOutcome.Missed)
+            } finally {
+                // ⚠️ `isActive` أوّلاً ولا يكفي فحص الطور: إلغاء المهمّة يستأنف
+                // `delay` **تزامنيّاً** على `Dispatchers.Main.immediate`، فينفَّذ
+                // هذا الفرع داخل نداء `timeoutJob?.cancel()` نفسه — أي قبل أن
+                // يضبط فرعُ `ACCEPTED` الطورَ على `Connecting`. بلا هذا الحارس
+                // كان قبولُ الطرف الآخر للمكالمة يُنهيها فوراً بـ«لم يُجب».
+                // ومع الإلغاء يتولّى `releaseAll`/`forceIdle` التفكيك أصلاً.
+                if (
+                    isActive &&
+                    _state.value.callId == callId &&
+                    _state.value.phase == CallPhase.Dialing
+                ) {
+                    finish("لم يُجب")
+                }
             }
         }
     }
@@ -825,6 +927,16 @@ object CallEngine {
                 seconds = seconds,
             )
         }
+    }
+
+    /**
+     * [logOutcome] **بمهلة**: كتابته مهمّة Firestore لا تكتمل إلّا بتأكيد
+     * الخادم، فانتظارها بلا حدّ كان يمنع الوصول إلى [finish] بلا شبكة.
+     * التخلّي عن الانتظار لا يفقد السجلّ: الكتابة تُطبَّق محليّاً وتُرسَل
+     * تلقائياً عند عودة الاتّصال.
+     */
+    private suspend fun logOutcomeBounded(snapshot: CallUiState, outcome: CallOutcome) {
+        withTimeoutOrNull(REMOTE_WRITE_TIMEOUT_MS) { logOutcome(snapshot, outcome) }
     }
 
     /** إغلاق موحَّد: يعرض السبب لحظات ثمّ يوقف الخدمة ويصفّر الحالة. */

@@ -25,6 +25,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,12 +35,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
+import com.ali.ishaqiyin_admin.call.CallEngine
 import com.ali.ishaqiyin_admin.data.ChatMember
 import com.ali.ishaqiyin_admin.data.ChatRepository
 import com.ali.ishaqiyin_admin.data.DmRepository
@@ -63,9 +66,16 @@ private val dateOnlyFormat = SimpleDateFormat("yyyy/MM/dd", Locale.US)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DmListScreen(nav: NavHostController, onBack: () -> Unit) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
     val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
+
+    // 📞 كشف المكالمات الواردة داخل التطبيق — لا ينتظر إشعار FCM (يرجع
+    // مبكّراً إن عُطّلت الإشعارات أو رُفض إذن `POST_NOTIFICATIONS`، ويتأخّر في
+    // وضع Doze أو حين يُبطَل رمز الجهاز). المراقبة مستقلّة عن دورة حياة
+    // الشاشة: تبقى عاملة بعد مغادرتها، وتُهمِل التكرار مع مسار FCM بحارسها.
+    LaunchedEffect(Unit) { CallEngine.startIncomingWatch(context) }
 
     // ⚠️ remember إلزاميّ: بلاه يُنشأ تدفّق جديد مع كل إعادة تركيب
     // فيُعاد ربط مستمع Firestore في كلّ مرّة (قراءات وبطء بلا داعٍ).

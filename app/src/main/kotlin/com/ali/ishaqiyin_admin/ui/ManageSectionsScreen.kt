@@ -27,8 +27,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.Category
+import com.ali.ishaqiyin_admin.data.Subcategory
 import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.launch
+
+/** رسالة موحّدة حين تُحفظ الكتابة محليّاً ولم يؤكّدها الخادم بعد. */
+private const val PENDING_NETWORK_HINT =
+    "لا اتصال — حُفظ الطلب وسيُرسَل تلقائياً عند عودة الشبكة (بلا تكرار)."
+
+/** تطبيع الاسم للمقارنة: مسافات مضغوطة وحالة أحرف موحّدة. */
+private fun normalizedName(name: String): String =
+    name.trim().lowercase().replace(Regex("\\s+"), " ")
 
 @Composable
 fun ManageSectionsScreen(onBack: () -> Unit) {
@@ -36,6 +45,7 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
     val snack = LocalSnack.current
 
     var categories by remember { mutableStateOf<List<Category>>(emptyList()) }
+    var subcategories by remember { mutableStateOf<List<Subcategory>>(emptyList()) }
     var catName by remember { mutableStateOf("") }
     var subName by remember { mutableStateOf("") }
     var subCategoryId by remember { mutableStateOf<String?>(null) }
@@ -43,7 +53,11 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
     var busySub by remember { mutableStateOf(false) }
 
     suspend fun refreshCategories() {
-        runCatching { categories = AdminRepository.fetchCategories() }
+        runCatching {
+            categories = AdminRepository.fetchCategories()
+            // تُجلب الفرعية أيضاً لمنع تكرار اسم داخل القسم الرئيسي نفسه.
+            subcategories = AdminRepository.fetchSubcategories()
+        }
     }
 
     LaunchedEffect(Unit) { refreshCategories() }
@@ -78,13 +92,31 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                         onClick = {
                             val name = catName.trim()
                             if (name.isEmpty()) return@Button
+                            // حارس التكرار الأوّل: قسم بالاسم نفسه موجود
+                            // أصلاً في القائمة المحمَّلة — لا يُنشأ ثانٍ.
+                            val twin = categories.firstOrNull {
+                                normalizedName(it.name) == normalizedName(name)
+                            }
+                            if (twin != null) {
+                                snack("«${twin.name}» موجود مسبقاً — لم يُنشأ قسم مكرّر.")
+                                return@Button
+                            }
                             busyCat = true
                             scope.launch {
                                 try {
-                                    AdminRepository.addCategory(name)
+                                    // تعيد false إن لم يؤكّد الخادم قبل المهلة:
+                                    // الكتابة محفوظة محليّاً بمعرّف ثابت فلا
+                                    // تُنتج قسمين لو أعاد المشرف الإدخال.
+                                    val confirmed = AdminRepository.addCategory(name)
                                     catName = ""
                                     refreshCategories()
-                                    snack("تم إنشاء القسم الرئيسي.")
+                                    snack(
+                                        if (confirmed) {
+                                            "تم إنشاء القسم الرئيسي."
+                                        } else {
+                                            PENDING_NETWORK_HINT
+                                        },
+                                    )
                                 } catch (e: Exception) {
                                     snack("تعذّر إنشاء القسم: ${e.arabicReason()}")
                                 }
@@ -136,13 +168,29 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                                 snack("أدخل الاسم واختر القسم الرئيسي.")
                                 return@Button
                             }
+                            val twin = subcategories.firstOrNull {
+                                it.categoryId == parent &&
+                                    normalizedName(it.name) == normalizedName(name)
+                            }
+                            if (twin != null) {
+                                snack("«${twin.name}» موجود في هذا القسم — لم يُنشأ فرع مكرّر.")
+                                return@Button
+                            }
                             busySub = true
                             scope.launch {
                                 try {
-                                    AdminRepository.addSubcategory(name, parent)
+                                    val confirmed =
+                                        AdminRepository.addSubcategory(name, parent)
                                     subName = ""
                                     subCategoryId = null
-                                    snack("تم إنشاء القسم الفرعي.")
+                                    refreshCategories()
+                                    snack(
+                                        if (confirmed) {
+                                            "تم إنشاء القسم الفرعي."
+                                        } else {
+                                            PENDING_NETWORK_HINT
+                                        },
+                                    )
                                 } catch (e: Exception) {
                                     snack("تعذّر إنشاء القسم الفرعي: ${e.arabicReason()}")
                                 }

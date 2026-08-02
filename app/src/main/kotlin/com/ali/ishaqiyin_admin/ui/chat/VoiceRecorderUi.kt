@@ -734,7 +734,11 @@ private fun LiveWave(values: List<Int>, modifier: Modifier = Modifier) {
     }
 }
 
-/** موجة ثابتة مع تقدّم التشغيل (للمعاينة). */
+/**
+ * موجة ثابتة مع تقدّم التشغيل (للمعاينة) — برماديَّي موجة واتساب نفسيهما
+ * المستعملين في فقاعة الرسالة، فلا يقفز اللون بين المعاينة والرسالة بعد
+ * الإرسال.
+ */
 @Composable
 private fun SeekWave(values: List<Int>, progress: Float, modifier: Modifier = Modifier) {
     Canvas(modifier) {
@@ -749,7 +753,7 @@ private fun SeekWave(values: List<Int>, progress: Float, modifier: Modifier = Mo
                 .coerceAtLeast(barWidth)
             val played = (index + 1f) / shown.size <= progress
             drawRoundRect(
-                color = if (played) ChatColors.accentDark else ChatColors.border,
+                color = if (played) ChatColors.wavePlayed else ChatColors.waveRest,
                 topLeft = Offset(index * step, (size.height - h) / 2f),
                 size = Size(barWidth, h),
                 cornerRadius = CornerRadius(barWidth / 2f),

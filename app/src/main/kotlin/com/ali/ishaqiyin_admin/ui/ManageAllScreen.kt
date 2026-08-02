@@ -48,11 +48,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminRepository
+import com.ali.ishaqiyin_admin.data.AppPrefs
 import com.ali.ishaqiyin_admin.data.Category
 import com.ali.ishaqiyin_admin.data.Lesson
 import com.ali.ishaqiyin_admin.data.Subcategory
 import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.launch
+
+/** كم درساً يُعرض في قائمة «آخر ما أُضيف» الافتراضية قبل أي بحث. */
+private const val RECENT_LIMIT = 20
 
 private sealed interface PendingAction {
     data class EditCategory(val item: Category) : PendingAction
@@ -108,9 +112,30 @@ fun ManageAllScreen(onBack: () -> Unit) {
 
     // فلتر الأقسام: أغلب عناوين الدروس أرقام متشابهة، والقسم هو ما يميّزها —
     // اختر القسم (الرئيسي/الفرعي) لتحصر البحث فيه، أو اتركه لكل الأقسام.
-    var filterCategoryId by rememberSaveable { mutableStateOf<String?>(null) }
-    var filterSubcategoryId by rememberSaveable { mutableStateOf<String?>(null) }
+    // يبدأ من آخر فلتر استُعمل (محفوظ بين الجلسات): المشرف يعمل على قسم
+    // واحد أيّاماً، فإعادة اختياره في كلّ فتح عبء بلا فائدة.
+    var filterCategoryId by rememberSaveable { mutableStateOf(AppPrefs.lastManageCategoryId) }
+    var filterSubcategoryId by rememberSaveable {
+        mutableStateOf(AppPrefs.lastManageSubcategoryId)
+    }
     val filterSubs = subcategories.filter { it.categoryId == filterCategoryId }
+
+    // فلتر محفوظ يشير إلى قسم حُذف بعد آخر جلسة: يُنظَّف بدل أن تبدأ الشاشة
+    // على «لا توجد نتائج» بلا سبب ظاهر.
+    LaunchedEffect(categories, subcategories) {
+        if (categories.isNotEmpty() && filterCategoryId != null &&
+            categories.none { it.id == filterCategoryId }
+        ) {
+            filterCategoryId = null
+            AppPrefs.lastManageCategoryId = null
+        }
+        if (subcategories.isNotEmpty() && filterSubcategoryId != null &&
+            subcategories.none { it.id == filterSubcategoryId }
+        ) {
+            filterSubcategoryId = null
+            AppPrefs.lastManageSubcategoryId = null
+        }
+    }
 
     val cats = filter(categories) { it.name }
     val subs = filter(subcategories) { it.name }
@@ -122,8 +147,10 @@ fun ManageAllScreen(onBack: () -> Unit) {
     // بفلتر الأقسام إن حُدّد. فلترٌ بلا بحث يعرض دروس القسم كلها.
     val lessonTokens = query.trim().lowercase().split(Regex("\\s+"))
         .filter { it.isNotEmpty() }
+    // الشاشة لا تبدأ فارغة بعد اليوم: الدروس مجلوبة أصلاً ومرتَّبة بالأحدث،
+    // فتُعرض «آخر ما أُضيف» فوراً — أغلب التعديلات تقع على درس أُضيف للتوّ.
     val foundLessons = if (!hasQuery && !hasFilter) {
-        emptyList()
+        lessons.take(RECENT_LIMIT)
     } else {
         lessons.filter { lesson ->
             (filterCategoryId == null || lesson.categoryId == filterCategoryId) &&
@@ -342,6 +369,8 @@ fun ManageAllScreen(onBack: () -> Unit) {
                     onSelected = { picked ->
                         filterCategoryId = picked?.id
                         filterSubcategoryId = null
+                        AppPrefs.lastManageCategoryId = picked?.id
+                        AppPrefs.lastManageSubcategoryId = null
                     },
                     modifier = Modifier.weight(1f),
                 )
@@ -351,7 +380,10 @@ fun ManageAllScreen(onBack: () -> Unit) {
                     selected = filterSubs.firstOrNull { it.id == filterSubcategoryId },
                     itemLabel = { it?.name ?: "كل الفروع" },
                     enabled = filterCategoryId != null,
-                    onSelected = { picked -> filterSubcategoryId = picked?.id },
+                    onSelected = { picked ->
+                        filterSubcategoryId = picked?.id
+                        AppPrefs.lastManageSubcategoryId = picked?.id
+                    },
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -376,7 +408,13 @@ fun ManageAllScreen(onBack: () -> Unit) {
             Spacer(Modifier.size(6.dp))
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = kTeal)
             when {
-                !hasQuery && !hasFilter ->
+                empty -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("لا توجد نتائج")
+                }
+
+                // لا بحث ولا فلتر ولا درس واحد في القاعدة — الإرشاد يبقى
+                // معروضاً كما كان بدل شاشة صمّاء.
+                !loading && foundLessons.isEmpty() && cats.isEmpty() && subs.isEmpty() ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             "ابحث بأي كلمة أو رقم، أو اختر قسماً لعرض دروسه —\n" +
@@ -385,10 +423,6 @@ fun ManageAllScreen(onBack: () -> Unit) {
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         )
                     }
-
-                empty -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("لا توجد نتائج")
-                }
 
                 else -> LazyColumn(
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(
@@ -416,7 +450,28 @@ fun ManageAllScreen(onBack: () -> Unit) {
                         )
                     }
                     if (foundLessons.isNotEmpty()) {
-                        item { SectionTitle("الدروس الصوتية") }
+                        item {
+                            SectionTitle(
+                                if (!hasQuery && !hasFilter) {
+                                    "آخر ما أُضيف"
+                                } else {
+                                    "الدروس الصوتية"
+                                },
+                            )
+                        }
+                        // القائمة الافتراضية ليست نتيجة بحث — يُذكَّر المشرف
+                        // بأنّها أحدث الدروس وأنّ البحث والفلتر متاحان فوقها.
+                        if (!hasQuery && !hasFilter) {
+                            item {
+                                Text(
+                                    "أحدث ${foundLessons.size} درساً — ابحث بأي كلمة أو رقم، " +
+                                        "أو اختر قسماً لعرض دروسه (مثال: «3 الفقه»).",
+                                    fontSize = 12.sp,
+                                    color = kMuted,
+                                    modifier = Modifier.padding(bottom = 6.dp),
+                                )
+                            }
+                        }
                         // إيماءة توجيهية: أين يضيف المشرف «النص المشروح»؟
                         item {
                             Row(

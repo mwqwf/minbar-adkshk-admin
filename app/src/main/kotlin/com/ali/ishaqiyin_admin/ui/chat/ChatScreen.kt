@@ -3,6 +3,8 @@ package com.ali.ishaqiyin_admin.ui.chat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -13,8 +15,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -39,6 +43,7 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.automirrored.filled.ForwardToInbox
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Image
@@ -46,7 +51,11 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.KeyboardDoubleArrowDown
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
@@ -54,6 +63,8 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -62,6 +73,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -71,6 +83,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -81,14 +94,20 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
@@ -129,6 +148,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private val fullTimeFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
 private val fileTimeFormat = SimpleDateFormat("yyyy-MM-dd HH-mm-ss", Locale.US)
@@ -216,6 +237,10 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
     var confirmDeleteAll by remember { mutableStateOf<ChatMessage?>(null) }
     var pendingUpload by remember { mutableStateOf<PickedFile?>(null) }
     var forwarding by remember { mutableStateOf<ChatMessage?>(null) }
+
+    // مفتاح المقطع الصوتيّ العامل الآن — يُعطَّل عليه سحب الردّ كي لا يتنازع
+    // مع سحب الموجة داخل فقاعة الصوت.
+    val activeAudioKey by SharedAudioPlayer.activeKey.collectAsState()
 
     val listState = rememberLazyListState()
     // ⚠️ remember إلزاميّ: بلاه يُنشأ تدفّق جديد مع كل إعادة تركيب
@@ -381,11 +406,37 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
         }
     }
 
-    /** القفز إلى الرسالة الأصليّة عند نقر الاقتباس (نمط واتساب). */
+    // ترشيح البحث (داخل المحمَّل) — نمط واتساب.
+    val query = searchQuery.trim().lowercase()
+    val messages = remember(allMessages, query) { filterChatMessages(allMessages, query) }
+
+    /**
+     * القائمة **المعروضة الآن** — تُقرأ من الحالة الحيّة داخل الكوروتين، فلا
+     * تتجمّد على لقطة إعادة التركيب التي أُطلق منها القفز (مسح البحث يجب أن
+     * ينعكس فوراً على الفهرس المحسوب).
+     */
+    fun displayedNow(): List<ChatMessage> =
+        filterChatMessages(allMessages, searchQuery.trim().lowercase())
+
+    /**
+     * القفز إلى الرسالة الأصليّة عند نقر الاقتباس أو شريط التثبيت (واتساب).
+     * ⚠️ الفهرس يُحسب من القائمة المعروضة فعلاً لا من كامل المحمَّل: أثناء
+     * بحث نشط كان النقر يقفز صامتاً إلى مكان خاطئ ويُضيء رسالة غير مرسومة.
+     * فإن كانت الرسالة خارج نتائج البحث مُسح البحث أوّلاً ثمّ قُفز إليها.
+     */
     fun jumpTo(ref: ChatReplyRef) {
         scope.launch {
-            repeat(4) {
-                val index = allMessages.indexOfFirst { it.id == ref.messageId }
+            if (
+                searchQuery.isNotBlank() &&
+                displayedNow().none { it.id == ref.messageId }
+            ) {
+                searching = false
+                searchQuery = ""
+                // مهلة قصيرة كي تُبنى القائمة الكاملة قبل حساب الفهرس.
+                delay(80)
+            }
+            repeat(5) {
+                val index = displayedNow().indexOfFirst { it.id == ref.messageId }
                 if (index >= 0) {
                     listState.animateScrollToItem(index)
                     highlightedId = ref.messageId
@@ -393,25 +444,15 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                     highlightedId = ""
                     return@launch
                 }
-                if (limit >= 2000) return@repeat
+                // بلغنا سقف النافذة ولم نجدها: رسالة صريحة بدل صمت.
+                if (limit >= 2000) {
+                    snack("الرسالة الأصليّة أقدم من المحمَّل حاليّاً.")
+                    return@launch
+                }
                 limit += 200
                 delay(320)
             }
             snack("الرسالة الأصليّة أقدم من المحمَّل حاليّاً.")
-        }
-    }
-
-    // ترشيح البحث (داخل المحمَّل) — نمط واتساب.
-    val query = searchQuery.trim().lowercase()
-    val messages = remember(allMessages, query) {
-        if (query.isEmpty()) {
-            allMessages
-        } else {
-            allMessages.filter {
-                it.text.lowercase().contains(query) ||
-                    it.attachment?.name?.lowercase()?.contains(query) == true ||
-                    it.senderName.lowercase().contains(query)
-            }
         }
     }
 
@@ -667,7 +708,14 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                         ),
                         modifier = Modifier.fillMaxSize(),
                     ) {
-                        items(messages.size) { i ->
+                        // ⚠️ مفتاح ثابت لكلّ رسالة: بلاه كانت إعادة استعمال
+                        // العناصر تُغلق عارض الصورة/الفيديو عند وصول رسالة،
+                        // وتعرض ملفّاً مغايراً في حوار مفتوح، وتزيح التمرير.
+                        items(
+                            count = messages.size,
+                            key = { messages[it].id },
+                            contentType = { chatTypeToString(messages[it].type) },
+                        ) { i ->
                             val msg = messages[i]
                             // القائمة معكوسة: العنصر التالي (i+1) أقدم زمنيّاً.
                             val older = messages.getOrNull(i + 1)
@@ -679,24 +727,26 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                             val readByAll = others.isNotEmpty() &&
                                 others.all { it.lastReadAtMs >= msg.sentAtMs }
                             val highlightColor by animateColorAsState(
-                                if (highlightedId == msg.id) {
-                                    ChatColors.highlight
-                                } else {
-                                    Color.Transparent
+                                when {
+                                    // الضغط المطوّل: تظليل الرسالة المستهدفة
+                                    // ما دامت ورقة الإجراءات مفتوحة عليها.
+                                    actionsFor?.id == msg.id ->
+                                        ChatColors.accent.copy(alpha = 0.10f)
+
+                                    highlightedId == msg.id -> ChatColors.highlight
+                                    else -> Color.Transparent
                                 },
                                 label = "highlight",
                             )
+                            // سحب الردّ يتنازع مع سحب موجة الصوت: يُعطَّل على
+                            // الرسالة الصوتيّة النشطة وحدها.
+                            val isActiveAudio = activeAudioKey != null &&
+                                msg.attachment?.let(ChatMediaStore::keyOf) == activeAudioKey
                             Column(Modifier.background(highlightColor)) {
                                 if (showDateChip) DateChip(msg.createdAtMs)
-                                Box(
-                                    Modifier.pointerInput(msg.id) {
-                                        // سحب أفقي خفيف = ردّ سريع (مثل واتساب).
-                                        detectHorizontalDragGestures { _, dragAmount ->
-                                            if (!msg.deleted && kotlin.math.abs(dragAmount) > 24) {
-                                                replyTo = msg.asRef()
-                                            }
-                                        }
-                                    },
+                                SwipeToReply(
+                                    enabled = !msg.deleted && !isActiveAudio,
+                                    onReply = { replyTo = msg.asRef() },
                                 ) {
                                     MessageBubble(
                                         msg = msg,
@@ -805,6 +855,96 @@ object PendingGroupQuote {
     var value: ChatReplyRef? = null
 }
 
+/** ترشيح البحث المشترك بين القائمة المرسومة وحساب فهرس القفز. */
+private fun filterChatMessages(all: List<ChatMessage>, query: String): List<ChatMessage> {
+    if (query.isEmpty()) return all
+    return all.filter {
+        it.text.lowercase().contains(query) ||
+            it.attachment?.name?.lowercase()?.contains(query) == true ||
+            it.senderName.lowercase().contains(query)
+    }
+}
+
+/**
+ * سحب أفقيّ = ردّ سريع (نمط واتساب): الدلتا **متراكمة** لا دلتا الحدث
+ * الواحد — فالسحب المتأنّي كان لا يفعّله والقذفة العابرة تفعّله. الفقاعة
+ * تنزلق مع الإصبع بمقاومة 0.55 بحدّ 72dp، وتظهر أيقونة الردّ داخل دائرة
+ * 34dp بشفافيّة ومقياس متناميين، ويهتزّ الجهاز **مرّة واحدة** عند بلوغ
+ * عتبة 56dp، ثمّ ترتدّ الفقاعة بزنبرك عند الرفع مع إطلاق الردّ مرّة واحدة.
+ */
+@Composable
+private fun SwipeToReply(
+    enabled: Boolean,
+    onReply: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val density = LocalDensity.current
+    val haptics = LocalHapticFeedback.current
+    val threshold = with(density) { 56.dp.toPx() }
+    val maxShift = with(density) { 72.dp.toPx() }
+    var target by remember { mutableFloatStateOf(0f) }
+    var travelled by remember { mutableFloatStateOf(0f) }
+    var buzzed by remember { mutableStateOf(false) }
+    val shift by animateFloatAsState(
+        target,
+        animationSpec = spring(dampingRatio = 0.6f),
+        label = "replySwipe",
+    )
+    val progress = (abs(shift) / threshold).coerceIn(0f, 1f)
+    Box(
+        Modifier.pointerInput(enabled) {
+            if (!enabled) return@pointerInput
+            detectHorizontalDragGestures(
+                onDragStart = {
+                    travelled = 0f
+                    buzzed = false
+                },
+                onDragEnd = {
+                    if (abs(travelled) >= threshold) onReply()
+                    travelled = 0f
+                    buzzed = false
+                    target = 0f
+                },
+                onDragCancel = {
+                    travelled = 0f
+                    buzzed = false
+                    target = 0f
+                },
+            ) { change, dragAmount ->
+                travelled += dragAmount
+                target = (travelled * 0.55f).coerceIn(-maxShift, maxShift)
+                if (!buzzed && abs(travelled) >= threshold) {
+                    buzzed = true
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                }
+                change.consume()
+            }
+        },
+    ) {
+        if (progress > 0.02f) {
+            Box(
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 14.dp)
+                    .scale(0.6f + 0.4f * progress)
+                    .alpha(progress)
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(ChatColors.surfaceAlt),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Reply,
+                    contentDescription = null,
+                    tint = ChatColors.accentDark,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+        }
+        Box(Modifier.offset { IntOffset(shift.roundToInt(), 0) }) { content() }
+    }
+}
+
 private suspend fun snapshotFlowOfLastVisible(
     listState: androidx.compose.foundation.lazy.LazyListState,
     onChange: (lastIndex: Int, total: Int) -> Unit,
@@ -854,24 +994,28 @@ private fun GroupHeader(
         members.isNotEmpty() -> {
             subtitle = "${members.size} عضو • $online متصل الآن" +
                 if (meta.locked) " • 🔒" else ""
-            subtitleColor = if (online > 0) ChatColors.online else ChatColors.textMuted
+            subtitleColor = if (online > 0) ChatColors.online else ChatColors.metaText
         }
 
         else -> {
             subtitle = "خاصّة بمشرفي الإدارة"
-            subtitleColor = ChatColors.textMuted
+            subtitleColor = ChatColors.metaText
         }
     }
+    var menuOpen by remember { mutableStateOf(false) }
+    var muted by remember { mutableStateOf(ChatNotifications.isMuted) }
+    val scope = rememberCoroutineScope()
 
     Surface(color = ChatColors.surface) {
         Row(
             Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onOpenInfo)
-                .padding(horizontal = 6.dp, vertical = 10.dp),
+                .padding(horizontal = 4.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onBack) {
+            // حشو مقلَّص كي يقترب العنوان من حافة الشاشة (نمط واتساب).
+            IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "رجوع",
@@ -881,7 +1025,7 @@ private fun GroupHeader(
             }
             Box(
                 Modifier
-                    .size(42.dp)
+                    .size(40.dp)
                     .background(
                         if (meta.photoUrl.isEmpty()) {
                             Brush.horizontalGradient(
@@ -902,23 +1046,23 @@ private fun GroupHeader(
                         modifier = Modifier.size(22.dp),
                     )
                 } else {
-                    RemoteImage(meta.photoUrl, Modifier.size(42.dp).clip(CircleShape))
+                    RemoteImage(meta.photoUrl, Modifier.size(40.dp).clip(CircleShape))
                 }
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     meta.name,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 17.sp,
                 )
                 Text(
                     subtitle,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    fontSize = 11.sp,
+                    fontSize = 13.sp,
                     color = subtitleColor,
                 )
             }
@@ -940,12 +1084,68 @@ private fun GroupHeader(
                     )
                 }
             }
-            Icon(
-                Icons.Outlined.Info,
-                contentDescription = null,
-                tint = ChatColors.textMuted,
-                modifier = Modifier.size(18.dp).padding(end = 2.dp),
-            )
+            // كانت أيقونة «معلومات» غير قابلة للنقر — صارت قائمة خيارات
+            // حقيقيّة (معلومات المجموعة / بحث / كتم) بنمط واتساب.
+            Box {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        contentDescription = "خيارات",
+                        tint = ChatColors.textMuted,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        leadingIcon = {
+                            Icon(
+                                Icons.Outlined.Info,
+                                contentDescription = null,
+                                tint = ChatColors.accentDark,
+                            )
+                        },
+                        text = { Text("معلومات المجموعة") },
+                        onClick = {
+                            menuOpen = false
+                            onOpenInfo()
+                        },
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = {
+                            Icon(
+                                Icons.Filled.Search,
+                                contentDescription = null,
+                                tint = ChatColors.textMuted,
+                            )
+                        },
+                        text = { Text("بحث في الرسائل") },
+                        onClick = {
+                            menuOpen = false
+                            onToggleSearch()
+                        },
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = {
+                            Icon(
+                                if (muted) {
+                                    Icons.Filled.NotificationsOff
+                                } else {
+                                    Icons.Filled.Notifications
+                                },
+                                contentDescription = null,
+                                tint = if (muted) ChatColors.textMuted else ChatColors.accent,
+                            )
+                        },
+                        text = { Text(if (muted) "إلغاء كتم الإشعارات" else "كتم الإشعارات") },
+                        onClick = {
+                            menuOpen = false
+                            val next = !muted
+                            muted = next
+                            scope.launch { ChatNotifications.setMuted(next) }
+                        },
+                    )
+                }
+            }
         }
     }
 }
@@ -1128,8 +1328,11 @@ private fun LockedBar() {
 }
 
 /**
- * شريط الإدخال — والميكروفون فيه «اضغط-مع-الاستمرار» بنمط واتساب:
- * سحب جانبيّ يلغي، وسحب للأعلى يقفل، والإفلات يرسل.
+ * شريط الإدخال بنمط واتساب: **كبسولة بيضاء واحدة بلا حدود** (إيموجي +
+ * الحقل + المشبك والكاميرا) وخارجها زرّ دائريّ 48dp يتبدّل بين الميكروفون
+ * والإرسال، وخلفيّة الصفّ شفّافة فوق الخلفيّة المزخرفة.
+ * والميكروفون «اضغط-مع-الاستمرار»: سحب جانبيّ يلغي، وسحب للأعلى يقفل،
+ * والإفلات يرسل.
  */
 @Composable
 fun InputBar(
@@ -1142,53 +1345,99 @@ fun InputBar(
     voice: VoiceRecorderState,
 ) {
     val hasText = text.trim().isNotEmpty()
-    Surface(color = ChatColors.surface) {
-        Box {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.Bottom,
+    var showEmoji by remember { mutableStateOf(false) }
+    if (showEmoji) {
+        EmojiPickerSheet(
+            onDismiss = { showEmoji = false },
+            onPicked = { emoji ->
+                showEmoji = false
+                onTextChange(text + emoji)
+            },
+        )
+    }
+    Box {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Surface(
+                color = ChatColors.surface,
+                shape = RoundedCornerShape(24.dp),
+                shadowElevation = 1.dp,
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
             ) {
-                // الإرفاق متاح دائماً: كلّ رفع عمليّة مستقلّة في ChatUploader.
-                IconButton(onClick = onAttach) {
-                    Icon(
-                        Icons.Filled.AttachFile,
-                        contentDescription = "إرفاق",
-                        tint = ChatColors.textMuted,
-                    )
-                }
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = onTextChange,
-                    placeholder = { Text(hint) },
-                    minLines = 1,
-                    maxLines = 5,
-                    colors = adminFieldColors(),
-                    shape = RoundedCornerShape(24.dp),
-                    keyboardOptions = KeyboardOptions.Default,
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(6.dp))
-                if (hasText) {
-                    FloatingActionButton(
-                        onClick = { if (!sending) onSend() },
-                        containerColor = ChatColors.accentDark,
-                        modifier = Modifier.size(48.dp),
-                    ) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    IconButton(onClick = { showEmoji = true }) {
                         Icon(
-                            Icons.AutoMirrored.Filled.Send,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp),
+                            Icons.Filled.EmojiEmotions,
+                            contentDescription = "إيموجي",
+                            tint = ChatColors.textMuted,
+                            modifier = Modifier.size(24.dp),
                         )
                     }
-                } else {
-                    VoiceMicButton(voice)
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = onTextChange,
+                        placeholder = { Text(hint) },
+                        minLines = 1,
+                        maxLines = 5,
+                        // لا adminFieldColors هنا: حدود ظاهرة داخل الكبسولة.
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            disabledContainerColor = Color.Transparent,
+                            focusedBorderColor = Color.Transparent,
+                            unfocusedBorderColor = Color.Transparent,
+                            disabledBorderColor = Color.Transparent,
+                            cursorColor = ChatColors.accentDark,
+                        ),
+                        shape = RoundedCornerShape(24.dp),
+                        keyboardOptions = KeyboardOptions.Default,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // الإرفاق متاح دائماً: كلّ رفع عمليّة مستقلّة في ChatUploader.
+                    IconButton(onClick = onAttach) {
+                        Icon(
+                            Icons.Filled.AttachFile,
+                            contentDescription = "إرفاق",
+                            tint = ChatColors.textMuted,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
+                    // الكاميرا تفتح قائمة الإرفاق نفسها (فيها «صورة»).
+                    IconButton(onClick = onAttach) {
+                        Icon(
+                            Icons.Filled.PhotoCamera,
+                            contentDescription = "صورة",
+                            tint = ChatColors.textMuted,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
                 }
             }
-            // طبقة التسجيل تُرسم فوق الشريط بلا تغيير أبعاده (انظر تعليقها).
-            if (voice.phase == VoicePhase.Holding) {
-                VoiceHoldOverlay(voice, Modifier.matchParentSize())
+            Spacer(Modifier.width(8.dp))
+            if (hasText) {
+                FloatingActionButton(
+                    onClick = { if (!sending) onSend() },
+                    containerColor = ChatColors.accentDark,
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
+            } else {
+                VoiceMicButton(voice)
             }
+        }
+        // طبقة التسجيل تُرسم فوق الشريط بلا تغيير أبعاده (انظر تعليقها).
+        if (voice.phase == VoicePhase.Holding) {
+            VoiceHoldOverlay(voice, Modifier.matchParentSize())
         }
     }
 }

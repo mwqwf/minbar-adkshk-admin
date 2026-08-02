@@ -29,13 +29,27 @@ import com.ali.ishaqiyin_admin.ui.MinbarAdminTheme
 class CallActivity : ComponentActivity() {
     private var pendingAction: (() -> Unit)? = null
 
+    /**
+     * ⚠️ حوار إذن الميكروفون معروض الآن والمحرّك ما يزال `Idle`.
+     *
+     * بلا هذا العلَم كانت **أوّل مكالمة صادرة تفشل صامتة**: `handle(intent)`
+     * يطلق الحوار قبل `setContent`، فيرى أوّلُ تركيب لـ[CallScreen] الطورَ
+     * `Idle` فيستدعي `onClose` فينتهي النشاط وهو ينتظر الردّ — فيضيع الردّ
+     * ولا تُنشأ وثيقة مكالمة أصلاً.
+     */
+    private var awaitingPermission = false
+
     private val micPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         val action = pendingAction
         pendingAction = null
+        awaitingPermission = false
         if (granted) {
             action?.invoke()
+            // لم تبدأ أيّ مكالمة رغم الإذن (مشغول بأخرى مثلاً): لا شاشة
+            // لنعرضها، والطور لم يتغيّر فلن يُعيد `LaunchedEffect` الإغلاق.
+            if (!CallEngine.state.value.busy) finish()
         } else {
             // بلا ميكروفون لا مكالمة — نرفض الواردة بدل تركها ترنّ.
             val state = CallEngine.state.value
@@ -71,7 +85,9 @@ class CallActivity : ComponentActivity() {
                         onHangUp = { CallEngine.hangUp() },
                         onToggleMute = { CallEngine.toggleMute() },
                         onToggleSpeaker = { CallEngine.toggleSpeaker() },
-                        onClose = { finish() },
+                        // لا نُغلق ونحن ننتظر ردّ إذن الميكروفون: الطور
+                        // `Idle` هنا مؤقّت، والإغلاق كان يُجهض المكالمة.
+                        onClose = { if (!awaitingPermission) finish() },
                     )
                 }
             }
@@ -150,6 +166,9 @@ class CallActivity : ComponentActivity() {
             action()
         } else {
             pendingAction = action
+            // ⚠️ العلَم **قبل** إطلاق الحوار: أوّل تركيب للشاشة قد يسبق ردّ
+            // المستخدم، وبلاه يُغلق نفسه ويُجهض المكالمة قبل أن تبدأ.
+            awaitingPermission = true
             micPermission.launch(Manifest.permission.RECORD_AUDIO)
         }
     }

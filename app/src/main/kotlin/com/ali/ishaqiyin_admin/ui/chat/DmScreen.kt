@@ -2,8 +2,12 @@ package com.ali.ishaqiyin_admin.ui.chat
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,11 +17,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Reply
@@ -52,6 +58,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -62,13 +69,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.call.CallActivity
+import com.ali.ishaqiyin_admin.call.CallEngine
 import com.ali.ishaqiyin_admin.data.ChatMediaStore
+import com.ali.ishaqiyin_admin.data.ChatMember
 import com.ali.ishaqiyin_admin.data.ChatMessage
 import com.ali.ishaqiyin_admin.data.ChatMessageType
 import com.ali.ishaqiyin_admin.data.ChatNotifications
@@ -96,9 +111,20 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private val lastSeenFmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
 private val voiceNameFmt = SimpleDateFormat("yyyy-MM-dd HH-mm-ss", Locale.US)
+
+/**
+ * مواصفات «سحب الردّ السريع» (نمط واتساب حرفيّاً): العتبة تُقاس على الدلتا
+ * المتراكمة الخام، والفقاعة تنزلق بمقاومة [REPLY_SWIPE_RESISTANCE] بحدّ
+ * أقصى [REPLY_SWIPE_MAX] فلا تُفلت مع الإصبع.
+ */
+private val REPLY_SWIPE_THRESHOLD = 56.dp
+private val REPLY_SWIPE_MAX = 72.dp
+private const val REPLY_SWIPE_RESISTANCE = 0.55f
 
 /**
  * 💬 محادثة خاصّة بين مشرفَين — بنفس مزايا المجموعة: نصّ/صور/فيديو/صوت/
@@ -137,6 +163,11 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
     var lastReadMarkMs by remember { mutableLongStateOf(0L) }
 
     var actionsFor by remember { mutableStateOf<ChatMessage?>(null) }
+    // مَن تفاعل بأيّ إيموجي (نقر شريط التفاعلات) — كانت الفقاعة تستجيب
+    // للّمس بصريّاً بلا أيّ سلوك، خلافاً لِما توعد به الشاشة.
+    var reactionsFor by remember { mutableStateOf<ChatMessage?>(null) }
+    // الرسالة المُضاءة لحظات بعد القفز إليها من اقتباس الردّ.
+    var highlightedId by remember { mutableStateOf("") }
     var showAttachMenu by remember { mutableStateOf(false) }
     var pendingUpload by remember { mutableStateOf<PickedFile?>(null) }
     var forwarding by remember { mutableStateOf<ChatMessage?>(null) }
@@ -196,6 +227,48 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         }
     }
 
+    // ترشيح البحث (داخل المحمَّل) — نمط واتساب. مرفوع إلى هنا ليراه القفز
+    // إلى الرسالة المقتبَسة قبل بناء القائمة.
+    val query = searchQuery.trim().lowercase()
+    val shown = remember(messages, query) {
+        if (query.isEmpty()) {
+            messages
+        } else {
+            messages.filter {
+                it.text.lowercase().contains(query) ||
+                    it.attachment?.name?.lowercase()?.contains(query) == true
+            }
+        }
+    }
+
+    /**
+     * القفز إلى الرسالة المقتبَسة وإضاءتها لحظات (نمط واتساب) — يوسّع
+     * النافذة المحمَّلة تدريجياً إن كانت أقدم من المعروض.
+     *
+     * البحث النشط يرشّح القائمة فيختلف فهرسها عن المعروض، لذا يُغلق أوّلاً.
+     */
+    fun jumpTo(ref: ChatReplyRef) {
+        searching = false
+        searchQuery = ""
+        scope.launch {
+            repeat(4) {
+                // `messages` حالة حيّة: توسيع النافذة أدناه يُحدّثها فعلاً.
+                val index = messages.indexOfFirst { it.id == ref.messageId }
+                if (index >= 0) {
+                    listState.animateScrollToItem(index)
+                    highlightedId = ref.messageId
+                    delay(1600)
+                    highlightedId = ""
+                    return@launch
+                }
+                if (limit >= 2000) return@repeat
+                limit += 200
+                delay(320)
+            }
+            snack("الرسالة الأصليّة أقدم من المحمَّل حاليّاً.")
+        }
+    }
+
     DisposableEffect(threadId) {
         ChatNotifications.openDmThreadId = threadId
         PendingGroupQuote.value = null
@@ -204,6 +277,10 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
             SharedAudioPlayer.stop()
         }
     }
+
+    // 📞 كشف المكالمات الواردة داخل التطبيق: لا يعتمد على إشعار FCM (يرجع
+    // مبكّراً إن عُطّلت الإشعارات أو رُفض إذنها) — فتظهر شاشة الرنين هنا.
+    LaunchedEffect(Unit) { CallEngine.startIncomingWatch(context) }
 
     LaunchedEffect(threadId) {
         DmRepository.markRead(threadId)
@@ -397,6 +474,22 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                 }
             }
         }
+    }
+
+    reactionsFor?.let { msg ->
+        DmReactionsSheet(
+            msg = msg,
+            members = members,
+            myUid = myUid,
+            onDismiss = { reactionsFor = null },
+            onRemoveMine = {
+                reactionsFor = null
+                scope.launch {
+                    runCatching { DmRepository.setReaction(threadId, msg.id, null) }
+                        .onFailure { snack("تعذّر التفاعل: ${it.arabicReason()}") }
+                }
+            },
+        )
     }
 
     confirmDeleteAll?.let { msg ->
@@ -682,15 +775,6 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                     }
                 } else {
                     val otherRead = thread?.readAtMs?.get(otherUid) ?: 0L
-                    val query = searchQuery.trim().lowercase()
-                    val shown = if (query.isEmpty()) {
-                        messages
-                    } else {
-                        messages.filter {
-                            it.text.lowercase().contains(query) ||
-                                it.attachment?.name?.lowercase()?.contains(query) == true
-                        }
-                    }
                     if (shown.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
@@ -707,27 +791,44 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                         ),
                         modifier = Modifier.fillMaxSize(),
                     ) {
-                        items(shown.size) { i ->
+                        // ⚠️ مفتاح ثابت لكلّ رسالة: بلاه يربط Compose الحالةَ
+                        // بالفهرس، فتقفز حالات الفقاعات (تشغيل الصوت، التنزيل،
+                        // إزاحة السحب) إلى رسائل أخرى مع كلّ وصول رسالة جديدة.
+                        items(shown.size, key = { shown[it].id }) { i ->
                             val msg = shown[i]
                             val older = shown.getOrNull(i + 1)
                             val showDateChip = older == null ||
                                 !sameDay(older.createdAtMs, msg.createdAtMs)
-                            Column {
+                            val highlightColor by animateColorAsState(
+                                if (highlightedId == msg.id) {
+                                    ChatColors.highlight
+                                } else {
+                                    Color.Transparent
+                                },
+                                label = "highlight",
+                            )
+                            Column(Modifier.background(highlightColor)) {
                                 if (showDateChip) DateChip(msg.createdAtMs)
-                                MessageBubble(
-                                    msg = msg,
-                                    // محادثة ثنائيّة: لا حاجة لاسم المرسِل فوق كلّ سلسلة.
-                                    showSenderHeader = false,
-                                    members = members,
-                                    readByAll = otherRead >= msg.sentAtMs,
-                                    onLongPress = { actionsFor = it },
-                                    onReplyTap = {},
-                                    onReactionsTap = {},
-                                    // أوّل استماع = ميكروفون أزرق عند المرسِل.
-                                    onListened = {
-                                        DmRepository.markListened(threadId, it.id)
-                                    },
-                                )
+                                SwipeToReplyRow(
+                                    messageId = msg.id,
+                                    enabled = !msg.deleted,
+                                    onReply = { replyTo = msg.asRef() },
+                                ) {
+                                    MessageBubble(
+                                        msg = msg,
+                                        // محادثة ثنائيّة: لا حاجة لاسم المرسِل فوق كلّ سلسلة.
+                                        showSenderHeader = false,
+                                        members = members,
+                                        readByAll = otherRead >= msg.sentAtMs,
+                                        onLongPress = { actionsFor = it },
+                                        onReplyTap = { jumpTo(it) },
+                                        onReactionsTap = { reactionsFor = it },
+                                        // أوّل استماع = ميكروفون أزرق عند المرسِل.
+                                        onListened = {
+                                            DmRepository.markListened(threadId, it.id)
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -855,6 +956,166 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                     },
                     voice = voice,
                 )
+            }
+        }
+    }
+}
+
+/**
+ * ↩️ سحب الردّ السريع بنمط واتساب — كان غائباً كلّياً في المحادثة الخاصّة.
+ *
+ * العتبة تُقاس على **الدلتا المتراكمة** لا على قفزة الإصبع الواحدة، والفقاعة
+ * تنزلق بمقاومة [REPLY_SWIPE_RESISTANCE] بحدّ [REPLY_SWIPE_MAX] فلا تُفلت مع
+ * الإصبع، مع اهتزاز **واحد** عند تجاوز العتبة وارتداد نابضيّ عند الإفلات.
+ *
+ * السحب أفقيّ فقط، فتمرير القائمة العموديّ يمرّ إلى `LazyColumn` كما هو.
+ */
+@Composable
+private fun SwipeToReplyRow(
+    messageId: String,
+    enabled: Boolean,
+    onReply: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val thresholdPx = with(density) { REPLY_SWIPE_THRESHOLD.toPx() }
+    val maxPx = with(density) { REPLY_SWIPE_MAX.toPx() }
+    val scope = rememberCoroutineScope()
+    val slide = remember(messageId) { Animatable(0f) }
+    var accumulated by remember(messageId) { mutableFloatStateOf(0f) }
+    var passed by remember(messageId) { mutableStateOf(false) }
+
+    Box(Modifier.fillMaxWidth()) {
+        val progress = (abs(slide.value) / thresholdPx).coerceIn(0f, 1f)
+        if (progress > 0f) {
+            // أيقونة الردّ تنمو خلف الفقاعة وتكتمل عند العتبة، على الجهة التي
+            // يُسحب منها (فتصلح للاتّجاهين).
+            Box(
+                Modifier
+                    .align(if (slide.value < 0f) Alignment.CenterEnd else Alignment.CenterStart)
+                    .padding(horizontal = 12.dp)
+                    .size((20 + 14 * progress).dp)
+                    .background(
+                        ChatColors.accent.copy(alpha = 0.06f + 0.18f * progress),
+                        CircleShape,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Reply,
+                    contentDescription = null,
+                    tint = ChatColors.accent.copy(alpha = 0.35f + 0.65f * progress),
+                    modifier = Modifier.size((11 + 8 * progress).dp),
+                )
+            }
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .offset { IntOffset(slide.value.roundToInt(), 0) }
+                .pointerInput(messageId, enabled) {
+                    if (!enabled) return@pointerInput
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            accumulated = 0f
+                            passed = false
+                        },
+                        onDragEnd = {
+                            if (passed) onReply()
+                            accumulated = 0f
+                            passed = false
+                            scope.launch { slide.animateTo(0f, spring(dampingRatio = 0.6f)) }
+                        },
+                        onDragCancel = {
+                            accumulated = 0f
+                            passed = false
+                            scope.launch { slide.animateTo(0f, spring(dampingRatio = 0.6f)) }
+                        },
+                    ) { change, dragAmount ->
+                        change.consume()
+                        accumulated += dragAmount
+                        scope.launch {
+                            slide.snapTo(
+                                (accumulated * REPLY_SWIPE_RESISTANCE).coerceIn(-maxPx, maxPx),
+                            )
+                        }
+                        if (!passed && abs(accumulated) >= thresholdPx) {
+                            // مرّة واحدة لكلّ سحبة: العلَم يُصفَّر عند بدء التالية.
+                            passed = true
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        }
+                    }
+                },
+        ) { content() }
+    }
+}
+
+/**
+ * 😀 مَن تفاعل بأيّ إيموجي — نظير ورقة المجموعة تماماً: تفاعلي وحده قابل
+ * للإزالة بالنقر.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DmReactionsSheet(
+    msg: ChatMessage,
+    members: Map<String, ChatMember>,
+    myUid: String,
+    onDismiss: () -> Unit,
+    onRemoveMine: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = ChatColors.surface,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+            Text(
+                "التفاعلات",
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(14.dp),
+            )
+            HorizontalDivider()
+            if (msg.reactions.isEmpty()) {
+                Text(
+                    "لا تفاعلات على هذه الرسالة بعد.",
+                    color = ChatColors.textMuted,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(20.dp),
+                )
+            }
+            msg.reactions.forEach { (uid, emoji) ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = uid == myUid) { onRemoveMine() }
+                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    MemberAvatar(
+                        uid = uid,
+                        name = members[uid]?.displayName ?: "مشرف",
+                        photo = members[uid]?.displayPhoto.orEmpty(),
+                        radius = 17,
+                    )
+                    Spacer(Modifier.size(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (uid == myUid) {
+                                "${members[uid]?.displayName ?: "أنا"} (أنا)"
+                            } else {
+                                members[uid]?.displayName ?: "مشرف سابق"
+                            },
+                            fontSize = 13.5.sp,
+                        )
+                        if (uid == myUid) {
+                            Text("اضغط للإزالة", fontSize = 10.5.sp, color = ChatColors.textMuted)
+                        }
+                    }
+                    Text(emoji, fontSize = 22.sp)
+                }
             }
         }
     }

@@ -28,6 +28,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +43,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ali.ishaqiyin_admin.data.AdminRepository
+import com.ali.ishaqiyin_admin.data.Category
+import com.ali.ishaqiyin_admin.data.Subcategory
 import com.ali.ishaqiyin_admin.data.TrashRepository
 import com.ali.ishaqiyin_admin.data.TrashedLesson
 import kotlinx.coroutines.launch
@@ -67,6 +71,29 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
 
     val items by remember { TrashRepository.watchAll() }
         .collectAsState(initial = emptyList())
+
+    // الأقسام تُجلب مرّة لحلّ اسم القسم محليّاً للدروس القديمة التي حُذفت
+    // بلا `categoryName/subcategoryName` في وثيقتها — بلا هذا يسقط سطر
+    // القسم كلّه فلا يميّز المشرف بين دروس متشابهة العناوين قبل قراره.
+    var categories by remember { mutableStateOf<List<Category>>(emptyList()) }
+    var subcategories by remember { mutableStateOf<List<Subcategory>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        runCatching {
+            categories = AdminRepository.fetchCategories()
+            subcategories = AdminRepository.fetchSubcategories()
+        }
+    }
+
+    /** اسم القسم المعروض: المخزَّن في الوثيقة، وإلّا يُحلّ من المعرّفات. */
+    fun sectionOf(item: TrashedLesson): String {
+        val sub = subcategories.firstOrNull { it.id == item.subcategoryId }
+        val catId = item.categoryId.ifEmpty { sub?.categoryId.orEmpty() }
+        val catName = item.categoryName.ifBlank {
+            categories.firstOrNull { it.id == catId }?.name.orEmpty()
+        }
+        val subName = item.subcategoryName.ifBlank { sub?.name.orEmpty() }
+        return listOf(catName, subName).filter(String::isNotBlank).joinToString(" ← ")
+    }
 
     fun run(doneMsg: String, action: suspend () -> Unit) {
         busy = true
@@ -211,9 +238,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                 )
-                                val section = listOf(item.categoryName, item.subcategoryName)
-                                    .filter(String::isNotBlank)
-                                    .joinToString(" ← ")
+                                val section = sectionOf(item)
                                 if (section.isNotEmpty()) {
                                     Text(section, fontSize = 12.sp, color = kMuted)
                                 }

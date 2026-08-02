@@ -63,6 +63,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminRepository
+import com.ali.ishaqiyin_admin.data.AppPrefs
 import com.ali.ishaqiyin_admin.data.AuthService
 import com.ali.ishaqiyin_admin.data.Category
 import com.ali.ishaqiyin_admin.data.LessonUploadWorker
@@ -142,6 +143,52 @@ private val pickedFilesSaver = listSaver<SnapshotStateList<PickedFile>, String>(
     },
 )
 
+/**
+ * حفظ صور صفحات الكتاب عبر إعادة إنشاء الشاشة — كانت الحقل الوحيد في
+ * النموذج المحفوظ بـ`remember`، فأيّ تدوير أو تبديل وضع داكن أو عودة من
+ * شاشة القصّ كان يمحو الصور كاملةً بلا تنبيه، فيدخل الدرس الطابور بلا
+ * صوره (ومن أرفق صوراً بلا نصّ يفقد النص المشروح كلّه).
+ */
+private val transcriptImagesSaver = listSaver<SnapshotStateList<Uri>, String>(
+    save = { list -> list.map { it.toString() } },
+    restore = { saved ->
+        mutableStateListOf<Uri>().apply {
+            saved.filter { it.isNotEmpty() }.forEach { add(Uri.parse(it)) }
+        }
+    },
+)
+
+/**
+ * اقتراح العنوان التالي في سلسلة مرقّمة: عنوان منتهٍ برقم (عربيّ أو
+ * هنديّ ٠-٩) يُقترح بزيادته واحداً بنفس صيغة أرقامه. وإن لم ينتهِ برقم
+ * فلا اقتراح — النصّ الفارغ يعني «اكتب العنوان بنفسك».
+ */
+private fun nextTitleSuggestion(previous: String): String {
+    val source = previous.trimEnd()
+    if (source.isEmpty()) return ""
+    val normalized = source.map { ch ->
+        if (ch in '٠'..'٩') '0' + (ch - '٠') else ch
+    }.joinToString("")
+    val match = Regex("(\\d+)$").find(normalized) ?: return ""
+    val raw = match.groupValues[1]
+    // رقم طويل جدّاً (تاريخ أو معرّف) ليس ترقيم سلسلة — لا يُزاد.
+    if (raw.length > 6) return ""
+    val next = raw.toLongOrNull()?.plus(1) ?: return ""
+    val head = source.substring(0, match.range.first)
+    val useArabicDigits = source.any { it in '٠'..'٩' }
+    // «الدرس 05» يتبعه «الدرس 06» لا «الدرس 6»: يُحفظ التصفير البادئ.
+    val padded = next.toString().padStart(
+        if (raw.startsWith("0")) raw.length else 1,
+        '0',
+    )
+    val digits = if (useArabicDigits) {
+        padded.map { ch -> '٠' + (ch - '0') }.joinToString("")
+    } else {
+        padded
+    }
+    return head + digits
+}
+
 @Composable
 fun AddLessonScreen(onBack: () -> Unit) {
     val context = LocalContext.current
@@ -177,12 +224,26 @@ fun AddLessonScreen(onBack: () -> Unit) {
     var transcriptText by rememberSaveable { mutableStateOf("") }
     var transcriptBookTitle by rememberSaveable { mutableStateOf("") }
     var transcriptSourceRef by rememberSaveable { mutableStateOf("") }
-    val transcriptImages = remember { mutableStateListOf<Uri>() }
+    val transcriptImages = rememberSaveable(saver = transcriptImagesSaver) {
+        mutableStateListOf<Uri>()
+    }
 
     LaunchedEffect(Unit) {
         runCatching {
             categories = AdminRepository.fetchCategories()
             subcategories = AdminRepository.fetchSubcategories()
+        }
+        // إعادة اختيار آخر قسم استُعمل — أغلب الدروس تُضاف إلى القسم نفسه
+        // تباعاً. الشرط يمنع تجاوز اختيار مستعاد بعد تدوير الشاشة.
+        if (categoryId == null) {
+            val savedCategory = AppPrefs.lastAddCategoryId
+                ?.takeIf { saved -> categories.any { it.id == saved } }
+            if (savedCategory != null) {
+                categoryId = savedCategory
+                subcategoryId = AppPrefs.lastAddSubcategoryId?.takeIf { saved ->
+                    subcategories.any { it.id == saved && it.categoryId == savedCategory }
+                }
+            }
         }
     }
 
@@ -279,6 +340,13 @@ fun AddLessonScreen(onBack: () -> Unit) {
         val cat = categories.firstOrNull { it.id == categoryId }
         val sub = subsForCategory.firstOrNull { it.id == subcategoryId }
         val label = listOfNotNull(cat?.name, sub?.name).joinToString(" ← ")
+        // اسما القسمين يُرسَلان مع الدرس: الخادم كان يكتبهما فارغَين، فتسقط
+        // هويّة القسم من نسخة الدرس في «سلة المحذوفات».
+        val catLabel = cat?.name.orEmpty()
+        val subLabel = sub?.name.orEmpty()
+        // آخر قسم مستعمَل يُحفظ ليُعاد اختياره تلقائياً في الفتح القادم.
+        AppPrefs.lastAddCategoryId = categoryId
+        AppPrefs.lastAddSubcategoryId = subcategoryId
         scope.launch {
             try {
                 val queued = if (files.size == 1) {
@@ -293,6 +361,8 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         featured = featured,
                         featuredUntilMs = featuredUntil,
                         addedBy = AuthService.currentUser?.email.orEmpty(),
+                        categoryName = catLabel,
+                        subcategoryName = subLabel,
                         transcriptText = transcriptText,
                         transcriptBookTitle = transcriptBookTitle,
                         transcriptSourceRef = transcriptSourceRef,
@@ -346,6 +416,8 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         featuredUntilMs = featuredUntil,
                         addedBy = AuthService.currentUser?.email.orEmpty(),
                         context = context,
+                        categoryName = catLabel,
+                        subcategoryName = subLabel,
                         transcriptText = transcriptText,
                         transcriptBookTitle = transcriptBookTitle,
                         transcriptSourceRef = transcriptSourceRef,
@@ -360,7 +432,10 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 LessonUploadWorker.kick(context)
 
                 // إفراغ النموذج فوراً — المشرف يواصل إضافة درس آخر.
-                title = ""
+                // العنوان لا يُفرَغ إن كان جزءاً من سلسلة مرقّمة: يُقترح
+                // التالي بزيادة رقمه، وهو الشكل الغالب لدروس المنبر.
+                val suggestion = nextTitleSuggestion(snapshotTitle)
+                title = suggestion
                 files.clear()
                 featured = false
                 featuredUntil = null
@@ -382,7 +457,12 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 }
                 message = "أُضيف «$snapshotTitle» إلى طابور الرفع$order — " +
                     "يكمل في الخلفية ويصلك إشعار عند اكتماله. " +
-                    "تستطيع إضافة درس آخر الآن."
+                    "تستطيع إضافة درس آخر الآن." +
+                    if (suggestion.isNotEmpty()) {
+                        " العنوان التالي مقترح: «$suggestion» — عدّله إن شئت."
+                    } else {
+                        ""
+                    }
                 isError = false
                 snack("أُضيف «$snapshotTitle» إلى طابور الرفع$order")
             } catch (e: Exception) {

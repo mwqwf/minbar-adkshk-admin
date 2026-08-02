@@ -57,7 +57,11 @@ import androidx.compose.ui.unit.sp
 /** مرسِل رسائل Snackbar المتاح لكلّ الشاشات (نظير ScaffoldMessenger). */
 val LocalSnack = compositionLocalOf<(String) -> Unit> { {} }
 
-/** شريط علوي موحَّد: تركواز، نصّ أبيض، عنوان موسَّط، بلا ظلّ (كما في الأصل). */
+/**
+ * شريط علوي موحَّد: عنوان موسَّط بلا ظلّ (كما في الأصل)، لكنّه يتكيّف مع
+ * الوضعين: في الفاتح لون اللوحة الأوّل بنصّ أبيض، وفي الداكن حاوية سطح
+ * مرتفعة بنصّ فاتح — لأنّ شريطاً ذهبيّاً كاملاً في الداكن يبهر البصر.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AdminScaffold(
@@ -67,8 +71,12 @@ fun AdminScaffold(
     floatingActionButton: @Composable () -> Unit = {},
     content: @Composable (PaddingValues) -> Unit,
 ) {
+    val scheme = MaterialTheme.colorScheme
+    val dark = isAdminDarkTheme()
+    val barColor = if (dark) scheme.surfaceContainerHigh else scheme.primary
+    val onBarColor = if (dark) scheme.onSurface else scheme.onPrimary
     Scaffold(
-        containerColor = kBg,
+        containerColor = scheme.background,
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
@@ -88,10 +96,10 @@ fun AdminScaffold(
                 },
                 actions = actions,
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = kTeal,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White,
-                    actionIconContentColor = Color.White,
+                    containerColor = barColor,
+                    titleContentColor = onBarColor,
+                    navigationIconContentColor = onBarColor,
+                    actionIconContentColor = onBarColor,
                 ),
             )
         },
@@ -100,16 +108,23 @@ fun AdminScaffold(
     )
 }
 
-/** ألوان الحقول كما في inputDecorationTheme الأصلي (خلفية kBg وحدود ناعمة). */
+/**
+ * ألوان الحقول (نظير inputDecorationTheme الأصلي): حاوية بلون سطح متكيّف
+ * وحدّ يعبر 3:1. حدّ الحقل عنصر واجهة **وظيفيّ** يخضع لـWCAG 1.4.11 فلا
+ * يُترك بلون باهت كما كان (#CCE3E3 بتباين 1.34).
+ */
 @Composable
-fun adminFieldColors(): TextFieldColors = OutlinedTextFieldDefaults.colors(
-    focusedContainerColor = kBg,
-    unfocusedContainerColor = kBg,
-    disabledContainerColor = kBg,
-    focusedBorderColor = kTeal,
-    unfocusedBorderColor = kFieldBorder,
-    disabledBorderColor = kFieldBorder,
-)
+fun adminFieldColors(): TextFieldColors {
+    val scheme = MaterialTheme.colorScheme
+    return OutlinedTextFieldDefaults.colors(
+        focusedContainerColor = scheme.surfaceContainer,
+        unfocusedContainerColor = scheme.surfaceContainer,
+        disabledContainerColor = scheme.surfaceContainer,
+        focusedBorderColor = scheme.primary,
+        unfocusedBorderColor = scheme.outline,
+        disabledBorderColor = scheme.outline,
+    )
+}
 
 @Composable
 fun AdminTextField(
@@ -198,17 +213,18 @@ fun Spin(color: Color = Color.White, size: Int = 22) {
     )
 }
 
-/** مربّع إحصائيّة (kBoxBg + رقم تركوازي كبير). */
+/** مربّع إحصائيّة (حاوية سطح مرتفعة + رقم كبير بلون اللوحة الأوّل). */
 @Composable
 fun StatBox(label: String, value: Int, icon: ImageVector, loading: Boolean = false) {
+    val scheme = MaterialTheme.colorScheme
     Column(
         modifier = Modifier
             .width(108.dp)
-            .background(kBoxBg, RoundedCornerShape(16.dp))
+            .background(scheme.surfaceContainerHigh, RoundedCornerShape(16.dp))
             .padding(vertical = 16.dp, horizontal = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(icon, contentDescription = null, tint = kTeal, modifier = Modifier.size(22.dp))
+        Icon(icon, contentDescription = null, tint = scheme.primary, modifier = Modifier.size(22.dp))
         Spacer(Modifier.height(6.dp))
         if (loading) {
             Box(Modifier.size(30.dp), contentAlignment = Alignment.Center) {
@@ -219,7 +235,7 @@ fun StatBox(label: String, value: Int, icon: ImageVector, loading: Boolean = fal
                 "$value",
                 fontSize = 28.sp,
                 fontWeight = FontWeight.Bold,
-                color = kTeal,
+                color = scheme.primary,
             )
         }
         Spacer(Modifier.height(4.dp))
@@ -227,7 +243,7 @@ fun StatBox(label: String, value: Int, icon: ImageVector, loading: Boolean = fal
             label,
             textAlign = TextAlign.Center,
             fontSize = 13.sp,
-            color = kTeal,
+            color = scheme.primary,
         )
     }
 }
@@ -239,21 +255,25 @@ fun SectionTitle(text: String, modifier: Modifier = Modifier) {
         modifier = modifier.padding(top = 4.dp, bottom = 6.dp),
         fontSize = 17.sp,
         fontWeight = FontWeight.Bold,
-        color = kTeal,
+        color = MaterialTheme.colorScheme.primary,
     )
 }
 
 @Composable
 fun EmptyHint(text: String) {
     Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-        Text(text, color = kMuted, textAlign = TextAlign.Center)
+        Text(
+            text,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
 @Composable
 fun FullScreenLoader() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator(color = kTeal)
+        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
     }
 }
 
@@ -263,7 +283,7 @@ fun ConfirmDialog(
     title: String,
     body: String,
     confirmLabel: String,
-    confirmColor: Color = kTeal,
+    confirmColor: Color = MaterialTheme.colorScheme.primary,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -276,7 +296,8 @@ fun ConfirmDialog(
                 onClick = onConfirm,
                 colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
                     containerColor = confirmColor,
-                    contentColor = Color.White,
+                    // النصّ الأبيض يسقط فوق الأسطح الفاتحة (كالذهب في الوضع الداكن).
+                    contentColor = contentColorOn(confirmColor),
                 ),
             ) { Text(confirmLabel) }
         },
@@ -313,8 +334,8 @@ fun EditTextDialog(
             FilledTonalButton(
                 onClick = { onSave(text.trim()) },
                 colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
-                    containerColor = kTeal,
-                    contentColor = Color.White,
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
                 ),
             ) { Text("حفظ") }
         },
@@ -358,7 +379,8 @@ fun CircleIcon(icon: ImageVector, background: Color, size: Int = 40, iconSize: I
         Icon(
             icon,
             contentDescription = null,
-            tint = Color.White,
+            // حبر داكن فوق الخلفيّات الفاتحة، وأبيض فوق الداكنة.
+            tint = contentColorOn(background),
             modifier = Modifier.size(iconSize.dp),
         )
     }

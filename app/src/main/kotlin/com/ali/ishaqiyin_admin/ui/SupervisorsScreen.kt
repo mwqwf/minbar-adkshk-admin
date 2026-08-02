@@ -23,6 +23,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -35,7 +36,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -98,6 +98,9 @@ fun SupervisorsScreen(onBack: () -> Unit) {
     val myEmail = AuthService.currentUser?.email.orEmpty().lowercase()
     fun canActOn(a: DashAdmin): Boolean = !a.isOwner && a.email != myEmail
 
+    val scheme = MaterialTheme.colorScheme
+    val dark = isAdminDarkTheme()
+
     when (val action = pending) {
         is SupervisorAction.Block -> ConfirmDialog(
             title = if (action.mode == "permanent") "حظر نهائي" else "حظر مؤقّت",
@@ -109,7 +112,7 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                     "يمكنك إلغاء الحظر لاحقاً.\n\n" + CHAT_MEMBERSHIP_NOTE
             },
             confirmLabel = "تأكيد",
-            confirmColor = kDanger,
+            confirmColor = scheme.error,
             onDismiss = { pending = null },
             onConfirm = {
                 pending = null
@@ -137,7 +140,7 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                 "لا يمكن التراجع إلّا بإعادة اعتماده عبر رمز جديد.\n\n" +
                 CHAT_MEMBERSHIP_NOTE_REMOVE,
             confirmLabel = "حذف",
-            confirmColor = kDanger,
+            confirmColor = scheme.error,
             onDismiss = { pending = null },
             onConfirm = {
                 pending = null
@@ -172,7 +175,7 @@ fun SupervisorsScreen(onBack: () -> Unit) {
             error != null -> Box(
                 Modifier.padding(padding).fillMaxSize().padding(24.dp),
                 contentAlignment = Alignment.Center,
-            ) { Text(error!!, color = kDanger, textAlign = TextAlign.Center) }
+            ) { Text(error!!, color = scheme.error, textAlign = TextAlign.Center) }
 
             admins.isEmpty() -> Box(
                 Modifier.padding(padding).fillMaxSize().padding(24.dp),
@@ -196,7 +199,7 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                     val busy = busyEmail == a.email
                     Card(
                         shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        colors = CardDefaults.cardColors(containerColor = scheme.surface),
                         modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
                     ) {
                         Column(Modifier.padding(12.dp)) {
@@ -205,7 +208,7 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                                     url = a.photoURL,
                                     fallbackText = a.displayName.ifEmpty { a.email },
                                     size = 40,
-                                    background = if (a.blocked) kDanger else kTeal,
+                                    background = if (a.blocked) kDanger else kTeal, // ثابتان: الأيقونة بيضاء فوقهما في الوضعين
                                     fallbackIcon = if (a.blocked) {
                                         Icons.Filled.Block
                                     } else {
@@ -218,13 +221,13 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                                         a.displayName.ifEmpty { a.email },
                                         fontWeight = FontWeight.SemiBold,
                                     )
-                                    Text(a.email, fontSize = 12.sp, color = kMuted)
+                                    Text(a.email, fontSize = 12.sp, color = scheme.onSurfaceVariant)
                                 }
                                 if (a.isOwner) {
                                     Box(
                                         Modifier
                                             .background(
-                                                Color(0xFFFFC107).copy(alpha = 0.15f),
+                                                Gold300.copy(alpha = if (dark) 0.20f else 0.18f),
                                                 RoundedCornerShape(20.dp),
                                             )
                                             .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -232,7 +235,9 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                                         Text(
                                             "المالك",
                                             fontSize = 11.sp,
-                                            color = Color(0xFFB8860B),
+                                            // كان #B8860B بتباين 3.01 على الشارة — راسب.
+                                            // الحبر الذهبي الداكن يعطي 9.15 على الفاتح.
+                                            color = if (dark) Gold300 else kOwnerBadge,
                                         )
                                     }
                                 } else {
@@ -245,7 +250,7 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                                         },
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = if (a.blocked) kDanger else kGreen,
+                                        color = if (a.blocked) scheme.error else adminGreen,
                                     )
                                 }
                             }
@@ -286,24 +291,24 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                                                 pending = SupervisorAction.Block(a, "permanent")
                                             },
                                             enabled = !busy,
-                                        ) { Text("حظر نهائي", color = kDanger) }
+                                        ) { Text("حظر نهائي", color = scheme.error) }
                                     }
                                     OutlinedButton(
                                         onClick = { pending = SupervisorAction.Remove(a) },
                                         enabled = !busy,
                                     ) {
                                         if (busy) {
-                                            Spin(color = kDanger, size = 14)
+                                            Spin(color = scheme.error, size = 14)
                                         } else {
                                             Icon(
                                                 Icons.Filled.Delete,
                                                 contentDescription = null,
-                                                tint = kDanger,
+                                                tint = scheme.error,
                                                 modifier = Modifier.size(18.dp),
                                             )
                                         }
                                         Spacer(Modifier.size(4.dp))
-                                        Text("حذف", color = kDanger)
+                                        Text("حذف", color = scheme.error)
                                     }
                                 }
                             }

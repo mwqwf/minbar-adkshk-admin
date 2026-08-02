@@ -1,11 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- سمة النافذة قبل ظهور Compose: تركواز اللوحة على خلفية فاتحة (kBg). -->
+    <!--
+      سمة النافذة قبل ظهور Compose.
+
+      ⛔ لا تُعِد android:statusBarColor ولا android:navigationBarColor ولا
+      android:windowLightStatusBar هنا: كلّها **متوقّفة نهائياً** في أندرويد 15
+      (API 35) وتتجاهلها المنظومة، ويرصدها فحص Play فيحذّر من «واجهات متوقّفة»
+      — وهو التحذير نفسه الذي نظّفه التطبيق العامّ ولم تنظّفه اللوحة.
+      تباين أيقونات الشريطين يُضبط برمجيّاً في MainActivity (enableEdgeToEdge)
+      تبعاً لسمة **اللوحة** نفسها، فيبقى صحيحاً ولو خالفت سمةُ اللوحة سمةَ
+      النظام.
+
+      يبقى windowLightNavigationBar لأنّه غير متوقّف، ويصحّح تباين أيقونات
+      شريط التنقّل قبل بدء Compose: خلفيّة النافذة فاتحة (#F8FCFC) وكانت
+      الأيقونات بيضاء فوقها بنسبة 1.03 — أي غير مرئيّة عمليّاً.
+    -->
     <style name="Theme.MinbarAdmin" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">#F8FCFC</item>
-        <item name="android:statusBarColor">#247172</item>
-        <item name="android:navigationBarColor">#F8FCFC</item>
-        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>

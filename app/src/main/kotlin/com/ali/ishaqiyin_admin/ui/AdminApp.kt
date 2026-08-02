@@ -1,5 +1,6 @@
 package com.ali.ishaqiyin_admin.ui
 
+import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -66,6 +67,7 @@ import androidx.navigation.NavOptions
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.ali.ishaqiyin_admin.call.CallEngine
 import com.ali.ishaqiyin_admin.data.AccessState
 import com.ali.ishaqiyin_admin.data.AccessVerificationException
 import com.ali.ishaqiyin_admin.data.AdminNotificationService
@@ -84,6 +86,8 @@ import com.ali.ishaqiyin_admin.ui.chat.MemberAvatar
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.launch
@@ -111,6 +115,142 @@ object Routes {
 
     fun dm(threadId: String, otherUid: String, otherName: String): String =
         "dm/${Uri.encode(threadId)}/${Uri.encode(otherUid)}/${Uri.encode(otherName)}"
+}
+
+/**
+ * 🎯 هدف شاشة «المساهمات» حين يأتي المشرف من إشعار أو تنبيه: التبويب
+ * المطلوب (0 = دروس صوتية، 1 = نصوص مشروحة) ومعرّف المساهمة المعنيّة.
+ * يُضبط قبل التنقّل ويُستهلَك مرّة واحدة عند فتح الشاشة.
+ */
+object SubmissionsTarget {
+    var tab: Int = 0
+        private set
+
+    var refId: String = ""
+        private set
+
+    fun set(tab: Int, refId: String = "") {
+        this.tab = tab
+        this.refId = refId
+    }
+
+    /** يُنادى من شاشة المساهمات مرّة عند فتحها (ثمّ يعود الافتراضي). */
+    fun consumeTab(): Int = tab.also { tab = 0 }
+
+    fun consumeRefId(): String = refId.also { refId = "" }
+}
+
+/**
+ * 🔔 وجهة الإشعار داخل اللوحة.
+ *
+ * حمولة الإشعار كانت تُهمَل تماماً فينتهي كلّ إشعار — مساهمة أو رسالة
+ * خاصّة أو درس مشبوه — إلى اللوحة الرئيسية. هنا تُترجَم الحمولة إلى مسار،
+ * ويُحمل **مرّة واحدة فقط**: `consume` يُفرغه فور استعماله فلا يُعاد الفتح
+ * مع تدوير الشاشة أو أيّ إعادة تركيب.
+ *
+ * ⚠️ المكالمات (`admin_call`) لا تمرّ من هنا إطلاقاً — لها شاشتها ونيّتها
+ * المستقلّتان في AdminMessagingService.
+ */
+object NotificationRoute {
+    // مفاتيح الحمولة — نفس أسماء حقول FCM حرفياً، كي يعمل القارئ نفسه مع
+    // نيّتنا في المقدّمة ومع النيّة التي يبنيها النظام في الخلفيّة.
+    const val KEY_TYPE = "type"
+    const val KEY_REF = "refId"
+    const val KEY_SUBMISSION = "submissionId"
+    const val KEY_LESSON = "lessonId"
+    const val KEY_REVIEW = "reviewId"
+    const val KEY_CANDIDATE = "candidateEmail"
+    const val KEY_THREAD = "threadId"
+    const val KEY_SENDER = "senderId"
+    const val KEY_SENDER_NAME = "senderName"
+    const val KEY_MESSAGE = "messageId"
+
+    /// وجهة صريحة يرسلها الخادم حين لا يكفي `type` وحده لتحديدها.
+    const val KEY_ROUTE = "route"
+
+    /** كلّ ما يُنقل في الـextras (وما يُمسح بعد استهلاكه). */
+    val KEYS = listOf(
+        KEY_TYPE,
+        KEY_REF,
+        KEY_SUBMISSION,
+        KEY_LESSON,
+        KEY_REVIEW,
+        KEY_CANDIDATE,
+        KEY_THREAD,
+        KEY_SENDER,
+        KEY_SENDER_NAME,
+        KEY_MESSAGE,
+        KEY_ROUTE,
+    )
+
+    private val _pending = MutableStateFlow<String?>(null)
+    val pending: StateFlow<String?> = _pending
+
+    fun set(route: String?) {
+        if (!route.isNullOrEmpty()) _pending.value = route
+    }
+
+    /** يُعيد الوجهة ويُفرغها — الاستهلاك مرّة واحدة شرط سلامة التنقّل. */
+    fun consume(): String? {
+        val route = _pending.value
+        if (route != null) _pending.value = null
+        return route
+    }
+
+    /**
+     * خريطة النوع ← الوجهة. `get` يقرأ حقلاً من الحمولة (extras أو وثيقة
+     * تنبيه)، ويعيد null إن لم تكن للنوع وجهة معروفة فتبقى اللوحة مكانها.
+     */
+    fun routeFor(get: (String) -> String?): String? {
+        fun value(vararg keys: String): String =
+            keys.firstNotNullOfOrNull { key -> get(key)?.trim()?.takeIf { it.isNotEmpty() } }
+                .orEmpty()
+
+        return when (value(KEY_TYPE)) {
+            "submission" -> {
+                SubmissionsTarget.set(0, value(KEY_REF, KEY_SUBMISSION))
+                Routes.SUBMISSIONS
+            }
+
+            "transcript" -> {
+                SubmissionsTarget.set(1, value(KEY_REF, KEY_SUBMISSION))
+                Routes.SUBMISSIONS
+            }
+
+            "admin_chat" -> Routes.CHAT
+
+            "admin_dm" -> {
+                val threadId = value(KEY_THREAD)
+                val otherUid = value(KEY_SENDER)
+                // بلا معرّفين لا يقوم مسار المحادثة (مقطع فارغ لا يطابق
+                // النمط) — فنفتح قائمة المحادثات بدل السقوط على اللوحة.
+                if (threadId.isEmpty() || otherUid.isEmpty()) {
+                    Routes.DM_LIST
+                } else {
+                    Routes.dm(
+                        threadId,
+                        otherUid,
+                        value(KEY_SENDER_NAME).ifEmpty { "مشرف" },
+                    )
+                }
+            }
+
+            "engagement", "milestone", "digest", "weekly_digest" -> Routes.ANALYTICS
+            "suspicious_lesson", "suspicious_scan" -> Routes.OWNER_REVIEW
+            "owner_code" -> Routes.ADMINS
+            // إنذار «تمييز درسك يوشك على الانتهاء» ⇒ شاشة مختارات المنبر
+            // حيث يُمدَّد التمييز أو يُترك ليسقط.
+            "featured_expiring" -> Routes.FEATURED
+            else -> null
+        }
+    }
+
+    /** يقرأ الوجهة من نيّة فتح النشاط (إشعار مقدّمة أو خلفيّة). */
+    fun fromIntent(intent: Intent?): String? {
+        if (intent == null) return null
+        if (intent.getStringExtra(KEY_TYPE).isNullOrBlank()) return null
+        return routeFor { key -> runCatching { intent.getStringExtra(key) }.getOrNull() }
+    }
 }
 
 /**
@@ -172,6 +312,18 @@ fun AdminApp() {
             ?: "تعذّر التحقق من الصلاحية. تحقق من الاتصال ثم أعد المحاولة."
     }
 
+    // 📞 كشف المكالمات الواردة داخل التطبيق بلا انتظار FCM: الدفعة ترجع
+    // مبكّراً إن عُطّلت الإشعارات أو رُفض إذنها، وتتأخّر في Doze أو عند إبطال
+    // الرمز. المراقبة هنا على مستوى التطبيق لا داخل قسم المحادثات وحده،
+    // وحارس openedIncomingIds يمنع فتح شاشتين مع مسار FCM.
+    LaunchedEffect(access) {
+        if (access == AccessState.Owner || access == AccessState.Supervisor) {
+            CallEngine.startIncomingWatch(context)
+        } else {
+            CallEngine.stopIncomingWatch()
+        }
+    }
+
     val showSnack: (String) -> Unit = { message ->
         scope.launch { snackbarHostState.showSnackbar(message) }
     }
@@ -225,16 +377,45 @@ private fun AdminNavHost(isOwner: Boolean) {
             )
         }
     }
+    // 🔔 فتح من إشعار: الوجهة تُستهلَك مرّة واحدة، فلا يعيد تدوير الشاشة
+    // ولا إعادة التركيب فتحها، وتعمل والتطبيق مفتوح أصلاً (onNewIntent).
+    val notificationRoute by NotificationRoute.pending.collectAsState()
+    LaunchedEffect(notificationRoute) {
+        val route = NotificationRoute.consume() ?: return@LaunchedEffect
+        if (nav.currentDestination?.route == route) return@LaunchedEffect
+        // مسار مجهول (حمولة من إصدار أحدث) يجب ألّا يُسقط اللوحة.
+        runCatching {
+            nav.navigate(route, NavOptions.Builder().setLaunchSingleTop(true).build())
+        }
+    }
+
     NavHost(navController = nav, startDestination = Routes.DASHBOARD) {
         composable(Routes.DASHBOARD) { DashboardScreen(isOwner = isOwner, nav = nav) }
-        composable(Routes.ALERTS) { AlertsScreen(isOwner = isOwner, onBack = { nav.popBackStack() }) }
+        composable(Routes.ALERTS) {
+            AlertsScreen(
+                isOwner = isOwner,
+                onBack = { nav.popBackStack() },
+                // فتح هدف التنبيه — مسار مجهول لا يُسقط الشاشة.
+                onOpen = { route ->
+                    runCatching {
+                        nav.navigate(route, NavOptions.Builder().setLaunchSingleTop(true).build())
+                    }
+                },
+            )
+        }
         composable(Routes.NOTIFY) { NotifyScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.ADD_LESSON) { AddLessonScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.MANAGE_SECTIONS) {
             ManageSectionsScreen(onBack = { nav.popBackStack() })
         }
         composable(Routes.MANAGE_ALL) { ManageAllScreen(onBack = { nav.popBackStack() }) }
-        composable(Routes.ANALYTICS) { AnalyticsScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.ANALYTICS) {
+            AnalyticsScreen(
+                onBack = { nav.popBackStack() },
+                // بطاقة «بلا نص بعد» تفتح إدارة الدروس ليباشرها المشرف.
+                onOpenLessons = { nav.navigate(Routes.MANAGE_ALL) },
+            )
+        }
         composable(Routes.FEEDBACK) { FeedbackScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.ADMINS) {
             AdminsScreen(

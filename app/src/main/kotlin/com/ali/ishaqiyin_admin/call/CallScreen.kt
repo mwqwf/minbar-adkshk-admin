@@ -50,8 +50,11 @@ import com.ali.ishaqiyin_admin.ui.kTeal
 import com.ali.ishaqiyin_admin.ui.kTealDark
 import kotlinx.coroutines.delay
 
-/** أخضر القبول (نمط واتساب). */
-private val kAccept = Color(0xFF27AE60)
+/**
+ * أخضر القبول (نمط واتساب) — داكن عمداً: الأخضر الفاتح (‏#27AE60) نسبة
+ * تباينه مع الأيقونة البيضاء 2.87 فقط، وهذا 6.57 (يتجاوز AA).
+ */
+private val kAccept = Color(0xFF0B6B42)
 
 /**
  * 📞 شاشة المكالمة: خلفيّة داكنة متدرّجة من [kTealDark] إلى [kTeal]،

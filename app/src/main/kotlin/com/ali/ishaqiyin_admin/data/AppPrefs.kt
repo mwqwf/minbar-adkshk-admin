@@ -12,6 +12,15 @@ object AppPrefs {
     private const val KEY_AUTO_DOWNLOAD = "chat_auto_download_v1"
     private const val KEY_AUDIO_SPEED = "chat_audio_speed_v1"
 
+    // آخر قسم استُعمل في «إضافة درس» — أغلب الدروس تُضاف إلى القسم نفسه
+    // تباعاً، فإعادة اختياره تلقائياً توفّر نقرتين في كلّ درس.
+    private const val KEY_LAST_ADD_CATEGORY = "last_add_category_v1"
+    private const val KEY_LAST_ADD_SUBCATEGORY = "last_add_subcategory_v1"
+
+    // آخر فلتر قسم في «التعديل والبحث» — يبقى بين الجلسات.
+    private const val KEY_LAST_MANAGE_CATEGORY = "last_manage_category_v1"
+    private const val KEY_LAST_MANAGE_SUBCATEGORY = "last_manage_subcategory_v1"
+
     private lateinit var appContext: Context
 
     fun init(context: Context) {
@@ -36,4 +45,34 @@ object AppPrefs {
     var audioSpeed: Float
         get() = prefs.getFloat(KEY_AUDIO_SPEED, 1f)
         set(value) = prefs.edit().putFloat(KEY_AUDIO_SPEED, value).apply()
+
+    /** معرّف محفوظ: النصّ الفارغ يُعامَل كغياب اختيار لا كمعرّف صالح. */
+    private fun readId(key: String): String? =
+        prefs.getString(key, null)?.takeIf { it.isNotEmpty() }
+
+    private fun writeId(key: String, value: String?) {
+        val editor = prefs.edit()
+        if (value.isNullOrEmpty()) editor.remove(key) else editor.putString(key, value)
+        editor.apply()
+    }
+
+    /** آخر قسم رئيسي اختِير في نموذج «إضافة درس». */
+    var lastAddCategoryId: String?
+        get() = readId(KEY_LAST_ADD_CATEGORY)
+        set(value) = writeId(KEY_LAST_ADD_CATEGORY, value)
+
+    /** آخر قسم فرعي اختِير في نموذج «إضافة درس». */
+    var lastAddSubcategoryId: String?
+        get() = readId(KEY_LAST_ADD_SUBCATEGORY)
+        set(value) = writeId(KEY_LAST_ADD_SUBCATEGORY, value)
+
+    /** آخر فلتر قسم رئيسي في شاشة «التعديل والبحث». */
+    var lastManageCategoryId: String?
+        get() = readId(KEY_LAST_MANAGE_CATEGORY)
+        set(value) = writeId(KEY_LAST_MANAGE_CATEGORY, value)
+
+    /** آخر فلتر قسم فرعي في شاشة «التعديل والبحث». */
+    var lastManageSubcategoryId: String?
+        get() = readId(KEY_LAST_MANAGE_SUBCATEGORY)
+        set(value) = writeId(KEY_LAST_MANAGE_SUBCATEGORY, value)
 }

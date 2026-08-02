@@ -1,9 +1,11 @@
 package com.ali.ishaqiyin_admin.data
 
+import com.google.firebase.firestore.AggregateSource
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 
@@ -13,6 +15,12 @@ data class TrashedLesson(
     val title: String,
     val categoryName: String,
     val subcategoryName: String,
+    /**
+     * معرّفا القسمين كما في الوثيقة المحذوفة — تُحلّ بهما الأسماء محليّاً
+     * للدروس القديمة التي كُتبت بلا `categoryName/subcategoryName`.
+     */
+    val categoryId: String,
+    val subcategoryId: String,
     val audioUrl: String,
     val hasTranscript: Boolean,
     val deletedBy: String,
@@ -36,6 +44,10 @@ data class TrashedLesson(
                 title = str(unwrapped["title"]).ifEmpty { str(unwrapped["name"]) },
                 categoryName = str(unwrapped["categoryName"]),
                 subcategoryName = str(unwrapped["subcategoryName"]),
+                categoryId = str(unwrapped["categoryId"]),
+                subcategoryId = str(unwrapped["subcategoryId"]).ifEmpty {
+                    str((unwrapped["subcategory"] as? Map<*, *>)?.get("_id"))
+                },
                 audioUrl = str(unwrapped["audioUrl"]),
                 hasTranscript = d["transcript"] is Map<*, *>,
                 deletedBy = str(d["deletedBy"]),
@@ -63,8 +75,20 @@ object TrashRepository {
                 .sortedByDescending { it.deletedAtMs }
         }
 
-    fun watchCount(): Flow<Int> =
-        db.collection(COLLECTION).querySnapshots().map { it.size() }
+    /**
+     * عدد ما في السلة — استعلام **عدّ خادميّ** خفيف لا يجلب الوثائق.
+     *
+     * كان مستمع لقطات على المجموعة كاملة يقرأ كلّ درس محذوف (بوثيقته ونصّه)
+     * لعرض رقم واحد على بطاقة اللوحة. تدفّق بقيمة واحدة: يُنفَّذ عند فتح
+     * الشاشة، ويُعاد تنفيذه عند العودة إليها لأنّ التدفّق يُنشأ من جديد.
+     */
+    fun watchCount(): Flow<Int> = flow {
+        emit(
+            runCatching {
+                db.collection(COLLECTION).count().get(AggregateSource.SERVER).await().count.toInt()
+            }.getOrDefault(0),
+        )
+    }
 
     suspend fun restore(item: TrashedLesson) {
         functions.getHttpsCallable("restoreDeletedLesson")

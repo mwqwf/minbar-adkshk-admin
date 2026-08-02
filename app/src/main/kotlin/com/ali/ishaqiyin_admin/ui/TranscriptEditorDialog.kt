@@ -126,7 +126,17 @@ fun TranscriptEditorDialog(
             }
             .onFailure { snack("تعذّر جلب النص الحالي.") }
         // حمولة المشاركة الخارجية (نص/صور) تُلحق بعد تحميل الموجود.
-        if (initialText.isNotBlank() && text.isBlank()) text = initialText.take(20000)
+        // الإلحاق لا الاستبدال ولا الإسقاط: كان النص المشارَك يُهمَل بصمت إن
+        // كان للدرس نصّ محفوظ، فيضيع على المشرف بلا رسالة ولا وسيلة استرجاع
+        // — الآن يُلحق أسفل الموجود تماماً كما يفعل مسار OCR أدناه.
+        if (initialText.isNotBlank()) {
+            text = if (text.isBlank()) {
+                initialText
+            } else {
+                "$text\n\n$initialText"
+            }.take(20000)
+            if (existed) snack("أُلحق النص الوارد أسفل النص المحفوظ — دقّقه قبل الحفظ.")
+        }
         initialImages.forEach { uri ->
             if (images.size < TranscriptsRepository.MAX_IMAGES) {
                 images.add(EditorImage(local = uri))

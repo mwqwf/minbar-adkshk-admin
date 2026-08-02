@@ -14,6 +14,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.content.ContextCompat
 import com.ali.ishaqiyin_admin.ui.AdminApp
 import com.ali.ishaqiyin_admin.ui.MinbarAdminTheme
+import com.ali.ishaqiyin_admin.ui.NotificationRoute
 import com.ali.ishaqiyin_admin.ui.ShareIntake
 import com.ali.ishaqiyin_admin.util.sharedAudioFrom
 
@@ -25,6 +26,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         captureShare(intent)
+        captureNotification(intent)
         requestNotificationPermission()
         setContent {
             MinbarAdminTheme {
@@ -40,6 +42,28 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         captureShare(intent)
+        // ⚠️ إلزاميّ: الإشعار يصل والتطبيق مفتوح أصلاً في أغلب الأحيان،
+        // وبلا هذا السطر لا يُوجَّه إلّا الفتح من إقلاع بارد.
+        captureNotification(intent)
+    }
+
+    /**
+     * 🔔 حمولة الإشعار ← وجهة داخل اللوحة.
+     *
+     * تعمل مع نيّتنا في المقدّمة ومع النيّة التي يبنيها النظام حين ترسم حزمة
+     * FCM الإشعار في الخلفيّة (تُضاف حقول `data` كلّها extras نصّيّة).
+     * تُمسح المفاتيح بعد قراءتها كي لا يُعاد فتح الوجهة نفسها مع كلّ إعادة
+     * إنشاء للنشاط (تدوير الشاشة مثلاً) — والاستهلاك الثاني في
+     * `NotificationRoute.consume`.
+     *
+     * ⚠️ المكالمات لا تمرّ من هنا: لها نشاطها ونيّتها المستقلّتان.
+     */
+    private fun captureNotification(intent: Intent?) {
+        val route = NotificationRoute.fromIntent(intent) ?: return
+        NotificationRoute.set(route)
+        NotificationRoute.KEYS.forEach { key ->
+            runCatching { intent?.removeExtra(key) }
+        }
     }
 
     private fun captureShare(intent: Intent?) {

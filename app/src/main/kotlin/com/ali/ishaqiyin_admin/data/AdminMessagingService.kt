@@ -16,6 +16,7 @@ import com.ali.ishaqiyin_admin.call.CallActivity
 import com.ali.ishaqiyin_admin.call.CallEngine
 import com.ali.ishaqiyin_admin.call.CallService
 import com.ali.ishaqiyin_admin.core.AppConfig
+import com.ali.ishaqiyin_admin.ui.NotificationRoute
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import kotlinx.coroutines.CoroutineScope
@@ -102,7 +103,12 @@ class AdminMessagingService : FirebaseMessagingService() {
         val title = message.notification?.title ?: message.data["title"] ?: "تنبيه الإدارة"
         val body = message.notification?.body ?: message.data["body"].orEmpty()
         if (title.isEmpty() && body.isEmpty()) return
-        show(title, body, message.messageId?.hashCode() ?: System.currentTimeMillis().toInt())
+        show(
+            title = title,
+            body = body,
+            id = message.messageId?.hashCode() ?: System.currentTimeMillis().toInt(),
+            data = message.data,
+        )
     }
 
     /**
@@ -234,7 +240,7 @@ class AdminMessagingService : FirebaseMessagingService() {
         runCatching { manager.notify(AdminCallNotifications.INCOMING_ID, notification) }
     }
 
-    private fun show(title: String, body: String, id: Int) {
+    private fun show(title: String, body: String, id: Int, data: Map<String, String>) {
         val manager = NotificationManagerCompat.from(this)
         if (!manager.areNotificationsEnabled()) return
         // أندرويد 13+: بلا إذن POST_NOTIFICATIONS يُرمى SecurityException.
@@ -247,10 +253,19 @@ class AdminMessagingService : FirebaseMessagingService() {
         }
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            // 🔔 حمولة التوجيه: بلاها كان كلّ إشعار — مساهمة أو نصّ مشروح أو
+            // رسالة خاصّة — ينتهي إلى اللوحة الرئيسية. نفس مفاتيح FCM حرفياً
+            // كي يقرأها MainActivity بالقارئ نفسه في المقدّمة والخلفيّة.
+            NotificationRoute.KEYS.forEach { key ->
+                data[key]?.takeIf { it.isNotEmpty() }?.let { putExtra(key, it) }
+            }
         }
+        // ⚠️ رمز الطلب = معرّف الإشعار لا 0: مع FLAG_UPDATE_CURRENT ورمز
+        // واحد تتشارك الإشعارات كلّها نيّة واحدة، فيرث الأقدمُ حمولةَ الأحدث
+        // وتفتح كلّها الوجهة نفسها.
         val pending = PendingIntent.getActivity(
             this,
-            0,
+            id,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
