@@ -113,6 +113,7 @@ import com.ali.ishaqiyin_admin.data.chatTypeLabel
 import com.ali.ishaqiyin_admin.data.chatTypeToString
 import com.ali.ishaqiyin_admin.data.formatBytes
 import com.ali.ishaqiyin_admin.data.guessContentType
+import com.ali.ishaqiyin_admin.ui.ClipboardImageSuggestion
 import com.ali.ishaqiyin_admin.ui.CountBadge
 import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.RemoteImage
@@ -559,7 +560,7 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
     }
 
     // ── الواجهة ────────────────────────────────────────────
-    Surface(color = ChatColors.bg, modifier = Modifier.fillMaxSize()) {
+    WhatsAppChatBackground(Modifier.fillMaxSize()) {
         // edge-to-edge إجباريّ على targetSdk 36: بلا هذه الحشوات يقع شريط
         // الإدخال والميكروفون خلف شريط التنقّل فتُبتلع اللمسات، ويختفي جزء
         // من الترويسة خلف شريط الحالة.
@@ -747,6 +748,11 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                 )
             }
             replyTo?.let { ReplyBanner(it) { replyTo = null } }
+            ClipboardImageSuggestion(
+                enabled = !voice.showsBar && (!meta.locked || isOwner),
+                onImage = { uri -> pendingUpload = context.pickedFileFrom(uri) },
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
             // مقفول أو معاينة: شريط مستقلّ يتقدّم على شريط قفل المجموعة —
             // إخفاؤه أثناء تسجيل مقفول كان يترك المسجّل عاملاً بلا زرّ حذف
             // ولا إرسال. أمّا أثناء الضغط المطوّل فيبقى شريط الإدخال كما هو

@@ -83,9 +83,10 @@ fun AdminTranscriptImagesEditor(
         CropImageOptions(
             activityTitle = "قصّ صورة الصفحة",
             cropMenuCropButtonTitle = "تم",
-            // نافذة القصّ تبدأ مغطّية الصورة كاملة (حتى الأعلى والأسفل) —
-            // الهامش الافتراضي كان يوهم أن الأطراف خارج متناول القصّ.
-            initialCropWindowPaddingRatio = 0f,
+            // إبقاء مقابض القص داخل الشاشة يجعل الحافتين العلوية والسفلية
+            // قابلتين للسحب، مع السماح بتغيير الارتفاع والعرض بحرية.
+            initialCropWindowPaddingRatio = 0.08f,
+            canChangeCropWindow = true,
             guidelines = com.canhub.cropper.CropImageView.Guidelines.ON,
         ),
     )
@@ -149,6 +150,11 @@ fun AdminTranscriptImagesEditor(
             )
         }
     }
+    ClipboardImageSuggestion(
+        enabled = enabled && images.size + pendingNew.size < TranscriptsRepository.MAX_IMAGES,
+        onImage = { uri -> pendingNew.add(uri) },
+        modifier = Modifier.padding(bottom = 8.dp),
+    )
     if (images.isNotEmpty()) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             items(images.size) { i ->

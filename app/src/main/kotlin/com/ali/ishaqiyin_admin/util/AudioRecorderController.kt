@@ -88,8 +88,9 @@ class AudioRecorderController {
     }
 
     /**
-     * شكل الموجة النهائي: 40 قيمة (0..100) بتقسيم كلّ العيّنات إلى 40 دلواً
-     * ومتوسّط كلّ دلو. يبقى صالحاً بعد `stop()` (يُستدعى قبل الإرسال)،
+     * شكل الموجة النهائي: 48 قيمة (0..100). نمزج المتوسط مع القمّة في كل
+     * دلو كي تبقى حروف الكلام ظاهرة ولا تتحول الموجة إلى شريط شبه مستوٍ.
+     * يبقى صالحاً بعد `stop()` (يُستدعى قبل الإرسال)،
      * ويعود فارغاً إن لم تُلتقط أيّ عيّنة (تسجيل أقصر من دورة واحدة).
      */
     fun waveform(): List<Int> {
@@ -99,7 +100,10 @@ class AudioRecorderController {
             val from = i * s.size / WAVE_BARS
             val to = (i + 1) * s.size / WAVE_BARS
             val value = if (to > from) {
-                s.subList(from, to).sum() / (to - from)
+                val bucket = s.subList(from, to)
+                val average = bucket.sum() / bucket.size
+                val peak = bucket.maxOrNull() ?: average
+                (average * 3 + peak * 2) / 5
             } else {
                 // تسجيل قصير (عيّنات أقلّ من الأعمدة): يُمدَّد بأقرب عيّنة.
                 s[from.coerceAtMost(s.size - 1)]
@@ -270,7 +274,7 @@ class AudioRecorderController {
         private const val MAX_AMPLITUDE = 32_767
 
         /** عدد أعمدة الموجة المرسَلة مع المرفق. */
-        private const val WAVE_BARS = 40
+        private const val WAVE_BARS = 48
 
         /** ما يُعرض حيّاً أثناء التسجيل (آخر 6 ثوانٍ). */
         private const val LIVE_WINDOW = 60

@@ -22,6 +22,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Mic
@@ -29,11 +31,14 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -278,8 +283,9 @@ object SharedAudioPlayer {
     }
 }
 
-/** عدد أعمدة الموجة المعروضة (مطابق لما يُسجَّل مع المرفق). */
-private const val WAVE_BARS = 40
+/** كثافة قريبة من موجة واتساب على عرض الفقاعة، مع دعم الرسائل القديمة. */
+private const val WAVE_BARS = 48
+private const val DISPLAY_WAVE_BARS = 48
 
 /**
  * موجة حتميّة للرسائل القديمة التي لا تحمل بيانات موجة: نفس المعرّف يعطي
@@ -309,11 +315,20 @@ private fun fallbackWaveform(seed: String): List<Int> {
         }
         raw[i] = level
     }
-    return List(WAVE_BARS) { i ->
-        val a = raw[(i - 1).coerceAtLeast(0)]
-        val b = raw[i]
-        val c = raw[(i + 1).coerceAtMost(WAVE_BARS - 1)]
-        (a + 2 * b + c) / 4
+    return raw.toList()
+}
+
+/** يوحّد كثافة الموجات القديمة والجديدة من دون تغيير ترتيب قممها. */
+private fun resampleWaveform(source: List<Int>, targetSize: Int): List<Int> {
+    if (source.isEmpty()) return List(targetSize) { 30 }
+    if (source.size == targetSize) return source.map { it.coerceIn(0, 100) }
+    if (source.size == 1) return List(targetSize) { source.first().coerceIn(0, 100) }
+    return List(targetSize) { index ->
+        val position = index.toFloat() * (source.lastIndex.toFloat() / (targetSize - 1))
+        val left = position.toInt().coerceIn(0, source.lastIndex)
+        val right = (left + 1).coerceAtMost(source.lastIndex)
+        val fraction = position - left
+        (source[left] + (source[right] - source[left]) * fraction).toInt().coerceIn(0, 100)
     }
 }
 
@@ -333,6 +348,9 @@ fun AudioBubblePlayer(
     senderPhoto: String = "",
     mine: Boolean = false,
     listened: Boolean = false,
+    messageTime: String = "",
+    pending: Boolean = false,
+    readByAll: Boolean = false,
     onListened: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
@@ -377,136 +395,259 @@ fun AudioBubblePlayer(
         }
     }
 
-    Row(
-        Modifier.width(262.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // 1) صورة المرسل بشارة ميكروفون — تحلّ محلّها رقاقة السرعة أثناء
-        //    التشغيل (سلوك واتساب الحرفيّ).
-        Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-            when {
-                active -> SpeedChip(speed)
-                isVoice -> VoiceAvatar(senderUid, senderName, senderPhoto, listened)
-                // ملفّ صوتيّ عامّ: نوتة موسيقيّة بلا صورة مرسل.
-                else -> Icon(
-                    Icons.Filled.MusicNote,
-                    contentDescription = null,
-                    tint = ChatColors.accentDark,
-                    modifier = Modifier.size(26.dp),
-                )
-            }
-        }
-        Spacer(Modifier.width(6.dp))
-        // 2) زرّ تشغيل/إيقاف بلا خلفيّة دائريّة.
-        Box(
-            Modifier
-                .size(38.dp)
-                .clickable {
-                    scope.launch {
-                        SharedAudioPlayer.clearError()
-                        when {
-                            status.state == MediaState.Downloading -> Unit
-                            status.state == MediaState.Failed -> {
-                                val f = ChatMediaStore.retry(attachment)
-                                if (f != null) {
-                                    reportListened()
-                                    SharedAudioPlayer.playFile(context, key, f)
-                                }
-                            }
-                            !status.isReady -> {
-                                val f = ChatMediaStore.download(attachment)
-                                if (f != null) {
-                                    reportListened()
-                                    SharedAudioPlayer.playFile(context, key, f)
-                                }
-                            }
+    val scheme = MaterialTheme.colorScheme
+    val playedColor = scheme.primary
+    val restColor = scheme.onSurfaceVariant.copy(alpha = if (mine) 0.48f else 0.56f)
+    val controlColor = scheme.onSurfaceVariant.copy(alpha = 0.82f)
+    val metaColor = scheme.onSurfaceVariant.copy(alpha = 0.82f)
+    val displayBars = remember(bars) { resampleWaveform(bars, DISPLAY_WAVE_BARS) }
+    val showError = playbackError != null && activeKey == key
 
-                            active && playing -> SharedAudioPlayer.pause()
-                            else -> status.file?.let {
-                                reportListened()
-                                SharedAudioPlayer.playFile(context, key, it)
-                            }
-                        }
+    val controlClick: () -> Unit = {
+        scope.launch {
+            SharedAudioPlayer.clearError()
+            when {
+                status.state == MediaState.Downloading -> Unit
+                status.state == MediaState.Failed -> {
+                    ChatMediaStore.retry(attachment)?.let { file ->
+                        reportListened()
+                        SharedAudioPlayer.playFile(context, key, file)
                     }
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            if (status.state == MediaState.Downloading) {
-                CircularProgressIndicator(
-                    progress = { (status.progress / 100).toFloat() },
-                    strokeWidth = 2.4.dp,
-                    color = ChatColors.accentDark,
-                    modifier = Modifier.size(24.dp),
-                )
-            } else {
-                Icon(
-                    when {
-                        !status.isReady -> Icons.Filled.Download
-                        active && playing -> Icons.Filled.Pause
-                        else -> Icons.Filled.PlayArrow
-                    },
-                    contentDescription = null,
-                    // رمادي أزرار واتساب #8696A0 لا لون العلامة التجارية.
-                    tint = Color(0xFF8696A0),
-                    modifier = Modifier.size(34.dp),
-                )
+                }
+                !status.isReady -> {
+                    ChatMediaStore.download(attachment)?.let { file ->
+                        reportListened()
+                        SharedAudioPlayer.playFile(context, key, file)
+                    }
+                }
+                active && playing -> SharedAudioPlayer.pause()
+                else -> status.file?.let { file ->
+                    reportListened()
+                    SharedAudioPlayer.playFile(context, key, file)
+                }
             }
         }
-        Spacer(Modifier.width(4.dp))
-        Column(Modifier.weight(1f)) {
-            // 3) الموجة بديلة الشريط: نقر/سحب = تقديم داخل المقطع النشط.
-            WaveformSeekBar(
-                bars = bars,
+    }
+
+    // واتساب لا يعكس الموجة نفسها في الرسائل الصادرة؛ يغيّر ترتيب العناصر:
+    // الواردة = صورة، موجة، تشغيل. الصادرة = موجة، تشغيل، صورة.
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        Row(
+            Modifier.width(292.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (!mine) {
+                AudioIdentity(
+                    active = active,
+                    speed = speed,
+                    isVoice = isVoice,
+                    senderUid = senderUid,
+                    senderName = senderName,
+                    senderPhoto = senderPhoto,
+                    listened = listened,
+                    mine = false,
+                    tint = controlColor,
+                )
+                Spacer(Modifier.width(7.dp))
+            }
+
+            AudioWaveformTrack(
+                bars = displayBars,
                 progress = progress,
-                // ألوان واتساب الحرفيّة: المسموع رمادي مائل للأزرق الداكن
-                // #54656F، وغير المسموع رمادي فاتح — على الفقاعتين معاً.
-                played = Color(0xFF54656F),
-                rest = if (mine) Color(0xFFA0BFB0) else Color(0xFFC5CDD2),
+                playedColor = playedColor,
+                restColor = restColor,
+                dotColor = if (isVoice) ChatColors.readBlue else playedColor,
                 enabled = active && total > 0,
-                playing = active && playing,
-                onSeek = { fraction -> SharedAudioPlayer.seekTo((fraction * total).toLong()) },
-                dot = if (isVoice && !mine && !listened) {
-                    ChatColors.readBlue
-                } else {
-                    Color(0xFF54656F)
-                },
-            )
-            Spacer(Modifier.height(3.dp))
-            // 4) سطر الحالة: رقم واحد لا رقمان (يزول التباس اتجاه RTL).
-            //    خطأ التشغيل يخصّ المقطع النشط وحده فيُعرض مكانه.
-            val showError = playbackError != null && activeKey == key
-            Text(
-                if (showError) {
+                messageTime = messageTime,
+                pending = pending,
+                readByAll = readByAll,
+                mine = mine,
+                statusText = if (showError) {
                     playbackError.orEmpty()
                 } else {
                     statusLine(status, position, total, attachment)
                 },
-                fontSize = 10.5.sp,
-                color = if (showError) ChatColors.rose else ChatColors.textMuted,
+                statusIsError = showError,
+                metaColor = metaColor,
+                errorColor = scheme.error,
+                onSeek = { fraction -> SharedAudioPlayer.seekTo((fraction * total).toLong()) },
+                modifier = Modifier.weight(1f),
+            )
+
+            Spacer(Modifier.width(5.dp))
+            AudioControl(
+                status = status,
+                active = active,
+                playing = playing,
+                tint = controlColor,
+                progressTint = scheme.primary,
+                onClick = controlClick,
+            )
+
+            if (mine) {
+                Spacer(Modifier.width(7.dp))
+                AudioIdentity(
+                    active = active,
+                    speed = speed,
+                    isVoice = isVoice,
+                    senderUid = senderUid,
+                    senderName = senderName,
+                    senderPhoto = senderPhoto,
+                    listened = listened,
+                    mine = true,
+                    tint = controlColor,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AudioIdentity(
+    active: Boolean,
+    speed: Float,
+    isVoice: Boolean,
+    senderUid: String,
+    senderName: String,
+    senderPhoto: String,
+    listened: Boolean,
+    mine: Boolean,
+    tint: Color,
+) {
+    Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+        when {
+            active -> SpeedChip(speed)
+            isVoice -> VoiceAvatar(senderUid, senderName, senderPhoto, listened, mine)
+            else -> Icon(
+                Icons.Filled.MusicNote,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(27.dp),
             )
         }
     }
 }
 
-/** صورة المرسل الدائريّة بشارة ميكروفون (تزرقّ بعد الاستماع). */
 @Composable
-private fun VoiceAvatar(uid: String, name: String, photo: String, listened: Boolean) {
-    Box(Modifier.size(44.dp)) {
-        MemberAvatar(uid = uid, name = name, photo = photo, radius = 20)
+private fun AudioWaveformTrack(
+    bars: List<Int>,
+    progress: Float,
+    playedColor: Color,
+    restColor: Color,
+    dotColor: Color,
+    enabled: Boolean,
+    messageTime: String,
+    pending: Boolean,
+    readByAll: Boolean,
+    mine: Boolean,
+    statusText: String,
+    statusIsError: Boolean,
+    metaColor: Color,
+    errorColor: Color,
+    onSeek: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        WaveformSeekBar(
+            bars = bars,
+            progress = progress,
+            played = playedColor,
+            rest = restColor,
+            enabled = enabled,
+            onSeek = onSeek,
+            dot = dotColor,
+        )
+        Spacer(Modifier.height(1.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (mine) {
+                Icon(
+                    when {
+                        pending -> Icons.Filled.Schedule
+                        readByAll -> Icons.Filled.DoneAll
+                        else -> Icons.Filled.Done
+                    },
+                    contentDescription = null,
+                    tint = if (readByAll && !pending) ChatColors.readBlue else metaColor,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(3.dp))
+            }
+            Text(messageTime, fontSize = 11.sp, color = metaColor)
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = statusText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.End,
+                fontSize = 11.sp,
+                color = if (statusIsError) errorColor else metaColor,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AudioControl(
+    status: MediaStatus,
+    active: Boolean,
+    playing: Boolean,
+    tint: Color,
+    progressTint: Color,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier.size(42.dp).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (status.state == MediaState.Downloading) {
+            CircularProgressIndicator(
+                progress = { (status.progress / 100).toFloat() },
+                strokeWidth = 2.4.dp,
+                color = progressTint,
+                modifier = Modifier.size(25.dp),
+            )
+        } else {
+            Icon(
+                when {
+                    !status.isReady -> Icons.Filled.Download
+                    active && playing -> Icons.Filled.Pause
+                    else -> Icons.Filled.PlayArrow
+                },
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(36.dp),
+            )
+        }
+    }
+}
+
+/** صورة المرسل الدائريّة مع ميكروفون سماوي كما في مرجع واتساب. */
+@Composable
+private fun VoiceAvatar(
+    uid: String,
+    name: String,
+    photo: String,
+    listened: Boolean,
+    mine: Boolean,
+) {
+    val scheme = MaterialTheme.colorScheme
+    Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+        MemberAvatar(uid = uid, name = name, photo = photo, radius = 22)
         Box(
             Modifier
-                .align(Alignment.BottomEnd)
-                .size(16.dp)
-                .background(ChatColors.surface, CircleShape),
+                .align(if (mine) Alignment.BottomStart else Alignment.BottomEnd)
+                .size(19.dp)
+                .background(if (mine) ChatColors.mineBubble else scheme.surface, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 Icons.Filled.Mic,
                 contentDescription = null,
-                tint = if (listened) ChatColors.readBlue else ChatColors.textMuted,
-                // 12dp لا 11: أزرق واتساب أفتح من الأزرق السابق، فيحتاج
-                // مساحة مصمتة أكبر قليلاً ليبقى واضحاً على الدائرة البيضاء.
-                modifier = Modifier.size(12.dp),
+                tint = if (listened) ChatColors.readBlue else scheme.onSurfaceVariant,
+                modifier = Modifier.size(15.dp),
             )
         }
     }
@@ -515,9 +656,10 @@ private fun VoiceAvatar(uid: String, name: String, photo: String, listened: Bool
 /** رقاقة سرعة التشغيل 1×/1.5×/2× (تحلّ محلّ الصورة أثناء التشغيل). */
 @Composable
 private fun SpeedChip(speed: Float) {
+    val scheme = MaterialTheme.colorScheme
     Box(
         Modifier
-            .background(ChatColors.surfaceAlt, RoundedCornerShape(10.dp))
+            .background(scheme.surfaceVariant, RoundedCornerShape(10.dp))
             .clickable {
                 val steps = listOf(1f, 1.5f, 2f)
                 val next = steps[(steps.indexOf(speed) + 1) % steps.size]
@@ -529,16 +671,15 @@ private fun SpeedChip(speed: Float) {
             "${if (speed % 1f == 0f) speed.toInt().toString() else speed}×",
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
-            color = ChatColors.accentDark,
+            color = scheme.primary,
         )
     }
 }
 
 /**
  * موجة صوتيّة قابلة للسحب بنمط واتساب الحديث: أعمدة نحيفة بفجوات واضحة
- * وزوايا دائريّة، المسموع منها بلون بارز، والعمود الجاري أثناء التشغيل
- * ([playing]) أعلى قليلاً وبعتامة كاملة فيبدو كمؤشّر حيّ. ونقطة سحب عند
- * موضع التقدّم. مرآتيّة في RTL كي يسير التقدّم يميناً←يساراً.
+ * وزوايا دائريّة، المسموع منها بلون بارز، ونقطة سحب ظاهرة دائماً عند
+ * موضع التقدّم. تبقى الموجة نفسها من اليسار إلى اليمين في الوارد والصادر.
  *
  * عند اكتمال التشغيل يعود [progress] إلى صفر (المشغّل يفرّغ مقطعه النشط)،
  * فترجع الموجة كاملةً بلون واحد لا نصف ملوّنة.
@@ -550,7 +691,6 @@ private fun WaveformSeekBar(
     played: Color,
     rest: Color,
     enabled: Boolean,
-    playing: Boolean,
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier,
     // نقطة السحب: زرقاء لرسالة صوتيّة لم أسمعها بعد (سلوك واتساب)، وإلا
@@ -561,7 +701,7 @@ private fun WaveformSeekBar(
     Canvas(
         modifier
             .fillMaxWidth()
-            .height(30.dp)
+            .height(24.dp)
             .pointerInput(enabled, rtl) {
                 if (!enabled) return@pointerInput
                 detectTapGestures { offset ->
@@ -581,7 +721,7 @@ private fun WaveformSeekBar(
         // كثافة واتساب الحقيقيّة: فجوة ضيّقة وعمود بعرضها تقريباً — موجة
         // متّصلة بصريّاً لا أعمدة متناثرة. (لا عمود «متضخّم» عند المؤشّر:
         // واتساب يكتفي بنقطة السحب علامةً للموضع.)
-        val gap = 1.8.dp.toPx()
+        val gap = 1.5.dp.toPx()
         val barWidth = ((size.width - gap * (count - 1)) / count).coerceAtLeast(1.dp.toPx())
         val minHeight = 3.dp.toPx()
         val playedBars = (progress * count).toInt()
@@ -600,15 +740,14 @@ private fun WaveformSeekBar(
                 cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
             )
         }
-        if (enabled) {
-            val r = 5.5.dp.toPx()
-            val x = if (rtl) size.width - progress * size.width else progress * size.width
-            drawCircle(
-                color = dot,
-                radius = r,
-                center = Offset(x.coerceIn(r, (size.width - r).coerceAtLeast(r)), size.height / 2f),
-            )
-        }
+        // تبقى نقطة البداية ظاهرة قبل التشغيل؛ enabled تتحكم بالسحب فقط.
+        val r = 5.5.dp.toPx()
+        val x = if (rtl) size.width - progress * size.width else progress * size.width
+        drawCircle(
+            color = dot,
+            radius = r,
+            center = Offset(x.coerceIn(r, (size.width - r).coerceAtLeast(r)), size.height / 2f),
+        )
     }
 }
 
@@ -620,7 +759,7 @@ private fun seekFraction(x: Float, width: Float, rtl: Boolean): Float {
 
 private fun fmt(ms: Long): String {
     val totalSeconds = (ms / 1000).coerceAtLeast(0)
-    return "%02d:%02d".format(totalSeconds / 60, totalSeconds % 60)
+    return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
 }
 
 private fun statusLine(
@@ -633,11 +772,11 @@ private fun statusLine(
         "بانتظار الشبكة… ${status.progress.toInt()}% (سيُستأنف تلقائياً)"
     status.state == MediaState.Downloading -> "جارٍ التنزيل… ${status.progress.toInt()}%"
     status.state == MediaState.Failed -> status.error ?: "تعذّر التنزيل"
-    !status.isReady -> if (attachment.size > 0) {
+    !status.isReady && total > 0L -> fmt(total)
+    !status.isReady && attachment.size > 0 -> {
         "اضغط للتنزيل • ${formatBytes(attachment.size)}"
-    } else {
-        "اضغط للتنزيل"
     }
+    !status.isReady -> "اضغط للتنزيل"
 
     // رقم واحد فقط: الزمن المنقضي أثناء التشغيل، والمدّة عند السكون.
     else -> fmt(if (position > 0L) position else total)

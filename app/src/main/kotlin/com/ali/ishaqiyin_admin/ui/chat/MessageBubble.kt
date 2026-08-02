@@ -42,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -97,6 +98,9 @@ fun MessageBubble(
 
     val sender = members[msg.senderId]
     val mine = msg.isMine
+    val hasInlineVoiceAvatar = !msg.deleted && msg.type == ChatMessageType.Voice
+    val isAudioBubble = !msg.deleted &&
+        (msg.type == ChatMessageType.Audio || msg.type == ChatMessageType.Voice)
     val bubbleColor = if (mine) ChatColors.mineBubble else ChatColors.surface
     val shape = RoundedCornerShape(
         topStart = 14.dp,
@@ -117,7 +121,7 @@ fun MessageBubble(
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            if (!mine) {
+            if (!mine && !hasInlineVoiceAvatar) {
                 if (showSenderHeader) {
                     MemberAvatar(
                         uid = msg.senderId,
@@ -131,17 +135,18 @@ fun MessageBubble(
             }
             Column(
                 Modifier
-                    .widthIn(max = 280.dp)
+                    .widthIn(max = if (isAudioBubble) 308.dp else 280.dp)
+                    .shadow(1.dp, shape)
                     .background(bubbleColor, shape)
-                    .border(
-                        1.dp,
-                        if (mine) ChatColors.mineBubbleBorder else ChatColors.border,
-                        shape,
-                    )
                     .pointerInput(msg.id) {
                         detectTapGestures(onLongPress = { onLongPress(msg) })
                     }
-                    .padding(start = 10.dp, top = 8.dp, end = 10.dp, bottom = 6.dp),
+                    .padding(
+                        start = if (isAudioBubble) 8.dp else 10.dp,
+                        top = if (isAudioBubble) 4.dp else 8.dp,
+                        end = if (isAudioBubble) 8.dp else 10.dp,
+                        bottom = if (isAudioBubble) 4.dp else 6.dp,
+                    ),
             ) {
                 if (!mine && showSenderHeader) SenderHeader(msg, sender)
                 msg.replyTo?.let { ReplyPreview(it, onReplyTap) }
@@ -150,10 +155,12 @@ fun MessageBubble(
                 if (msg.deleted) {
                     DeletedBody(msg, members)
                 } else {
-                    BubbleBody(msg, sender, onListened)
+                    BubbleBody(msg, sender, readByAll, onListened)
                 }
-                Spacer(Modifier.height(2.dp))
-                BubbleFooter(msg, readByAll)
+                if (!isAudioBubble) {
+                    Spacer(Modifier.height(2.dp))
+                    BubbleFooter(msg, readByAll)
+                }
             }
         }
         if (msg.reactions.isNotEmpty() && !msg.deleted) {
@@ -288,6 +295,7 @@ private fun DeletedBody(msg: ChatMessage, members: Map<String, ChatMember>) {
 private fun BubbleBody(
     msg: ChatMessage,
     sender: ChatMember?,
+    readByAll: Boolean,
     onListened: ((ChatMessage) -> Unit)?,
 ) {
     val att = msg.attachment
@@ -324,6 +332,9 @@ private fun BubbleBody(
                         senderPhoto = sender?.displayPhoto ?: msg.senderPhoto,
                         mine = msg.isMine,
                         listened = listened,
+                        messageTime = timeFormat.format(Date(msg.createdAtMs)),
+                        pending = msg.pending,
+                        readByAll = readByAll,
                         onListened = onListened?.let { cb -> { cb(msg) } },
                     )
                 }

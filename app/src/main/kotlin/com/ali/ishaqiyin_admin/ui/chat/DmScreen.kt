@@ -83,6 +83,7 @@ import com.ali.ishaqiyin_admin.data.arabicReason
 import com.ali.ishaqiyin_admin.data.chatTypeForMime
 import com.ali.ishaqiyin_admin.data.chatTypeLabel
 import com.ali.ishaqiyin_admin.data.guessContentType
+import com.ali.ishaqiyin_admin.ui.ClipboardImageSuggestion
 import com.ali.ishaqiyin_admin.ui.ConfirmDialog
 import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.adminFieldColors
@@ -459,7 +460,7 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         )
     }
 
-    Surface(color = ChatColors.bg, modifier = Modifier.fillMaxSize()) {
+    WhatsAppChatBackground(Modifier.fillMaxSize()) {
         // edge-to-edge إجباريّ على targetSdk 36: بلا هذه الحشوات يقع شريط
         // الإدخال والميكروفون خلف شريط التنقّل فتُبتلع اللمسات، ويختفي جزء
         // من الترويسة خلف شريط الحالة.
@@ -803,6 +804,11 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                 }
             }
             replyTo?.let { ReplyBanner(it) { replyTo = null } }
+            ClipboardImageSuggestion(
+                enabled = !voice.showsBar,
+                onImage = { uri -> pendingUpload = context.pickedFileFrom(uri) },
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
             if (voice.showsBar) {
                 // مقفول أو معاينة فقط؛ أثناء الضغط المطوّل يبقى شريط الإدخال
                 // كما هو (تغيير تخطيطه يزيح الزرّ فيُطلق القفل/الإلغاء زوراً).

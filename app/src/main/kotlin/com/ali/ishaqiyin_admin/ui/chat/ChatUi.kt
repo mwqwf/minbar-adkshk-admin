@@ -4,9 +4,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
@@ -15,7 +18,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -28,8 +36,6 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.ui.RemoteImage
-import com.ali.ishaqiyin_admin.ui.kBg
-import com.ali.ishaqiyin_admin.ui.kBoxBg
 import com.ali.ishaqiyin_admin.ui.kDanger
 import com.ali.ishaqiyin_admin.ui.kTeal
 import com.ali.ishaqiyin_admin.ui.kTealDark
@@ -40,16 +46,17 @@ import com.ali.ishaqiyin_admin.util.openExternalUri
  * الداكنة، فاستُبدلت القيم بما يقرأ جيّداً على خلفيّة فاتحة).
  */
 object ChatColors {
-    val bg = kBg
+    /** خلفية واتساب الفاتحة الدافئة، لا أبيض منبر المزرق. */
+    val bg = Color(0xFFEFEAE2)
     val surface = Color.White
-    val surfaceAlt = kBoxBg
-    val border = Color(0xFFCCE3E3)
-    val textMuted = Color(0xFF64748B)
+    val surfaceAlt = Color(0xFFF0F2F5)
+    val border = Color(0xFFD8DEE2)
+    val textMuted = Color(0xFF667781)
     val accent = kTeal
     val accentDark = kTealDark
     val amber = Color(0xFFB45309)
     val rose = kDanger
-    val highlight = Color(0xFFDFF0EE)
+    val highlight = Color(0xFFD9FDD3)
     val online = Color(0xFF16A34A)
 
     /**
@@ -61,8 +68,91 @@ object ChatColors {
     val readBlue = Color(0xFF53BDEB)
 
     /** فقاعة رسائلي (أخضر فاتح بنمط واتساب) وحدودها. */
-    val mineBubble = Color(0xFFD9F2E7)
-    val mineBubbleBorder = Color(0xFFB8E3D2)
+    val mineBubble = Color(0xFFD9FDD3)
+    val mineBubbleBorder = Color.Transparent
+    val wallpaperInk = Color(0xFF6B7C83).copy(alpha = 0.12f)
+}
+
+/**
+ * خلفية دردشة خفيفة بنمط رسومات واتساب المتكرّرة. تُرسم بالـCanvas فلا
+ * تضيف صورة كبيرة إلى APK، ويستعملها الخاص والمجموعة من المصدر نفسه.
+ */
+@Composable
+fun WhatsAppChatBackground(
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    Box(modifier.background(ChatColors.bg)) {
+        Canvas(Modifier.fillMaxSize()) {
+            val tile = 58.dp.toPx()
+            val stroke = 1.dp.toPx()
+            val icon = 23.dp.toPx()
+            val rows = (size.height / tile).toInt() + 2
+            val columns = (size.width / tile).toInt() + 2
+            for (row in -1..rows) {
+                for (column in -1..columns) {
+                    val x = column * tile + if ((row and 1) == 0) 0f else tile / 2f
+                    val y = row * tile
+                    val center = Offset(x + tile / 2f, y + tile / 2f)
+                    when (kotlin.math.abs(row * 7 + column) % 4) {
+                        0 -> {
+                            val topLeft = Offset(center.x - icon / 2f, center.y - icon * 0.36f)
+                            drawRoundRect(
+                                color = ChatColors.wallpaperInk,
+                                topLeft = topLeft,
+                                size = Size(icon, icon * 0.72f),
+                                cornerRadius = CornerRadius(icon * 0.16f),
+                                style = Stroke(stroke),
+                            )
+                            drawLine(
+                                ChatColors.wallpaperInk,
+                                Offset(topLeft.x + icon * 0.22f, topLeft.y + icon * 0.72f),
+                                Offset(topLeft.x + icon * 0.12f, topLeft.y + icon * 0.9f),
+                                stroke,
+                            )
+                        }
+                        1 -> {
+                            drawCircle(
+                                color = ChatColors.wallpaperInk,
+                                radius = icon * 0.38f,
+                                center = center,
+                                style = Stroke(stroke),
+                            )
+                            drawLine(
+                                ChatColors.wallpaperInk,
+                                Offset(center.x - icon * 0.27f, center.y + icon * 0.27f),
+                                Offset(center.x + icon * 0.27f, center.y - icon * 0.27f),
+                                stroke,
+                            )
+                        }
+                        2 -> {
+                            val star = Path()
+                            repeat(10) { point ->
+                                val angle = -Math.PI / 2 + point * Math.PI / 5
+                                val radius = if (point % 2 == 0) icon * 0.42f else icon * 0.18f
+                                val px = center.x + kotlin.math.cos(angle).toFloat() * radius
+                                val py = center.y + kotlin.math.sin(angle).toFloat() * radius
+                                if (point == 0) star.moveTo(px, py) else star.lineTo(px, py)
+                            }
+                            star.close()
+                            drawPath(star, ChatColors.wallpaperInk, style = Stroke(stroke))
+                        }
+                        else -> {
+                            val plane = Path().apply {
+                                moveTo(center.x - icon * 0.43f, center.y - icon * 0.25f)
+                                lineTo(center.x + icon * 0.44f, center.y)
+                                lineTo(center.x - icon * 0.43f, center.y + icon * 0.25f)
+                                lineTo(center.x - icon * 0.12f, center.y)
+                                close()
+                            }
+                            drawPath(plane, ChatColors.wallpaperInk, style = Stroke(stroke))
+                        }
+                    }
+                }
+            }
+        }
+        content()
+    }
 }
 
 /**

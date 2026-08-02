@@ -27,6 +27,11 @@ val hasReleaseSigning = listOf(
     releaseStorePassword,
 ).all { !it.isNullOrBlank() } && releaseStorePath?.let(::file)?.exists() == true
 
+// الاسم الظاهر للمستخدم. ثابت واحد لكل أنواع البناء بلا أي لاحقة
+// («تجريبي»/dev/beta/…). الحارس أسفل كتلة `android` يوقف البناء إن عاد
+// أحد فأضاف لاحقة.
+val canonicalAppLabel = "إدارة منبر ادكصهك"
+
 android {
     // الحزمة ثابتة: عميل Google OAuth وبصمة SHA-1 مربوطان بها في mxqp-8d1e8.
     namespace = "com.ali.ishaqiyin_admin"
@@ -41,7 +46,7 @@ android {
         // فُقدت جلسة الدخول بإلغاء التثبيت. الاسم يبقى كما هو.
         versionCode = 2002
         versionName = "1.0.0"
-        manifestPlaceholders["appLabel"] = "إدارة منبر ادكصهك"
+        manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -62,7 +67,8 @@ android {
         debug {
             // بلا applicationIdSuffix: عميل Google OAuth مسجَّل على الحزمة نفسها،
             // وتغييرها يكسر تسجيل الدخول (وهو الطريق الوحيد للوحة).
-            manifestPlaceholders["appLabel"] = "إدارة منبر ادكصهك"
+            // الاسم الظاهر يرث `canonicalAppLabel` بلا أي لاحقة.
+            manifestPlaceholders["appLabel"] = canonicalAppLabel
         }
         release {
             if (hasReleaseSigning) {
@@ -189,6 +195,20 @@ tasks.matching {
     doFirst {
         check(hasReleaseSigning) {
             "Missing release signing values. Use signing.properties or the MINBAR_ADMIN_SIGNING_* environment variables."
+        }
+    }
+}
+
+// حارس دائم لاسم اللوحة الظاهر: لا لاحقة («تجريبي»/dev/beta) في أي نوع بناء
+// أبداً. يعمل بعد اكتمال كل كتل الـDSL فيلتقط أي لاحقة تُضاف لاحقاً.
+androidComponents {
+    finalizeDsl { extension ->
+        extension.buildTypes.forEach { buildType ->
+            val label = buildType.manifestPlaceholders["appLabel"]
+            check(label == null || label == canonicalAppLabel) {
+                "اسم اللوحة الظاهر في نوع البناء «${buildType.name}» صار «$label». " +
+                    "يجب أن يبقى «$canonicalAppLabel» بلا أي لاحقة في كل الأنواع."
+            }
         }
     }
 }
