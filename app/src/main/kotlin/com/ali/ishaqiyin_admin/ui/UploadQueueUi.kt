@@ -21,6 +21,9 @@ import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PauseCircle
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -63,10 +66,12 @@ import kotlinx.coroutines.delay
  */
 @Composable
 fun UploadQueueBanner(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
     val items by UploadQueue.items.collectAsState()
     val progress by UploadQueue.progress.collectAsState()
     val online by NetworkMonitor.online.collectAsState()
     val justAdded by UploadQueue.justEnqueued.collectAsState()
+    val paused by UploadQueue.paused.collectAsState()
     var showSheet by remember { mutableStateOf(false) }
 
     // انزواء التأكيد وحده بعد لحظات — بلا زرّ إغلاق يدويّ.
@@ -78,16 +83,16 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
 
     if (items.isEmpty()) return
 
-    val waiting = !online || progress?.waitingForNetwork == true
+    val waiting = !paused && (!online || progress?.waitingForNetwork == true)
     val current = progress
     // درس مركون = فشل رفعه نهائياً وخرج من دور الرفع (peek يستبعد المركون)،
     // فلا يجوز أن يُعرض «بانتظار الدور» — لن يُرفع أبداً بلا تدخّل المشرف.
     val parkedCount = items.count { it.parked }
-    val idle = current == null && !waiting
+    val idle = current == null && !waiting && !paused
     val alerting = parkedCount > 0 && idle
     val accent = when {
         alerting -> MaterialTheme.colorScheme.error
-        waiting -> adminOrange
+        paused || waiting -> adminOrange
         else -> MaterialTheme.colorScheme.primary
     }
     val parkedText = if (parkedCount > 1) {
@@ -120,6 +125,7 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                 Icon(
                     when {
                         alerting -> Icons.Filled.ErrorOutline
+                        paused -> Icons.Filled.PauseCircle
                         waiting -> Icons.Filled.CloudOff
                         else -> Icons.Filled.CloudUpload
                     },
@@ -139,6 +145,9 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                     )
                     Text(
                         when {
+                            paused -> "موقوف مؤقّتاً" +
+                                (current?.percent?.takeIf { it > 0 }?.let { " عند $it%" } ?: "") +
+                                " — يُستأنف من حيث توقّف"
                             waiting -> "بانتظار الإنترنت — سيُستأنف تلقائياً من حيث توقّف"
                             current != null -> "جارٍ الرفع… ${current.percent}%"
                             parkedCount > 0 -> parkedText
@@ -150,6 +159,26 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
+                    )
+                }
+                // ⏸/▶ في الشريط نفسه: أسرع تدخّل ممكن بلا فتح الورقة —
+                // المشرف الذي انتبه أنّه على بيانات الجوّال يريد إيقافاً الآن.
+                IconButton(
+                    onClick = {
+                        if (paused) {
+                            UploadQueue.resume()
+                            LessonUploadWorker.kick(context)
+                        } else {
+                            UploadQueue.pause()
+                        }
+                    },
+                    modifier = Modifier.size(30.dp),
+                ) {
+                    Icon(
+                        if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                        contentDescription = if (paused) "استئناف الرفع" else "إيقاف الرفع مؤقّتاً",
+                        tint = accent,
+                        modifier = Modifier.size(19.dp),
                     )
                 }
                 if (items.size > 1) {
@@ -265,10 +294,12 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
     val context = LocalContext.current
     val items by UploadQueue.items.collectAsState()
     val progress by UploadQueue.progress.collectAsState()
+    val paused by UploadQueue.paused.collectAsState()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     // الإلغاء يحذف النسخة المحليّة نهائياً — وهي النسخة الوحيدة للملفّ
     // المدموج (enqueueLocalFile تحذف المصدر) — فلا يقع بلا تأكيد صريح.
     var confirmCancel by remember { mutableStateOf<PendingUpload?>(null) }
+    var confirmCancelAll by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -292,6 +323,55 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 lineHeight = 18.sp,
             )
+            Spacer(Modifier.height(10.dp))
+            // ⏸ التحكّم بالطابور كلّه: إيقاف مؤقّت يُبقي كلّ شيء ويستأنف من
+            // البايت نفسه، وإلغاء الكل يحذف — ولذلك يمرّ بتأكيد صريح.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        if (paused) {
+                            UploadQueue.resume()
+                            LessonUploadWorker.kick(context)
+                        } else {
+                            UploadQueue.pause()
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(
+                        if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Text(if (paused) "استئناف الرفع" else "إيقاف مؤقّت")
+                }
+                OutlinedButton(
+                    onClick = { confirmCancelAll = true },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Text("إلغاء الكل", color = MaterialTheme.colorScheme.error)
+                }
+            }
+            if (paused) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "الرفع موقوف: لا شيء يُرفع حتى تضغط «استئناف». الملفّات " +
+                        "وجلسات الرفع محفوظة، والاستئناف يُكمل من حيث توقّف " +
+                        "لا من الصفر.",
+                    fontSize = 11.5.sp,
+                    color = adminOrange,
+                    lineHeight = 17.sp,
+                )
+            }
             // «إعادة محاولة الكل»: بعد انقطاع طويل قد يُركن عدّة دروس معاً،
             // فإعادتها واحداً واحداً عبء بلا سبب — تُرفع عنها جميعاً حالة
             // الركن ثمّ يوقَظ العامل مرّة واحدة فيمضي بها بالدور.
@@ -444,6 +524,24 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                 confirmCancel = null
             },
             onDismiss = { confirmCancel = null },
+        )
+    }
+
+    if (confirmCancelAll) {
+        ConfirmDialog(
+            title = "إلغاء كلّ ما في الطابور؟",
+            body = "ستُحذف ${items.size} عناصر من طابور الرفع، وتُحذف معها " +
+                "نسخها المحليّة نهائياً بلا تراجع. لن يُنشر أيّ منها في " +
+                "التطبيق العام. إن كنت تريد التوقّف مؤقّتاً فقط فاستعمل " +
+                "«إيقاف مؤقّت» — فهو يُبقي كلّ شيء.",
+            confirmLabel = "إلغاء الكل وحذف الملفّات",
+            confirmColor = MaterialTheme.colorScheme.error,
+            onConfirm = {
+                UploadQueue.cancelAll()
+                confirmCancelAll = false
+                onDismiss()
+            },
+            onDismiss = { confirmCancelAll = false },
         )
     }
 }

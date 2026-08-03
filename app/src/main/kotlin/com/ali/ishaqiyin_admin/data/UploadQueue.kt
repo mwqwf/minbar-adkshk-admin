@@ -133,6 +133,8 @@ data class UploadProgress(
     val title: String,
     val percent: Int,
     val waitingForNetwork: Boolean = false,
+    /** أوقفه المشرف مؤقّتاً — يُستأنف من البايت نفسه بجلسة الرفع المحفوظة. */
+    val paused: Boolean = false,
 )
 
 /**
@@ -166,6 +168,7 @@ data class JustEnqueued(
 object UploadQueue {
     private const val PREFS_KEY = "lesson_upload_queue_v1"
     private const val SEQ_KEY = "lesson_upload_seq_v1"
+    private const val PAUSED_KEY = "lesson_upload_paused_v1"
     private const val DIR = "upload_queue"
 
     private val _items = MutableStateFlow<List<PendingUpload>>(emptyList())
@@ -186,9 +189,38 @@ object UploadQueue {
      */
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /**
+     * ⏸ إيقاف مؤقّت للطابور كلّه — **لا إلغاء**: النقل الجاري يُوقف، لكنّ
+     * جلسة الرفع والملفّ المحلّي يبقيان، فالاستئناف يُكمل من البايت الذي
+     * وقف عنده لا من الصفر. محفوظ على القرص كي يصمد لإعادة تشغيل العمليّة:
+     * بلا ذلك كان WorkManager يوقظ العامل بعد قتل التطبيق فيستأنف رفعاً
+     * أوقفه المشرف عمداً (وهو غالباً أوقفه لأنّه على بيانات الجوّال).
+     */
+    private val _paused = MutableStateFlow(false)
+    val paused: StateFlow<Boolean> = _paused
+
     fun init(context: Context) {
         AppPrefs.init(context)
         _items.value = load()
+        _paused.value = prefs().getBoolean(PAUSED_KEY, false)
+    }
+
+    fun isPaused(): Boolean = _paused.value
+
+    /** يوقف النقل الجاري فوراً — والعامل يخرج عند الدورة التالية. */
+    fun pause() {
+        if (_paused.value) return
+        _paused.value = true
+        prefs().edit().putBoolean(PAUSED_KEY, true).apply()
+        activeCancel?.let { (_, stop) -> runCatching { stop() } }
+    }
+
+    /** يرفع الإيقاف — على المُنادي أن يوقظ العامل بعده. */
+    fun resume() {
+        if (!_paused.value) return
+        _paused.value = false
+        prefs().edit().putBoolean(PAUSED_KEY, false).apply()
+        _progress.value = _progress.value?.copy(paused = false)
     }
 
     private fun prefs() = AppPrefs.context
@@ -458,6 +490,11 @@ object UploadQueue {
         if (orphanPath != null) {
             cleanupScope.launch { runCatching { StorageService.deleteFileOrThrow(orphanPath) } }
         }
+    }
+
+    /** إلغاء كلّ ما في الطابور — لكلّ عنصر منطق [cancel] نفسه بلا استثناء. */
+    fun cancelAll() {
+        _items.value.map { it.id }.forEach { cancel(it) }
     }
 
     fun setProgress(p: UploadProgress?) {

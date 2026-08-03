@@ -70,6 +70,12 @@ class LessonUploadWorker(
         runCatching { setForeground(foregroundInfo(null, 0)) }
 
         while (true) {
+            // ⏸ إيقاف مؤقّت: العامل ينسحب بنجاح ولا يُعاد جدولته — الطابور
+            // والجلسات والملفّات كلّها باقية، ويوقظه زرّ «استئناف» وحده.
+            if (UploadQueue.isPaused()) {
+                markPaused()
+                return Result.success()
+            }
             // قراءة طازجة في كلّ دورة: الحالة قد تتغيّر أثناء الرفع
             // (إلغاء من المشرف، أو جلسة استئناف حُفظت).
             val item = UploadQueue.peek() ?: break
@@ -139,6 +145,15 @@ class LessonUploadWorker(
                 UploadQueue.setProgress(null)
                 throw cancel
             } catch (e: Exception) {
+                // ⏸ الإيقاف يُلغي مهمّة Firebase فترمي استثناءً — وهو ليس
+                // فشلاً: لا يُحسب من المحاولات، ولا تُمسح جلسة الاستئناف،
+                // فيُكمل «استئناف» من البايت نفسه. الفحص **قبل** فحص الشبكة
+                // كي لا يُعاد جدولة العامل فيستأنف رفعاً أوقفه المشرف.
+                if (UploadQueue.isPaused()) {
+                    UploadQueue.update(item.id) { it.copy(lastError = null) }
+                    markPaused(item.title)
+                    return Result.success()
+                }
                 if (isNetworkFailure(e)) {
                     // انقطاع شبكة (ولو وصل ملفوفاً في StorageException بعد
                     // نفاد مهلة إعادة المحاولة الداخلية): لا يُحسب من
@@ -189,6 +204,23 @@ class LessonUploadWorker(
     }
 
     private var lastPercent: Int = 0
+
+    /**
+     * حالة «موقوف مؤقّتاً» للواجهة: تُبقي العنوان والنسبة الأخيرة ظاهرين
+     * فيعرف المشرف من أين سيُستأنف بدل شريط فارغ يوحي بأنّ شيئاً ضاع.
+     */
+    private fun markPaused(title: String? = null) {
+        val current = UploadQueue.progress.value
+        val item = UploadQueue.peek()
+        UploadQueue.setProgress(
+            UploadProgress(
+                id = current?.id ?: item?.id.orEmpty(),
+                title = title ?: current?.title ?: item?.title.orEmpty(),
+                percent = current?.percent ?: lastPercent,
+                paused = true,
+            ),
+        )
+    }
 
     /**
      * هل هذا فشل شبكيّ؟ Firebase يلفّ انقطاع الشبكة في StorageException

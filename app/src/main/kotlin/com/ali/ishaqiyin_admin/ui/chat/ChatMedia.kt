@@ -323,6 +323,13 @@ object SharedAudioPlayer {
     }
 }
 
+/**
+ * ارتفاع «سطر الصوت» الواحد: الصورة وزرّ التشغيل والموجة كلّها موسَّطة
+ * داخل شريط بهذا الارتفاع، فتستقيم مراكزها على خطّ أفقيّ واحد كما في
+ * واتساب. صفّ الوقت والمدّة يأتي **تحت** هذا الشريط لا داخله.
+ */
+private val AUDIO_LINE = 48.dp
+
 /** كثافة قريبة من موجة واتساب على عرض الفقاعة، مع دعم الرسائل القديمة. */
 private const val WAVE_BARS = 48
 private const val DISPLAY_WAVE_BARS = 48
@@ -490,7 +497,13 @@ fun AudioBubblePlayer(
             // عرض مرن لا 292dp ثابتة: كانت الفقاعة تملأ شاشة 320dp حتى
             // تلامس حوافّها.
             Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
+            // ⚠️ **Top لا CenterVertically**: الموجة تسكن عموداً يحمل تحتها
+            // صفّ الوقت والمدّة، فتوسيط ذلك العمود كان يرفع الموجة نحو
+            // ثمانية بكسلات فوق مركز زرّ التشغيل — يبدو الشريط مائلاً إلى
+            // الأعلى وينكسر الخطّ المستقيم الذي في واتساب. الآن تُحاذى
+            // الأبناء الثلاثة من الأعلى، ويُوسَّط كلّ منها داخل شريط واحد
+            // بارتفاع [AUDIO_LINE]، فتقع مراكزها على خطّ واحد تماماً.
+            verticalAlignment = Alignment.Top,
         ) {
             AudioIdentity(
                 active = active,
@@ -553,7 +566,7 @@ private fun AudioIdentity(
     listened: Boolean,
     mine: Boolean,
 ) {
-    Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+    Box(Modifier.size(AUDIO_LINE), contentAlignment = Alignment.Center) {
         when {
             active -> SpeedChip(speed, mine)
             isVoice -> VoiceAvatar(senderUid, senderName, senderPhoto, listened, mine)
@@ -582,13 +595,19 @@ private fun AudioWaveformTrack(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier) {
-        WaveformSeekBar(
-            bars = bars,
-            progress = progress,
-            enabled = enabled,
-            onSeek = onSeek,
-        )
-        Spacer(Modifier.height(1.dp))
+        // الموجة موسَّطة داخل شريط بارتفاع زرّ التشغيل نفسه: بهذا يقع
+        // مركزها على مركزَي الزرّ والصورة تماماً (خطّ مستقيم كواتساب).
+        Box(
+            Modifier.fillMaxWidth().height(AUDIO_LINE),
+            contentAlignment = Alignment.Center,
+        ) {
+            WaveformSeekBar(
+                bars = bars,
+                progress = progress,
+                enabled = enabled,
+                onSeek = onSeek,
+            )
+        }
         // صفّ الميتا كما في المواصفة: **المدّة على حافة البداية (يمين RTL)**
         // ووقت الرسالة ثمّ ✓✓ على حافة النهاية (يسار). والصفّ مفروض Ltr، فأوّل
         // ابن هو اليسار: الوقت والعلامة أوّلاً ثمّ المدّة موزونة إلى اليمين.
@@ -649,7 +668,7 @@ private fun AudioControl(
     onCancel: () -> Unit,
 ) {
     Box(
-        Modifier.size(40.dp),
+        Modifier.size(AUDIO_LINE),
         contentAlignment = Alignment.Center,
     ) {
         if (status.state == MediaState.Downloading) {

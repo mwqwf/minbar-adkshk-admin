@@ -346,7 +346,10 @@ fun AdminApp() {
                 )
 
                 access == AccessState.Owner || access == AccessState.Supervisor ->
-                    AdminNavHost(isOwner = access == AccessState.Owner)
+                    // 🔔 تذكير تحديث اللوحة قبل محتواها — دعوة لا بوّابة.
+                    AdminUpdateGate {
+                        AdminNavHost(isOwner = access == AccessState.Owner)
+                    }
 
                 access == AccessState.NeedsOwnerCode -> OwnerCodeScreen(
                     onApproved = { resolveTrigger++ },

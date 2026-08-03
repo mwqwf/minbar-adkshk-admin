@@ -20,14 +20,28 @@ data class UpdateConfig(
  */
 object UpdateConfigRepository {
     private const val COLLECTION = "app_config"
-    private const val DOCUMENT = "android"
-    private const val DEFAULT_STORE_URL =
-        "https://play.google.com/store/apps/details?id=com.ali.menbaradkshk"
+
+    /**
+     * وثيقتان مستقلّتان: التطبيق العام ولوحة الإدارة. خلطهما كان يعني أن
+     * ترقيم إصدار أحدهما يُظهر تذكيراً كاذباً لمستخدمي الآخر.
+     */
+    enum class Target(val document: String, val label: String, val storeUrl: String) {
+        PublicApp(
+            document = "android",
+            label = "التطبيق العام",
+            storeUrl = "https://play.google.com/store/apps/details?id=com.ali.menbaradkshk",
+        ),
+        AdminApp(
+            document = AdminAppConfigRepository.DOCUMENT,
+            label = "لوحة الإدارة",
+            storeUrl = AdminAppConfigRepository.PLAY_URL,
+        ),
+    }
 
     private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
 
-    suspend fun load(): UpdateConfig {
-        val doc = db.collection(COLLECTION).document(DOCUMENT).get().await()
+    suspend fun load(target: Target = Target.PublicApp): UpdateConfig {
+        val doc = db.collection(COLLECTION).document(target.document).get().await()
         if (!doc.exists()) return UpdateConfig()
         return UpdateConfig(
             latestVersionCode = (doc.getLong("latestVersionCode") ?: 0L).toInt(),
@@ -37,15 +51,15 @@ object UpdateConfigRepository {
         )
     }
 
-    suspend fun save(config: UpdateConfig) {
+    suspend fun save(config: UpdateConfig, target: Target = Target.PublicApp) {
         // `set` لا `update`: الوثيقة قد لا تكون موجودة في أوّل ضبط.
         // ولا نكتب مفاتيح خارج ما تسمح به القاعدة (hasOnly) وإلا رُفضت.
-        db.collection(COLLECTION).document(DOCUMENT).set(
+        db.collection(COLLECTION).document(target.document).set(
             mapOf(
                 "latestVersionCode" to config.latestVersionCode,
                 "minSupportedVersionCode" to config.minSupportedVersionCode,
                 "message" to config.message,
-                "storeUrl" to config.storeUrl.ifBlank { DEFAULT_STORE_URL },
+                "storeUrl" to config.storeUrl.ifBlank { target.storeUrl },
                 "updatedAt" to FieldValue.serverTimestamp(),
                 "updatedBy" to AuthService.currentUser?.email.orEmpty(),
             ),
