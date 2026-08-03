@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.view.WindowCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -25,6 +26,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // العرض حتى حافة الشاشة مفروض من النظام على targetSdk 35+، فلو لم
+        // نُخبر النافذة بألّا تُقلّم المحتوى لظهرت الواجهة خلف شريطي النظام.
+        // ⛔ لا نستعمل `enableEdgeToEdge()`: نسختها في androidx.activity تستدعي
+        // `setStatusBarColor`/`setNavigationBarColor` المتوقّفتين، وهما ما
+        // يرصده فحص Play. هذا البديل غير متوقّف كلّياً.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        // تباين أيقونات الشريطين يتبع سمة اللوحة: أيقونات داكنة على سطح
+        // فاتح وفاتحة على سطح داكن، وإلا اختفت إحداهما في أحد الوضعين.
+        val night = resources.configuration.uiMode and
+            android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !night
+            isAppearanceLightNavigationBars = !night
+        }
         captureShare(intent)
         captureNotification(intent)
         requestNotificationPermission()

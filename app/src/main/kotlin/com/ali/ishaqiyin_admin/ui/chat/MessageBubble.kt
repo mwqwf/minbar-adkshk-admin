@@ -189,7 +189,8 @@ fun MessageBubble(
         msg.text.isBlank() &&
         (msg.type == ChatMessageType.Image || msg.type == ChatMessageType.Video)
     val hasReactions = msg.reactions.isNotEmpty() && !msg.deleted
-    val bubbleColor = if (mine) ChatColors.mineBubble else ChatColors.surface
+    // فقاعة غيري لها لونها الخاصّ لا لون السطح: في الداكن يفرّق واتساب بينهما.
+    val bubbleColor = if (mine) ChatColors.mineBubble else ChatColors.otherBubble
     val shape = whatsAppBubbleShape(mine = mine, withTail = showSenderHeader)
 
     // عرض أقصى نسبيّ: الثابت 308dp كان يكسر شاشات 320dp.
@@ -472,7 +473,7 @@ private fun QuoteBlock(
                     .padding(3.dp)
                     .size(48.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(Color.Black.copy(alpha = 0.06f)),
+                    .background(ChatColors.thumbBg),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
@@ -757,7 +758,7 @@ private fun FileTile(att: ChatAttachment) {
     Row(
         Modifier
             .width(244.dp)
-            .background(Color.Black.copy(alpha = 0.05f), RoundedCornerShape(10.dp))
+            .background(ChatColors.quoteBgOther, RoundedCornerShape(10.dp))
             .clickable(enabled = !downloading) {
                 scope.launch {
                     val f = if (status.isReady) status.file else ChatMediaStore.download(att)

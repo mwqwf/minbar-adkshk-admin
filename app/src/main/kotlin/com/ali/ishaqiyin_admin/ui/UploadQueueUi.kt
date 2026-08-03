@@ -26,6 +26,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -39,7 +40,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -86,9 +86,9 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
     val idle = current == null && !waiting
     val alerting = parkedCount > 0 && idle
     val accent = when {
-        alerting -> kDanger
-        waiting -> kOrange
-        else -> kTeal
+        alerting -> MaterialTheme.colorScheme.error
+        waiting -> adminOrange
+        else -> MaterialTheme.colorScheme.primary
     }
     val parkedText = if (parkedCount > 1) {
         "تعذّر رفع $parkedCount دروس — افتح للتفاصيل"
@@ -135,7 +135,7 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                         overflow = TextOverflow.Ellipsis,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = kTealDark,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                     Text(
                         when {
@@ -145,7 +145,11 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                             else -> "بانتظار الدور"
                         },
                         fontSize = 11.sp,
-                        color = if (alerting) kDanger else kMuted,
+                        color = if (alerting) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                     )
                 }
                 if (items.size > 1) {
@@ -157,7 +161,8 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                         // «س من ص» لا العدد وحده: يعرف المشرف أين وصل الدور.
                         Text(
                             "$activePosition من ${items.size}",
-                            color = Color.White,
+                            // اللافتة فوق لون مصمت متغيّر — الحبر يُشتقّ منه.
+                            color = contentColorOn(accent),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                         )
@@ -187,14 +192,14 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .background(kDanger.copy(alpha = 0.10f), RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.10f), RoundedCornerShape(10.dp))
                         .padding(horizontal = 8.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
                         Icons.Filled.ErrorOutline,
                         contentDescription = null,
-                        tint = kDanger,
+                        tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(14.dp),
                     )
                     Spacer(Modifier.size(6.dp))
@@ -202,7 +207,7 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                         parkedText,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = kDanger,
+                        color = MaterialTheme.colorScheme.error,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -213,14 +218,14 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .background(kGreen.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                        .background(adminGreen.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
                         .padding(horizontal = 8.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
                         Icons.Filled.CheckCircle,
                         contentDescription = null,
-                        tint = kGreen,
+                        tint = adminGreen,
                         modifier = Modifier.size(15.dp),
                     )
                     Spacer(Modifier.size(6.dp))
@@ -229,7 +234,7 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                             "أُضيف إلى الطابور: ${added.fileName}",
                             fontSize = 11.5.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = kGreen,
+                            color = adminGreen,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -237,7 +242,7 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                             "الترتيب ${added.position} من ${added.total} — " +
                                 "تابع إضافة درس آخر، الرفع يكمل وحده.",
                             fontSize = 10.5.sp,
-                            color = kMuted,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -268,14 +273,14 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = Color.White,
+        containerColor = MaterialTheme.colorScheme.surface,
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             Text(
                 "طابور الرفع (${items.size})",
                 fontWeight = FontWeight.Bold,
                 fontSize = 16.sp,
-                color = kTealDark,
+                color = MaterialTheme.colorScheme.primary,
             )
             Spacer(Modifier.height(4.dp))
             Text(
@@ -284,7 +289,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                     "وأغلق الشاشة أو التطبيق إن شئت — الرفع يكمل في الخلفية " +
                     "ويصلك إشعار عند اكتمال كلّ درس، وإشعار آخر إن تعذّر رفعه.",
                 fontSize = 11.5.sp,
-                color = kMuted,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 lineHeight = 18.sp,
             )
             // «إعادة محاولة الكل»: بعد انقطاع طويل قد يُركن عدّة دروس معاً،
@@ -303,7 +308,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                     Icon(
                         Icons.Filled.Refresh,
                         contentDescription = null,
-                        tint = kTeal,
+                        tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.size(6.dp))
@@ -320,7 +325,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .background(kBoxBg, RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(12.dp))
                             .padding(10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -342,7 +347,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                                     }
                                 },
                                 fontSize = 10.5.sp,
-                                color = kMuted,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -359,7 +364,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                                     Icon(
                                         Icons.Filled.ErrorOutline,
                                         contentDescription = null,
-                                        tint = kDanger,
+                                        tint = MaterialTheme.colorScheme.error,
                                         modifier = Modifier.size(13.dp),
                                     )
                                     Spacer(Modifier.size(4.dp))
@@ -379,7 +384,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                                         },
                                         fontSize = 10.5.sp,
                                         lineHeight = 15.sp,
-                                        color = kDanger,
+                                        color = MaterialTheme.colorScheme.error,
                                         maxLines = 3,
                                         overflow = TextOverflow.Ellipsis,
                                     )
@@ -389,8 +394,8 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                                 LinearProgressIndicator(
                                     progress = { (progress?.percent ?: 0) / 100f },
                                     modifier = Modifier.fillMaxWidth().height(3.dp),
-                                    color = kTeal,
-                                    trackColor = kTeal.copy(alpha = 0.2f),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
                                 )
                             }
                         }
@@ -405,7 +410,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                                 Icon(
                                     Icons.Filled.Refresh,
                                     contentDescription = "إعادة المحاولة",
-                                    tint = kTeal,
+                                    tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(18.dp),
                                 )
                             }
@@ -414,7 +419,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                             Icon(
                                 Icons.Filled.Delete,
                                 contentDescription = "إلغاء",
-                                tint = kDanger,
+                                tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.size(18.dp),
                             )
                         }
@@ -433,7 +438,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
                 "نهائياً بلا تراجع — وهي النسخة الوحيدة إن كان ملفّاً مدموجاً. " +
                 "لن يُنشر الدرس في التطبيق العام.",
             confirmLabel = "إلغاء وحذف الملفّ",
-            confirmColor = kDanger,
+            confirmColor = MaterialTheme.colorScheme.error,
             onConfirm = {
                 UploadQueue.cancel(target.id)
                 confirmCancel = null

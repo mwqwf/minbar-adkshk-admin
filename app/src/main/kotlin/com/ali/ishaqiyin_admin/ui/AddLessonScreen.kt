@@ -38,6 +38,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -55,7 +56,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -548,7 +548,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         Icon(
                             if (files.isEmpty()) Icons.Filled.AudioFile else Icons.AutoMirrored.Filled.PlaylistAdd,
                             contentDescription = null,
-                            tint = kTeal,
+                            tint = MaterialTheme.colorScheme.primary,
                         )
                         Spacer(Modifier.size(6.dp))
                         Text(
@@ -566,7 +566,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         enabled = !queuing,
                         modifier = Modifier.weight(1f),
                     ) {
-                        Icon(Icons.Filled.Mic, contentDescription = null, tint = kDanger)
+                        Icon(Icons.Filled.Mic, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                         Spacer(Modifier.size(6.dp))
                         Text("تسجيل مباشر", overflow = TextOverflow.Ellipsis, maxLines = 1)
                     }
@@ -576,7 +576,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     Box(
                         Modifier
                             .fillMaxWidth()
-                            .background(kTeal.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
                             .padding(10.dp),
                     ) {
                         Text(
@@ -635,7 +635,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     if (subsForCategory.isEmpty()) {
                         Text(
                             "لا توجد أقسام فرعية لهذا القسم — أنشئ واحداً أولاً.",
-                            color = kDanger,
+                            color = MaterialTheme.colorScheme.error,
                             fontSize = 13.sp,
                             modifier = Modifier.padding(top = 6.dp),
                         )
@@ -658,7 +658,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         },
                         enabled = !queuing,
                     )
-                    Icon(Icons.Filled.Star, contentDescription = null, tint = kGold)
+                    Icon(Icons.Filled.Star, contentDescription = null, tint = adminGold)
                     Spacer(Modifier.size(8.dp))
                     Column {
                         Text("تمييز الدرس (مختارات المنبر)")
@@ -666,7 +666,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                             Text(
                                 featuredLabel,
                                 fontSize = 11.sp,
-                                color = kGold,
+                                color = adminGold,
                                 fontWeight = FontWeight.SemiBold,
                             )
                         }
@@ -678,7 +678,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .background(kTeal.copy(alpha = 0.07f), RoundedCornerShape(12.dp)),
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.07f), RoundedCornerShape(12.dp)),
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Row(
@@ -690,7 +690,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                             Icon(
                                 Icons.AutoMirrored.Filled.MenuBook,
                                 contentDescription = null,
-                                tint = kTeal,
+                                tint = MaterialTheme.colorScheme.primary,
                             )
                             Spacer(Modifier.size(8.dp))
                             Column(Modifier.weight(1f)) {
@@ -703,7 +703,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                                     "نص المقطع من الكتاب أو صور صفحاته — يظهر في " +
                                         "شاشة تشغيل الدرس.",
                                     fontSize = 12.sp,
-                                    color = kMuted,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                             Icon(
@@ -713,7 +713,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                                     Icons.Filled.ArrowDownward
                                 },
                                 contentDescription = null,
-                                tint = kMuted,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(18.dp),
                             )
                         }
@@ -758,12 +758,12 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 if (merging) {
                     LinearProgressIndicator(
                         modifier = Modifier.fillMaxWidth(),
-                        color = kTeal,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
                         "جارٍ دمج الملفات في مقطع واحد…",
-                        color = kTeal,
+                        color = MaterialTheme.colorScheme.primary,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -772,7 +772,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 if (message.isNotEmpty()) {
                     Text(
                         message,
-                        color = if (isError) kDanger else kGreen,
+                        color = if (isError) MaterialTheme.colorScheme.error else adminGreen,
                         fontWeight = FontWeight.SemiBold,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
@@ -782,7 +782,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     onClick = { queueLesson() },
                     enabled = !queuing,
                     shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                 ) {
                     Icon(Icons.Filled.CloudUpload, contentDescription = null)
@@ -804,7 +804,7 @@ private fun QueueHintCard(modifier: Modifier = Modifier) {
     Box(
         modifier
             .fillMaxWidth()
-            .background(kTeal.copy(alpha = 0.07f), RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.07f), RoundedCornerShape(14.dp))
             .padding(12.dp),
     ) {
         Column {
@@ -812,7 +812,7 @@ private fun QueueHintCard(modifier: Modifier = Modifier) {
                 Icon(
                     Icons.Filled.Info,
                     contentDescription = null,
-                    tint = kTeal,
+                    tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(Modifier.size(6.dp))
@@ -820,7 +820,7 @@ private fun QueueHintCard(modifier: Modifier = Modifier) {
                     "أضف بلا انتظار",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
-                    color = kTealDark,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
             Spacer(Modifier.height(6.dp))
@@ -831,7 +831,7 @@ private fun QueueHintCard(modifier: Modifier = Modifier) {
                     "• يصلك إشعار فور اكتمال رفع كلّ درس.",
                 fontSize = 12.sp,
                 lineHeight = 20.sp,
-                color = kMuted,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -854,24 +854,24 @@ private fun FileRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            Modifier.size(26.dp).background(kTeal.copy(alpha = 0.15f), CircleShape),
+            Modifier.size(26.dp).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            Text("${index + 1}", fontSize = 12.sp, color = kTeal)
+            Text("${index + 1}", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
         }
         Spacer(Modifier.size(8.dp))
         Text(
             name,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            color = kTeal,
+            color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.weight(1f),
         )
         IconButton(onClick = onRemove, enabled = enabled) {
             Icon(
                 Icons.Filled.Close,
                 contentDescription = "إزالة",
-                tint = kDanger,
+                tint = MaterialTheme.colorScheme.error,
                 modifier = Modifier.size(18.dp),
             )
         }

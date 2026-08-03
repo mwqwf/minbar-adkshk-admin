@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      نظير السمة الفاتحة في الوضع الداكن.
+
+      خلفيّة النافذة هي ما يُرسم **قبل** بدء Compose (شاشة الإقلاع الأولى).
+      لو بقيت `#F8FCFC` الفاتحة لومض بياضٌ ساطع في وجه المستخدم كل مرّة قبل
+      أن ترسم اللوحة سطحها الداكن. القيمة هنا هي `background` نفسها في
+      `AdminDarkColors` (مداد الأيقونة).
+
+      و`windowLightNavigationBar=false`: الخلفيّة داكنة فأيقونات شريط التنقّل
+      يجب أن تكون فاتحة كي تُرى (العكس تماماً من الوضع الفاتح).
+
+      ⛔ لا تُعِد statusBarColor ولا navigationBarColor: متوقّفتان في أندرويد 15
+      ويرصدهما فحص Play. تباين الأيقونات يُضبط برمجيّاً في MainActivity.
+    -->
+    <style name="Theme.MinbarAdmin" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#020E1D</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

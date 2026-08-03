@@ -7,14 +7,21 @@ import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,22 +51,47 @@ import com.ali.ishaqiyin_admin.ui.kTealDark
 import com.ali.ishaqiyin_admin.util.openExternalUri
 
 /**
- * ألوان دردشة الإدارة — مكيَّفة لسمة منبر الفاتحة (المصدر: لوحة نبراس
- * الداكنة، فاستُبدلت القيم بما يقرأ جيّداً على خلفيّة فاتحة).
+ * ألوان دردشة الإدارة — **مصدر متكيّف** بين الفاتح والداكن. قيم الفاتح هي
+ * نفسها حرفيّاً كما كانت (سمة منبر الفاتحة)، وقيم الداكن مقيسة من واتساب
+ * العربي الحقيقي (`WHATSAPP-SPEC.md` بند ٣).
+ *
+ * ⚠️ لماذا حالة Compose لا خصائص `@Composable`: بعض هذه الرموز تُقرأ داخل
+ * `DrawScope` (نقش الخلفيّة وأعمدة الموجة) وهو سياق **غير قابل للتأليف**،
+ * فلا يصحّ فيه استدعاء `isSystemInDarkTheme()`. الحالة تُقرأ من أيّ مكان،
+ * وتبدّلها يُعيد الرسم تلقائياً.
  */
 object ChatColors {
+    /** يضبطها [WhatsAppChatBackground] وحدها من `isSystemInDarkTheme()`. */
+    var dark by mutableStateOf(false)
+        internal set
+
+    private fun pick(light: Color, night: Color): Color = if (dark) night else light
+
     /** خلفية واتساب الفاتحة الدافئة، لا أبيض منبر المزرق. */
-    val bg = Color(0xFFEFEAE2)
-    val surface = Color.White
-    val surfaceAlt = Color(0xFFF0F2F5)
-    val border = Color(0xFFD8DEE2)
-    val textMuted = Color(0xFF667781)
-    val accent = kTeal
-    val accentDark = kTealDark
-    val amber = Color(0xFFB45309)
-    val rose = kDanger
-    val highlight = Color(0xFFD9FDD3)
-    val online = Color(0xFF16A34A)
+    val bg: Color get() = pick(Color(0xFFEFEAE2), Color(0xFF0B141A))
+
+    /** سطح الرأس وشريط الإدخال والأوراق المنسدلة. */
+    val surface: Color get() = pick(Color.White, Color(0xFF1F2C33))
+
+    /**
+     * فقاعة غيري — **ليست** [surface]: واتساب يفرّق بينهما في الداكن
+     * (`#202C33` للفقاعة و`#1F2C33` للسطح) فتُميَّز الفقاعة عن الرأس.
+     */
+    val otherBubble: Color get() = pick(Color.White, Color(0xFF202C33))
+
+    val surfaceAlt: Color get() = pick(Color(0xFFF0F2F5), Color(0xFF233138))
+    val border: Color get() = pick(Color(0xFFD8DEE2), Color(0xFF2A3942))
+
+    /** نصّ أساسيّ داخل الدردشة (قيمة الفاتح = `onSurface` نفسها: Ink900). */
+    val textPrimary: Color get() = pick(Color(0xFF020E1D), Color(0xFFE9EDEF))
+
+    val textMuted: Color get() = pick(Color(0xFF667781), Color(0xFF8696A0))
+    val accent: Color get() = pick(kTeal, Color(0xFF00A884))
+    val accentDark: Color get() = pick(kTealDark, Color(0xFF00A884))
+    val amber: Color get() = pick(Color(0xFFB45309), Color(0xFFFBBF24))
+    val rose: Color get() = pick(kDanger, Color(0xFFF87171))
+    val highlight: Color get() = pick(Color(0xFFD9FDD3), Color(0xFF0F3A2E))
+    val online: Color get() = pick(Color(0xFF16A34A), Color(0xFF00A884))
 
     /**
      * أزرق واتساب الفعليّ لعلامتَي القراءة ✓✓ وشارة «استُمع إليها».
@@ -70,37 +102,54 @@ object ChatColors {
     val readBlue = Color(0xFF53BDEB)
 
     /** فقاعة رسائلي (أخضر فاتح بنمط واتساب) وحدودها. */
-    val mineBubble = Color(0xFFD9FDD3)
+    val mineBubble: Color get() = pick(Color(0xFFD9FDD3), Color(0xFF005C4B))
     val mineBubbleBorder = Color.Transparent
 
     /**
      * حبر الخلفيّة المزخرفة — شفافيّة واتساب الفعليّة (≈0.05): زخرفة تُحسّ
      * ولا تُرى كشبكة. (كانت 0.12 فيظهر التكرار للعين ويتضاعف التباين حيث
-     * تتقاطع الأشكال.)
+     * تتقاطع الأشكال.) في الداكن حبر أبيض شفّاف 0.04 فوق `#0B141A`.
      */
-    val wallpaperInk = Color(0xFF6B7C83).copy(alpha = 0.055f)
+    val wallpaperInk: Color
+        get() = pick(Color(0xFF6B7C83).copy(alpha = 0.055f), Color.White.copy(alpha = 0.04f))
 
     /**
      * ألوان الرسالة الصوتيّة بنمط واتساب — رماديّات محايدة **لا** لون
      * السمة التركوازيّ: الأزرق [readBlue] محجوز لعلامتَي القراءة ولميكروفون
      * «سمعها المتلقّي» وحدهما، فوجوده في الموجة يُربكه بمعنى ✓✓.
      */
-    val waveRest = Color(0xFFB9C1C6)
-    val wavePlayed = Color(0xFF54656F)
+    val waveRest: Color get() = pick(Color(0xFFB9C1C6), Color(0xFF667781))
+    val wavePlayed: Color get() = pick(Color(0xFF54656F), Color(0xFFE9EDEF))
 
-    /** ميكروفون رسالة واردة **لم أسمعها بعد** (أخضر واتساب). */
+    /**
+     * أيقونات التحكّم (زرّ التشغيل ونوتة الصوت): تبقى رماديّة `#8696A0` في
+     * الداكن ولا تتبع [wavePlayed] الأبيض — الأبيض يجعل المثلّث يصرخ أعلى من
+     * الموجة نفسها خلافاً لواتساب.
+     */
+    val controlIcon: Color get() = pick(Color(0xFF54656F), Color(0xFF8696A0))
+
+    /** ميكروفون رسالة واردة **لم أسمعها بعد** (أخضر واتساب) ونقطته. */
     val micUnheard = Color(0xFF00A884)
 
     /** ميكروفون محايد: رسالتي قبل أن يسمعها أحد، والواردة بعد سماعها. */
     val micIdle = Color(0xFF8696A0)
 
     /** نصّ الوقت/المدّة/الحالة تحت الفقاعة. */
-    val metaText = Color(0xFF46586A)
+    val metaText: Color get() = pick(Color(0xFF46586A), Color(0xFF8696A0))
+
+    /** كبسولة سرعة التشغيل (تحلّ محلّ الصورة أثناء التشغيل). */
+    val speedChipMine: Color get() = pick(Color(0xFFC5EDBC), Color(0xFF0C7A63))
+    val speedChipOther: Color get() = pick(Color(0xFFE7E7E7), Color(0xFF2A3942))
+
+    /** مصغّرة الاقتباس وبطاقة الملفّ: طبقة تباين خفيفة فوق لون الفقاعة. */
+    val thumbBg: Color
+        get() = pick(Color.Black.copy(alpha = 0.06f), Color.White.copy(alpha = 0.08f))
 
     /** اقتباس الردّ: شريط جانبيّ وخلفيّة داخل فقاعتي وفقاعة غيري. */
     val quoteBarMine = Color(0xFF06CF9C)
-    val quoteBgMine = Color(0xFFD1F4CC)
-    val quoteBgOther = Color.Black.copy(alpha = 0.05f)
+    val quoteBgMine: Color get() = pick(Color(0xFFD1F4CC), Color(0xFF025144))
+    val quoteBgOther: Color
+        get() = pick(Color.Black.copy(alpha = 0.05f), Color.White.copy(alpha = 0.06f))
 }
 
 /** عدد محارف الخلفيّة المشتقّة من هويّة منبر (أيقونة التطبيق واللوحة). */
@@ -131,7 +180,12 @@ fun WhatsAppChatBackground(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    // مصدر السمة الوحيد للدردشة كلّها: يُكتب بأثر جانبيّ لا أثناء التأليف،
+    // فلا يُبطل الإطار الجاري. كلّ شاشات الدردشة تمرّ من هنا.
+    val night = isSystemInDarkTheme()
+    SideEffect { ChatColors.dark = night }
     Box(modifier.background(ChatColors.bg)) {
+        val box = this
         Canvas(Modifier.fillMaxSize()) {
             val tile = 76.dp.toPx()
             val stroke = 1.dp.toPx()
@@ -158,7 +212,11 @@ fun WhatsAppChatBackground(
                 }
             }
         }
-        content()
+        // نصّ الدردشة الافتراضيّ يتبع السمة: سمة اللوحة نفسها ما تزال فاتحة
+        // عمداً، فبلا هذا التمرير يبقى النصّ داكناً فوق الخلفيّة الداكنة.
+        CompositionLocalProvider(LocalContentColor provides ChatColors.textPrimary) {
+            box.content()
+        }
     }
 }
 
@@ -343,8 +401,25 @@ private val senderColors = listOf(
     Color(0xFFEA580C),
 )
 
-fun senderColor(uid: String): Color =
-    senderColors[kotlin.math.abs(uid.hashCode()) % senderColors.size]
+/**
+ * نظيرتها للداكن: واتساب يستعمل درجات **زاهية** على الفقاعة الداكنة، والدرجات
+ * الفاتحة أعلاه تهبط تحت عتبة القراءة فوق `#202C33`.
+ */
+private val senderColorsDark = listOf(
+    Color(0xFF53BDEB),
+    Color(0xFFFF7CA3),
+    Color(0xFFFFB86C),
+    Color(0xFF80E27E),
+    Color(0xFFB388FF),
+    Color(0xFFFF8A80),
+    Color(0xFF4DD0E1),
+    Color(0xFFFFD54F),
+)
+
+fun senderColor(uid: String): Color {
+    val palette = if (ChatColors.dark) senderColorsDark else senderColors
+    return palette[kotlin.math.abs(uid.hashCode()) % palette.size]
+}
 
 /**
  * صورة عضو دائريّة (المخصّصة أولاً ثم Google ثم الحرف الأوّل) مع نقطة
@@ -387,7 +462,8 @@ fun MemberAvatar(
                         if (online) ChatColors.online else ChatColors.textMuted,
                         CircleShape,
                     )
-                    .border(2.dp, Color.White, CircleShape),
+                    // حدّ النقطة بلون السطح لا أبيض ثابتاً (يختفي في الداكن).
+                    .border(2.dp, ChatColors.surface, CircleShape),
             )
         }
     }

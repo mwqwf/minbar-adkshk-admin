@@ -28,6 +28,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -150,7 +151,7 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
             onDismiss()
         },
         sheetState = sheetState,
-        containerColor = Color.White,
+        containerColor = MaterialTheme.colorScheme.surface,
     ) {
         Column(
             Modifier
@@ -164,7 +165,11 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
                 Modifier
                     .size(120.dp)
                     .background(
-                        if (recording && !paused) kDanger.copy(alpha = 0.15f) else kBoxBg,
+                        if (recording && !paused) {
+                            MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainer
+                        },
                         CircleShape,
                     ),
                 contentAlignment = Alignment.Center,
@@ -173,15 +178,15 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
                     if (done) Icons.Filled.CheckCircle else Icons.Filled.Mic,
                     contentDescription = null,
                     tint = when {
-                        done -> kGreen
-                        recording && !paused -> kDanger
-                        else -> kTeal
+                        done -> adminGreen
+                        recording && !paused -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.primary
                     },
                     modifier = Modifier.size(56.dp),
                 )
             }
             Spacer(Modifier.height(16.dp))
-            Text(timeLabel, fontSize = 34.sp, fontWeight = FontWeight.Bold, color = kTeal)
+            Text(timeLabel, fontSize = 34.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
             Text(
                 when {
                     recording && paused -> "موقوف مؤقتاً"
@@ -189,11 +194,11 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
                     done -> "انتهى التسجيل — جاهز للرفع"
                     else -> "اضغط للبدء"
                 },
-                color = kMuted,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             error?.let {
                 Spacer(Modifier.height(8.dp))
-                Text(it, color = kDanger, textAlign = TextAlign.Center)
+                Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
             }
             Spacer(Modifier.height(24.dp))
             Row(
@@ -211,12 +216,15 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
                         ) { Text("إلغاء") }
                         Button(
                             onClick = { start() },
-                            colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                         ) {
                             Icon(
                                 Icons.Filled.FiberManualRecord,
                                 contentDescription = null,
-                                tint = Color.Red,
+                                // نقطة التسجيل الحمراء فوق زرّ اللون الأوّل:
+                                // الزرّ فاتح في الوضع الداكن (ذهب)، فالأحمر
+                                // النقيّ يذوب عليه ⇒ درجته الداكنة هناك.
+                                tint = if (isAdminDarkTheme()) Red800 else Color.Red,
                             )
                             Spacer(Modifier.size(6.dp))
                             Text("بدء التسجيل")
@@ -238,7 +246,7 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
                         }
                         Button(
                             onClick = { stop() },
-                            colors = ButtonDefaults.buttonColors(containerColor = kDanger),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                         ) {
                             Icon(Icons.Filled.Stop, contentDescription = null)
                             Spacer(Modifier.size(6.dp))
@@ -257,7 +265,7 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
                                 val f = file ?: return@Button
                                 onRecorded(f, "تسجيل_${System.currentTimeMillis()}.m4a")
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                         ) {
                             Icon(Icons.Filled.Check, contentDescription = null)
                             Spacer(Modifier.size(6.dp))

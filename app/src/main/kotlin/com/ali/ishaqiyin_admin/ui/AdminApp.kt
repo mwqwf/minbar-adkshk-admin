@@ -31,6 +31,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -334,7 +335,7 @@ fun AdminApp() {
     CompositionLocalProvider(LocalSnack provides showSnack) {
         Box(Modifier.fillMaxSize()) {
             when {
-                loading -> Surface(color = kBg, modifier = Modifier.fillMaxSize()) {
+                loading -> Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
                     FullScreenLoader()
                 }
 
@@ -564,7 +565,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Spin(color = kTeal, size = 16)
+                        Spin(color = MaterialTheme.colorScheme.primary, size = 16)
                         Spacer(Modifier.size(10.dp))
                         Text("جارٍ التجهيز…", fontSize = 13.sp, color = ChatColors.textMuted)
                     }
@@ -573,7 +574,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                 if (hasAudio) {
                     ShareOptionRow(
                         icon = Icons.Filled.LibraryMusic,
-                        tint = kOrange,
+                        tint = adminOrange,
                         title = "إضافة درس صوتي",
                         subtitle = "تعبئة نموذج الدرس بالملفّ المشترَك",
                         enabled = !preparing,
@@ -594,7 +595,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                 if (hasImage) {
                     ShareOptionRow(
                         icon = Icons.AutoMirrored.Filled.MenuBook,
-                        tint = kGreen,
+                        tint = adminGreen,
                         title = "النص المشروح لدرس",
                         subtitle = "إرفاق صورة صفحة الكتاب بنص درس (مع القصّ والدمج)",
                         enabled = !preparing,
@@ -627,7 +628,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                 }
                 ShareOptionRow(
                     icon = Icons.Filled.Groups,
-                    tint = kTeal,
+                    tint = MaterialTheme.colorScheme.primary,
                     title = "إرسال إلى مجموعة الإدارة",
                     subtitle = "يظهر للمشرفين جميعاً في دردشة المجموعة",
                     enabled = !preparing,
@@ -638,7 +639,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                 }
                 ShareOptionRow(
                     icon = Icons.Filled.Person,
-                    tint = kBlue,
+                    tint = adminBlue,
                     title = "إرسال إلى محادثة خاصّة",
                     subtitle = "اختر مشرفاً واحداً لإرسال الملفّ إليه",
                     enabled = !preparing,
@@ -675,7 +676,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Spin(color = kTeal, size = 16)
+                    Spin(color = MaterialTheme.colorScheme.primary, size = 16)
                     Spacer(Modifier.size(10.dp))
                     Text("جارٍ التجهيز…", fontSize = 13.sp, color = ChatColors.textMuted)
                 }
@@ -801,13 +802,13 @@ private fun ShareOptionRow(
 
 @Composable
 private fun AccessErrorView(message: String, onRetry: () -> Unit, onSignOut: () -> Unit) {
-    Surface(color = kBg, modifier = Modifier.fillMaxSize()) {
+    Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
                     Icons.Filled.SecurityUpdateWarning,
                     contentDescription = null,
-                    tint = kDanger,
+                    tint = MaterialTheme.colorScheme.error,
                     modifier = Modifier.size(56.dp),
                 )
                 Spacer(Modifier.height(16.dp))
@@ -821,7 +822,7 @@ private fun AccessErrorView(message: String, onRetry: () -> Unit, onSignOut: () 
                 Spacer(Modifier.height(20.dp))
                 Button(
                     onClick = onRetry,
-                    colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                 ) {
                     Icon(Icons.Filled.Refresh, contentDescription = null)
                     Spacer(Modifier.size(8.dp))
@@ -835,13 +836,13 @@ private fun AccessErrorView(message: String, onRetry: () -> Unit, onSignOut: () 
 
 @Composable
 private fun BlockedView(onSignOut: () -> Unit) {
-    Surface(color = kBg, modifier = Modifier.fillMaxSize()) {
+    Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
                     Icons.Filled.Block,
                     contentDescription = null,
-                    tint = kDanger,
+                    tint = MaterialTheme.colorScheme.error,
                     modifier = Modifier.size(56.dp),
                 )
                 Spacer(Modifier.height(16.dp))
@@ -849,13 +850,13 @@ private fun BlockedView(onSignOut: () -> Unit) {
                     "تم تعليق وصولك",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
-                    color = kDanger,
+                    color = MaterialTheme.colorScheme.error,
                 )
                 Spacer(Modifier.height(10.dp))
                 Text(
                     "تواصل مع المالك لإعادة التفعيل.",
                     textAlign = TextAlign.Center,
-                    color = kMuted,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(22.dp))
                 TextButton(onClick = onSignOut) { Text("تسجيل الخروج") }
@@ -867,7 +868,7 @@ private fun BlockedView(onSignOut: () -> Unit) {
 /** شاشة تعذّر تهيئة Firebase (نظير _FirebaseInitErrorView). */
 @Composable
 fun FirebaseInitErrorView(retrying: Boolean, onRetry: () -> Unit) {
-    Surface(color = kBg, modifier = Modifier.fillMaxSize()) {
+    Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -876,7 +877,7 @@ fun FirebaseInitErrorView(retrying: Boolean, onRetry: () -> Unit) {
                 Icon(
                     Icons.Filled.CloudOff,
                     contentDescription = null,
-                    tint = kDanger,
+                    tint = MaterialTheme.colorScheme.error,
                     modifier = Modifier.size(56.dp),
                 )
                 Spacer(Modifier.height(16.dp))
@@ -895,10 +896,10 @@ fun FirebaseInitErrorView(retrying: Boolean, onRetry: () -> Unit) {
                 Button(
                     onClick = onRetry,
                     enabled = !retrying,
-                    colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                 ) {
                     if (retrying) {
-                        Spin(color = Color.White, size = 18)
+                        Spin(color = MaterialTheme.colorScheme.onPrimary, size = 18)
                     } else {
                         Icon(Icons.Filled.Refresh, contentDescription = null)
                     }

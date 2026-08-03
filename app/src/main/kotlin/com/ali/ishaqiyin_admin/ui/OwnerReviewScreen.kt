@@ -28,6 +28,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -40,7 +42,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -93,7 +94,11 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                 "سيُعلَّم «${review.title}» بأنه راجعه المالك وتم التحقق منه."
             },
             confirmLabel = if (deleting) "حذف نهائي" else "تم التحقق",
-            confirmColor = if (deleting) kDanger else kTeal,
+            confirmColor = if (deleting) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.primary
+            },
             onDismiss = { pending = null },
             onConfirm = {
                 pending = null
@@ -119,7 +124,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
             body = "سيُعلَّم $count درساً بأنك راجعتَها وتحقّقتَ منها دفعة واحدة، "
                 + "وتختفي من هذه الشاشة ومن تنبيهاتك. لا يُحذف أيّ درس.",
             confirmLabel = "اعتماد الكل",
-            confirmColor = kTeal,
+            confirmColor = MaterialTheme.colorScheme.primary,
             onDismiss = { confirmBulk = false },
             onConfirm = {
                 confirmBulk = false
@@ -177,12 +182,13 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                 enabled = !scanning && !bulkBusy,
             ) {
                 if (scanning) {
-                    Spin(color = Color.White, size = 18)
+                    // زرّ في الشريط العلوي: يرث حبر الشريط المتكيّف بدل أبيض ثابت.
+                    Spin(color = LocalContentColor.current, size = 18)
                 } else {
-                    Icon(Icons.Filled.Security, contentDescription = null, tint = Color.White)
+                    Icon(Icons.Filled.Security, contentDescription = null)
                 }
                 Spacer(Modifier.size(4.dp))
-                Text("فحص شامل", color = Color.White)
+                Text("فحص شامل")
             }
         },
     ) { padding ->
@@ -197,7 +203,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                     Icon(
                         Icons.Filled.VerifiedUser,
                         contentDescription = null,
-                        tint = kGreen,
+                        tint = adminGreen,
                         modifier = Modifier.size(58.dp),
                     )
                     Spacer(Modifier.size(12.dp))
@@ -220,7 +226,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
             item {
                 Card(
                     shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(Modifier.padding(14.dp)) {
@@ -234,14 +240,14 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                                 Text(
                                     "راجعتَها ولا شبهة فيها؟ اعتمدها كلّها دفعة واحدة.",
                                     fontSize = 12.sp,
-                                    color = kMuted,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                             Spacer(Modifier.size(8.dp))
                             Button(
                                 onClick = { confirmBulk = true },
                                 shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                                 enabled = !bulkBusy && busyId.isEmpty() && items.isNotEmpty(),
                             ) {
                                 Icon(
@@ -255,12 +261,12 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                         }
                         if (bulkBusy) {
                             Spacer(Modifier.size(10.dp))
-                            LinearProgressIndicator(Modifier.fillMaxWidth(), color = kTeal)
+                            LinearProgressIndicator(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
                             Spacer(Modifier.size(6.dp))
                             Text(
                                 "جارٍ الاعتماد… $bulkDone من $bulkTotal",
                                 fontSize = 12.sp,
-                                color = kMuted,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
@@ -272,13 +278,13 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                 val playing = player.playingId == review.id && player.playing
                 Card(
                     shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(Modifier.padding(14.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
-                                Modifier.size(44.dp).background(kBoxBg, CircleShape),
+                                Modifier.size(44.dp).background(MaterialTheme.colorScheme.surfaceContainer, CircleShape),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 IconButton(
@@ -288,7 +294,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                                     Icon(
                                         if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                                         contentDescription = if (playing) "إيقاف مؤقت" else "معاينة",
-                                        tint = kTeal,
+                                        tint = MaterialTheme.colorScheme.primary,
                                     )
                                 }
                             }
@@ -301,14 +307,14 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                             Box(
                                 Modifier
                                     .background(
-                                        kDanger.copy(alpha = 0.1f),
+                                        MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
                                         RoundedCornerShape(99.dp),
                                     )
                                     .padding(horizontal = 9.dp, vertical = 4.dp),
                             ) {
                                 Text(
                                     "خطورة ${review.riskScore}",
-                                    color = kDanger,
+                                    color = MaterialTheme.colorScheme.error,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
                                 )
@@ -338,17 +344,17 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                                     "\nأضيف بواسطة: ${review.addedBy}"
                                 },
                             fontSize = 12.sp,
-                            color = kMuted,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(Modifier.size(12.dp))
                         if (busy) {
-                            LinearProgressIndicator(Modifier.fillMaxWidth(), color = kTeal)
+                            LinearProgressIndicator(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
                         } else {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(
                                     onClick = { pending = review to "verified" },
                                     shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                                     enabled = !bulkBusy,
                                     modifier = Modifier.weight(1f),
                                 ) {
@@ -368,11 +374,11 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                                     Icon(
                                         Icons.Filled.DeleteForever,
                                         contentDescription = null,
-                                        tint = kDanger,
+                                        tint = MaterialTheme.colorScheme.error,
                                         modifier = Modifier.size(18.dp),
                                     )
                                     Spacer(Modifier.size(4.dp))
-                                    Text("حذف نهائي", color = kDanger)
+                                    Text("حذف نهائي", color = MaterialTheme.colorScheme.error)
                                 }
                             }
                         }

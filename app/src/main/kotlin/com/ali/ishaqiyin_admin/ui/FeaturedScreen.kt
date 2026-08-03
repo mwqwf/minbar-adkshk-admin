@@ -29,6 +29,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -45,7 +46,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -146,7 +146,7 @@ fun FeaturedScreen(onBack: () -> Unit) {
             body = "سيُزال التمييز عن ${batch.size} درساً انتهت مدّتها، فتسقط " +
                 "من مختارات المنبر في التطبيق العام. الدروس نفسها لا تُحذف.",
             confirmLabel = "نظّف ${batch.size}",
-            confirmColor = kOrange,
+            confirmColor = adminOrange,
             onConfirm = {
                 confirmClean = false
                 scope.launch {
@@ -190,7 +190,7 @@ fun FeaturedScreen(onBack: () -> Unit) {
                     Icon(
                         Icons.Filled.StarBorder,
                         contentDescription = null,
-                        tint = kMuted,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(58.dp),
                     )
                     Spacer(Modifier.height(12.dp))
@@ -203,7 +203,7 @@ fun FeaturedScreen(onBack: () -> Unit) {
                     Text(
                         "ميّز درساً من «التعديل والبحث» بالنجمة ⭐ ليظهر أعلى " +
                             "التطبيق العام، واختر مدّة بقائه.",
-                        color = kMuted,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.5.sp,
                         lineHeight = 21.sp,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -219,11 +219,14 @@ fun FeaturedScreen(onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
+                // تدرّج الترويسة يتبع السمة، وحبره يُشتقّ من أوّل لونيه لأنّ
+                // الذهب في الوضع الداكن فاتح لا يحتمل نصّاً أبيض.
+                val bannerInk = contentColorOn(adminGold)
                 Box(
                     Modifier
                         .fillMaxWidth()
                         .background(
-                            Brush.horizontalGradient(listOf(kGold, kOrange)),
+                            Brush.horizontalGradient(listOf(adminGold, adminOrange)),
                             RoundedCornerShape(14.dp),
                         )
                         .padding(14.dp),
@@ -232,21 +235,21 @@ fun FeaturedScreen(onBack: () -> Unit) {
                         Icon(
                             Icons.Filled.Star,
                             contentDescription = null,
-                            tint = Color.White,
+                            tint = bannerInk,
                             modifier = Modifier.size(22.dp),
                         )
                         Spacer(Modifier.size(10.dp))
                         Column {
                             Text(
                                 "${active.size} درساً في مختارات المنبر",
-                                color = Color.White,
+                                color = bannerInk,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp,
                             )
                             Text(
                                 "تظهر أعلى التطبيق العام، وتسقط منه فور انتهاء " +
                                     "المدّة أو إزالة التمييز.",
-                                color = Color.White.copy(alpha = 0.9f),
+                                color = bannerInk.copy(alpha = 0.9f),
                                 fontSize = 11.sp,
                                 lineHeight = 17.sp,
                             )
@@ -295,16 +298,16 @@ private fun FeaturedRow(
     val until = lesson.featuredUntilMs
     val isExpired = until != null && until <= now
     val accent = when {
-        isExpired -> kDanger
-        until == null -> kTeal
-        until - now < 6 * 3600_000L -> kOrange // أوشك على السقوط
-        else -> kGold
+        isExpired -> MaterialTheme.colorScheme.error
+        until == null -> MaterialTheme.colorScheme.primary
+        until - now < 6 * 3600_000L -> adminOrange // أوشك على السقوط
+        else -> adminGold
     }
 
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Color.White, RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
             .border(1.dp, accent.copy(alpha = 0.3f), RoundedCornerShape(14.dp))
             .padding(12.dp),
     ) {
@@ -349,11 +352,11 @@ private fun FeaturedRow(
                         Icon(
                             Icons.Filled.Headphones,
                             contentDescription = null,
-                            tint = kMuted,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(13.dp),
                         )
                         Spacer(Modifier.size(3.dp))
-                        Text("${lesson.views}", fontSize = 11.sp, color = kMuted)
+                        Text("${lesson.views}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -372,20 +375,20 @@ private fun FeaturedRow(
                         Icons.Filled.Timer,
                         contentDescription = null,
                         modifier = Modifier.size(16.dp),
-                        tint = kTeal,
+                        tint = MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.size(4.dp))
-                    Text("تغيير المدّة", fontSize = 12.sp, color = kTeal)
+                    Text("تغيير المدّة", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
                 }
                 TextButton(onClick = onRemove) {
                     Icon(
                         Icons.Filled.StarBorder,
                         contentDescription = null,
                         modifier = Modifier.size(16.dp),
-                        tint = kDanger,
+                        tint = MaterialTheme.colorScheme.error,
                     )
                     Spacer(Modifier.size(4.dp))
-                    Text("إزالة التمييز", fontSize = 12.sp, color = kDanger)
+                    Text("إزالة التمييز", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
                 }
             }
         }
@@ -408,24 +411,24 @@ fun FeatureDurationSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = Color.White,
+        containerColor = MaterialTheme.colorScheme.surface,
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Star, contentDescription = null, tint = kGold)
+                Icon(Icons.Filled.Star, contentDescription = null, tint = adminGold)
                 Spacer(Modifier.size(8.dp))
                 Text(
                     "مدّة التمييز",
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp,
-                    color = kTealDark,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
             Spacer(Modifier.height(4.dp))
             Text(
                 lessonTitle.ifBlank { "الدرس" },
                 fontSize = 12.sp,
-                color = kMuted,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -434,7 +437,7 @@ fun FeatureDurationSheet(
                 Text(
                     "الحالي: ${remainingLabel(currentUntilMs)}",
                     fontSize = 11.5.sp,
-                    color = kOrange,
+                    color = adminOrange,
                 )
             }
             Spacer(Modifier.height(14.dp))
@@ -443,7 +446,7 @@ fun FeatureDurationSheet(
                     Modifier
                         .fillMaxWidth()
                         .padding(vertical = 3.dp)
-                        .background(kBoxBg, RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(10.dp))
                         .clickable { onPick(duration) }
                         .padding(horizontal = 14.dp, vertical = 13.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -452,7 +455,7 @@ fun FeatureDurationSheet(
                         if (duration.hours == null) Icons.Filled.AllInclusive
                         else Icons.Filled.Timer,
                         contentDescription = null,
-                        tint = if (duration.hours == null) kTeal else kGold,
+                        tint = if (duration.hours == null) MaterialTheme.colorScheme.primary else adminGold,
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.size(10.dp))

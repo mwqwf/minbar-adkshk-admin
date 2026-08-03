@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Forward30
 import androidx.compose.material.icons.filled.Replay30
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -220,7 +221,7 @@ fun PreviewPlayerBar(
     Column(
         modifier
             .fillMaxWidth()
-            .background(kBoxBg, RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(10.dp))
             .padding(horizontal = 10.dp, vertical = 2.dp),
     ) {
         Slider(
@@ -236,8 +237,8 @@ fun PreviewPlayerBar(
             valueRange = 0f..maxValue,
             enabled = duration > 0,
             colors = SliderDefaults.colors(
-                thumbColor = kTeal,
-                activeTrackColor = kTeal,
+                thumbColor = MaterialTheme.colorScheme.primary,
+                activeTrackColor = MaterialTheme.colorScheme.primary,
             ),
             modifier = Modifier.fillMaxWidth(),
         )
@@ -249,7 +250,7 @@ fun PreviewPlayerBar(
                     "${formatClock(shown.toLong())} — جارٍ تحميل المدّة…"
                 },
                 fontSize = 11.sp,
-                color = kMuted,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.weight(1f))
             IconButton(
@@ -259,7 +260,7 @@ fun PreviewPlayerBar(
                 Icon(
                     Icons.Filled.Replay30,
                     contentDescription = "ترجيع ٣٠ ثانية",
-                    tint = kTeal,
+                    tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp),
                 )
             }
@@ -270,7 +271,7 @@ fun PreviewPlayerBar(
                 Icon(
                     Icons.Filled.Forward30,
                     contentDescription = "تقديم ٣٠ ثانية",
-                    tint = kTeal,
+                    tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp),
                 )
             }
@@ -280,10 +281,10 @@ fun PreviewPlayerBar(
                 formatSpeed(state.speed),
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
-                color = if (fast) kTeal else kMuted,
+                color = if (fast) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier
                     .background(
-                        if (fast) kTeal.copy(alpha = 0.12f) else Color.Transparent,
+                        if (fast) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else Color.Transparent,
                         RoundedCornerShape(999.dp),
                     )
                     .clickable { state.cycleSpeed() }

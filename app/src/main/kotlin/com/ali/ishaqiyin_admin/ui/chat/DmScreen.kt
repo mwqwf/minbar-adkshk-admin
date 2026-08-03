@@ -397,6 +397,8 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
             onDismissRequest = { actionsFor = null },
             sheetState = sheetState,
             containerColor = ChatColors.surface,
+            // الورقة خارج WhatsAppChatBackground فلا يصلها لون نصّ الدردشة.
+            contentColor = ChatColors.textPrimary,
         ) {
             Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                 if (!msg.deleted) {
@@ -593,8 +595,9 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                                 other?.displayName ?: otherName,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.5.sp,
+                                // مقاس رأس واتساب نفسه كالمجموعة (المواصفة ٦).
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 17.sp,
                             )
                             if (other?.isOwner == true) {
                                 Spacer(Modifier.size(5.dp))
@@ -613,7 +616,7 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                             subtitle,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            fontSize = 11.sp,
+                            fontSize = 13.sp,
                             color = when {
                                 otherTyping -> ChatColors.accent
                                 other?.isOnline == true -> ChatColors.online
@@ -1069,6 +1072,8 @@ private fun DmReactionsSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = ChatColors.surface,
+        // الورقة خارج WhatsAppChatBackground فلا يصلها لون نصّ الدردشة.
+        contentColor = ChatColors.textPrimary,
     ) {
         Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
             Text(

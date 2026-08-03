@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Title
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -66,7 +67,7 @@ fun NotifyScreen(onBack: () -> Unit) {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .background(kBoxBg, RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(12.dp))
                     .padding(14.dp),
             ) {
                 Text(
@@ -103,7 +104,7 @@ fun NotifyScreen(onBack: () -> Unit) {
             Text(
                 "${body.length}/${AdminNotificationService.BODY_MAX}",
                 fontSize = 12.sp,
-                color = kMuted,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.End,
             )
@@ -112,7 +113,7 @@ fun NotifyScreen(onBack: () -> Unit) {
                 Text(
                     message,
                     textAlign = TextAlign.Center,
-                    color = if (isError) kDanger else kGreen,
+                    color = if (isError) MaterialTheme.colorScheme.error else adminGreen,
                     fontWeight = FontWeight.SemiBold,
                     lineHeight = 22.sp,
                     modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
@@ -155,7 +156,7 @@ fun NotifyScreen(onBack: () -> Unit) {
                 },
                 enabled = canSend,
                 shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = kTeal),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                 modifier = Modifier.fillMaxWidth().height(52.dp),
             ) {
                 if (sending) {

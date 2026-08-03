@@ -208,7 +208,9 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                                     url = a.photoURL,
                                     fallbackText = a.displayName.ifEmpty { a.email },
                                     size = 40,
-                                    background = if (a.blocked) kDanger else kTeal, // ثابتان: الأيقونة بيضاء فوقهما في الوضعين
+                                    // لونا الدور يتبعان السمة، وحبر الأيقونة
+                                    // يُشتقّ منهما داخل RemoteAvatar.
+                                    background = if (a.blocked) scheme.error else scheme.primary,
                                     fallbackIcon = if (a.blocked) {
                                         Icons.Filled.Block
                                     } else {

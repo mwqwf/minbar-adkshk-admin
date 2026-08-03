@@ -28,6 +28,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -39,7 +40,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -128,7 +128,7 @@ fun AnalyticsScreen(
             Box(
                 Modifier.padding(padding).fillMaxSize().padding(24.dp),
                 contentAlignment = Alignment.Center,
-            ) { Text(error!!, color = kDanger, textAlign = TextAlign.Center) }
+            ) { Text(error!!, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center) }
             return@AdminScaffold
         }
         if (s == null) return@AdminScaffold
@@ -142,7 +142,7 @@ fun AnalyticsScreen(
                     Text(
                         "بلا اتصال — تُعرض آخر إحصائيات محفوظة.",
                         fontSize = 12.sp,
-                        color = kOrange,
+                        color = adminOrange,
                         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                         textAlign = TextAlign.Center,
                     )
@@ -205,7 +205,7 @@ fun AnalyticsScreen(
                     Text(
                         "انقر «بلا نص بعد» لفتح إدارة الدروس وإضافة النصوص الناقصة.",
                         fontSize = 11.sp,
-                        color = kMuted,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.fillMaxWidth(),
                         textAlign = TextAlign.Center,
                     )
@@ -304,7 +304,7 @@ private fun AdminRankTile(
 ) {
     Card(
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
     ) {
         Row(
@@ -314,7 +314,7 @@ private fun AdminRankTile(
             Text(
                 "$rank",
                 fontWeight = FontWeight.Bold,
-                color = if (rank <= 3) kTeal else kMuted,
+                color = if (rank <= 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 13.sp,
                 modifier = Modifier.padding(end = 8.dp),
             )
@@ -326,7 +326,7 @@ private fun AdminRankTile(
                     radius = 16,
                 )
             } else {
-                Icon(Icons.Filled.EmojiEvents, contentDescription = null, tint = kTeal)
+                Icon(Icons.Filled.EmojiEvents, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             }
             Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                 Text(
@@ -340,13 +340,13 @@ private fun AdminRankTile(
                     Text(
                         email,
                         fontSize = 11.sp,
-                        color = kMuted,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
-            Text(trailing, fontWeight = FontWeight.Bold, color = kTeal, fontSize = 13.sp)
+            Text(trailing, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
         }
     }
 }
@@ -355,14 +355,14 @@ private fun AdminRankTile(
 private fun RankTile(title: String, trailing: String, icon: ImageVector) {
     Card(
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, contentDescription = null, tint = kTeal)
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(8.dp))
             Text(
                 title,
@@ -370,7 +370,7 @@ private fun RankTile(title: String, trailing: String, icon: ImageVector) {
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(trailing, fontWeight = FontWeight.Bold, color = kTeal, fontSize = 13.sp)
+            Text(trailing, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
         }
     }
 }

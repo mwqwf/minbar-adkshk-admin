@@ -20,6 +20,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -105,7 +106,7 @@ fun FeedbackScreen(onBack: () -> Unit) {
             body = "سيُحذف «${target.label}» المسجَّل على \"${target.lessonTitle}\" " +
                 "نهائياً. لا يمكن التراجع.",
             confirmLabel = "حذف",
-            confirmColor = kDanger,
+            confirmColor = MaterialTheme.colorScheme.error,
             onDismiss = { pendingDelete = null },
             onConfirm = {
                 pendingDelete = null
@@ -133,13 +134,13 @@ fun FeedbackScreen(onBack: () -> Unit) {
             error != null -> Box(
                 Modifier.padding(padding).fillMaxSize().padding(24.dp),
                 contentAlignment = Alignment.Center,
-            ) { Text(error!!, color = kDanger, textAlign = TextAlign.Center) }
+            ) { Text(error!!, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center) }
 
             items.isEmpty() -> Box(
                 Modifier.padding(padding).fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("لا توجد تفاعلات بعد.", fontSize = 16.sp, color = kMuted)
+                Text("لا توجد تفاعلات بعد.", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             else -> LazyColumn(
@@ -153,21 +154,21 @@ fun FeedbackScreen(onBack: () -> Unit) {
                     val note = (m["note"] ?: "").toString()
                     Card(
                         shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     ) {
                         Row(
                             Modifier.fillMaxWidth().padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            CircleIcon(kind.icon, kind.color)
+                            CircleIcon(kind.icon, kind.tone.color())
                             Spacer(Modifier.size(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(title, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                 Text(
                                     if (note.isEmpty()) kind.label else "${kind.label} — $note",
                                     fontSize = 12.sp,
-                                    color = kMuted,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                             IconButton(
@@ -179,7 +180,7 @@ fun FeedbackScreen(onBack: () -> Unit) {
                                     )
                                 },
                             ) {
-                                Icon(Icons.Filled.Delete, contentDescription = "حذف", tint = kDanger)
+                                Icon(Icons.Filled.Delete, contentDescription = "حذف", tint = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
@@ -189,10 +190,25 @@ fun FeedbackScreen(onBack: () -> Unit) {
     }
 }
 
-private data class FeedbackKind(val label: String, val icon: ImageVector, val color: Color)
+/**
+ * نغمة التفاعل — نوع مجرّد لا لون: `kindOf` دالّة عاديّة لا تُقرأ فيها
+ * السمة، فاللون يُحلّ في موضع العرض وحده.
+ */
+private enum class FeedbackTone { Positive, Problem, Report }
+
+private data class FeedbackKind(val label: String, val icon: ImageVector, val tone: FeedbackTone)
 
 private fun kindOf(type: String): FeedbackKind = when (type) {
-    "benefited" -> FeedbackKind("استفاد", Icons.Filled.ThumbUp, kGreen)
-    "audio_issue" -> FeedbackKind("مشكلة صوت", Icons.AutoMirrored.Filled.VolumeOff, kDanger)
-    else -> FeedbackKind("بلاغ", Icons.Filled.Report, kOrange)
+    "benefited" -> FeedbackKind("استفاد", Icons.Filled.ThumbUp, FeedbackTone.Positive)
+    "audio_issue" ->
+        FeedbackKind("مشكلة صوت", Icons.AutoMirrored.Filled.VolumeOff, FeedbackTone.Problem)
+    else -> FeedbackKind("بلاغ", Icons.Filled.Report, FeedbackTone.Report)
+}
+
+/** لون النغمة المتكيّف مع الوضعين. */
+@Composable
+private fun FeedbackTone.color(): Color = when (this) {
+    FeedbackTone.Positive -> adminGreen
+    FeedbackTone.Problem -> MaterialTheme.colorScheme.error
+    FeedbackTone.Report -> adminOrange
 }

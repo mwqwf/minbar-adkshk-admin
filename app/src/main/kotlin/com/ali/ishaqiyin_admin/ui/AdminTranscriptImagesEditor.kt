@@ -146,7 +146,7 @@ fun AdminTranscriptImagesEditor(
             Icon(
                 Icons.Filled.AddPhotoAlternate,
                 contentDescription = "إرفاق صورة من الكتاب",
-                tint = kTeal,
+                tint = MaterialTheme.colorScheme.primary,
             )
         }
     }
@@ -178,12 +178,12 @@ fun AdminTranscriptImagesEditor(
                                 .align(Alignment.TopStart)
                                 .padding(4.dp)
                                 .size(20.dp)
-                                .background(kTeal, CircleShape),
+                                .background(MaterialTheme.colorScheme.primary, CircleShape),
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
                                 "${i + 1}",
-                                color = Color.White,
+                                color = MaterialTheme.colorScheme.onPrimary,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                             )
@@ -228,7 +228,7 @@ fun AdminTranscriptImagesEditor(
                             Icon(
                                 Icons.Filled.Crop,
                                 contentDescription = "قصّ الصورة",
-                                tint = kTeal,
+                                tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(16.dp),
                             )
                         }
@@ -280,7 +280,7 @@ fun AdminTranscriptImagesEditor(
                     CircularProgressIndicator(
                         modifier = Modifier.size(16.dp),
                         strokeWidth = 2.dp,
-                        color = kTeal,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.width(6.dp))
                     Text("جارٍ الدمج…")

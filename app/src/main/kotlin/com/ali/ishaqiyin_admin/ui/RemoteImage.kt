@@ -7,6 +7,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -40,8 +41,10 @@ fun RemoteAvatar(
     url: String,
     fallbackText: String,
     size: Int = 40,
-    background: Color = kTeal,
-    textColor: Color = Color.White,
+    background: Color = MaterialTheme.colorScheme.primary,
+    // حبر الحرف/الأيقونة يُشتقّ من الخلفيّة نفسها: أبيض فوق الداكنة وحبر
+    // داكن فوق الفاتحة (كالذهب في الوضع الداكن).
+    textColor: Color = contentColorOn(background),
     fallbackIcon: ImageVector? = null,
 ) {
     Box(

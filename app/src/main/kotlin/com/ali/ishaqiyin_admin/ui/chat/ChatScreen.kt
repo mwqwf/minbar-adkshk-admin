@@ -1507,6 +1507,9 @@ private fun MessageActionsSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = ChatColors.surface,
+        // الورقة تُرسم خارج WhatsAppChatBackground فلا يصلها لون نصّ الدردشة:
+        // بلا هذا يبقى النصّ داكناً فوق سطح داكن.
+        contentColor = ChatColors.textPrimary,
     ) {
         Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
             if (!msg.deleted) {
@@ -1637,6 +1640,9 @@ private fun EmojiPickerSheet(onDismiss: () -> Unit, onPicked: (String) -> Unit) 
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = ChatColors.surface,
+        // الورقة تُرسم خارج WhatsAppChatBackground فلا يصلها لون نصّ الدردشة:
+        // بلا هذا يبقى النصّ داكناً فوق سطح داكن.
+        contentColor = ChatColors.textPrimary,
     ) {
         androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
             columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(8),
@@ -1670,6 +1676,9 @@ private fun ReactionsSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = ChatColors.surface,
+        // الورقة تُرسم خارج WhatsAppChatBackground فلا يصلها لون نصّ الدردشة:
+        // بلا هذا يبقى النصّ داكناً فوق سطح داكن.
+        contentColor = ChatColors.textPrimary,
     ) {
         Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
             Text(
@@ -1730,6 +1739,9 @@ private fun MessageInfoSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = ChatColors.surface,
+        // الورقة تُرسم خارج WhatsAppChatBackground فلا يصلها لون نصّ الدردشة:
+        // بلا هذا يبقى النصّ داكناً فوق سطح داكن.
+        contentColor = ChatColors.textPrimary,
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Text("معلومات الرسالة", fontWeight = FontWeight.Bold, fontSize = 15.sp)
@@ -1830,6 +1842,9 @@ fun ForwardPickerSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = ChatColors.surface,
+        // الورقة تُرسم خارج WhatsAppChatBackground فلا يصلها لون نصّ الدردشة:
+        // بلا هذا يبقى النصّ داكناً فوق سطح داكن.
+        contentColor = ChatColors.textPrimary,
     ) {
         Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
             Text(
@@ -1895,6 +1910,9 @@ fun AttachMenuSheet(onDismiss: () -> Unit, onPick: (String) -> Unit) {
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = ChatColors.surface,
+        // الورقة تُرسم خارج WhatsAppChatBackground فلا يصلها لون نصّ الدردشة:
+        // بلا هذا يبقى النصّ داكناً فوق سطح داكن.
+        contentColor = ChatColors.textPrimary,
     ) {
         Row(
             Modifier.fillMaxWidth().padding(vertical = 20.dp, horizontal = 12.dp),

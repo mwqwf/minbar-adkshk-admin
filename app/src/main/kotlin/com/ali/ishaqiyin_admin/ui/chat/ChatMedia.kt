@@ -475,9 +475,16 @@ fun AudioBubblePlayer(
         }
     }
 
-    // واتساب لا يعكس الموجة نفسها في الرسائل الصادرة؛ يغيّر ترتيب العناصر،
-    // وزرّ التشغيل **ملاصق للصورة** دائماً:
-    // الواردة = صورة، تشغيل، موجة. الصادرة = تشغيل، موجة، صورة.
+    // ⛔ الترتيب الصحيح (المواصفة بند ١) في RTL من اليمين إلى اليسار:
+    //     [▶ تشغيل] [ــ الموجة ــ] [🎤 + نقطة] [صورة المرسِل]
+    // أي أنّ زرّ التشغيل على الطرف **المقابل** للصورة لا ملاصقاً لها.
+    //
+    // ⚠️ الصفّ مفروض عليه Ltr (لأجل اتجاه الموجة وحساب السحب)، فمعنى
+    // «البداية/النهاية» ينقلب: أوّل ابن يظهر على **يسار** الشاشة وآخرُه على
+    // يمينها. لذلك التسلسل هنا: صورة (يسار) ← موجة ← تشغيل (يمين) — وهو
+    // بالضبط ترتيب المواصفة بعد القلب. والصادرة مثلها (بلا صورة مرسِل
+    // منطقيّاً، لكنّها تحمل كبسولة السرعة وشارة «سمعها المتلقّي» في الموضع
+    // نفسه فيتطابق تخطيط الاتجاهين).
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         Row(
             // عرض مرن لا 292dp ثابتة: كانت الفقاعة تملأ شاشة 320dp حتى
@@ -485,31 +492,17 @@ fun AudioBubblePlayer(
             Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (!mine) {
-                AudioIdentity(
-                    active = active,
-                    speed = speed,
-                    isVoice = isVoice,
-                    senderUid = senderUid,
-                    senderName = senderName,
-                    senderPhoto = senderPhoto,
-                    listened = listened,
-                    mine = false,
-                )
-                Spacer(Modifier.width(6.dp))
-            }
-
-            AudioControl(
-                status = status,
+            AudioIdentity(
                 active = active,
-                playing = playing,
-                onClick = controlClick,
-                onCancel = {
-                    downloadJob?.cancel()
-                    downloadJob = null
-                },
+                speed = speed,
+                isVoice = isVoice,
+                senderUid = senderUid,
+                senderName = senderName,
+                senderPhoto = senderPhoto,
+                listened = listened,
+                mine = mine,
             )
-            Spacer(Modifier.width(2.dp))
+            Spacer(Modifier.width(6.dp))
 
             AudioWaveformTrack(
                 bars = displayBars,
@@ -534,19 +527,17 @@ fun AudioBubblePlayer(
                 modifier = Modifier.weight(1f),
             )
 
-            if (mine) {
-                Spacer(Modifier.width(6.dp))
-                AudioIdentity(
-                    active = active,
-                    speed = speed,
-                    isVoice = isVoice,
-                    senderUid = senderUid,
-                    senderName = senderName,
-                    senderPhoto = senderPhoto,
-                    listened = listened,
-                    mine = true,
-                )
-            }
+            Spacer(Modifier.width(2.dp))
+            AudioControl(
+                status = status,
+                active = active,
+                playing = playing,
+                onClick = controlClick,
+                onCancel = {
+                    downloadJob?.cancel()
+                    downloadJob = null
+                },
+            )
         }
     }
 }
@@ -569,7 +560,7 @@ private fun AudioIdentity(
             else -> Icon(
                 Icons.Filled.MusicNote,
                 contentDescription = null,
-                tint = ChatColors.wavePlayed,
+                tint = ChatColors.controlIcon,
                 modifier = Modifier.size(27.dp),
             )
         }
@@ -598,29 +589,13 @@ private fun AudioWaveformTrack(
             onSeek = onSeek,
         )
         Spacer(Modifier.height(1.dp))
-        // ترتيب واتساب: المدّة (أو حالة التنزيل) على حافة البداية، والوقت ثمّ
-        // ✓✓ على حافة النهاية. (كان معكوساً تماماً.)
+        // صفّ الميتا كما في المواصفة: **المدّة على حافة البداية (يمين RTL)**
+        // ووقت الرسالة ثمّ ✓✓ على حافة النهاية (يسار). والصفّ مفروض Ltr، فأوّل
+        // ابن هو اليسار: الوقت والعلامة أوّلاً ثمّ المدّة موزونة إلى اليمين.
         Row(
             Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // نصوص الحالة عربيّة («جارٍ التنزيل… 40%»، «اضغط للتنزيل • 2.3MB»)
-            // والصفّ كلّه مفروض LTR، فتُعاد إليها RTL وحدها كي تستقرّ النقطة
-            // والنسبة في موضعهما الصحيح. (الوزن يُحسب في نطاق الصفّ نفسه:
-            // محتوى CompositionLocalProvider ليس RowScope.)
-            val statusModifier = Modifier.weight(1f)
-            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                Text(
-                    text = statusText,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Start,
-                    fontSize = 12.sp,
-                    color = if (statusIsError) ChatColors.rose else ChatColors.metaText,
-                    modifier = statusModifier,
-                )
-            }
-            Spacer(Modifier.width(4.dp))
             Text(messageTime, fontSize = 12.sp, color = ChatColors.metaText)
             if (mine) {
                 Spacer(Modifier.width(3.dp))
@@ -637,6 +612,24 @@ private fun AudioWaveformTrack(
                         ChatColors.metaText
                     },
                     modifier = Modifier.size(14.dp),
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+            // نصوص الحالة عربيّة («جارٍ التنزيل… 40%»، «اضغط للتنزيل • 2.3MB»)
+            // والصفّ كلّه مفروض LTR، فتُعاد إليها RTL وحدها كي تستقرّ النقطة
+            // والنسبة في موضعهما الصحيح، وتُحاذى Start = يمين الصفّ. (الوزن
+            // يُحسب في نطاق الصفّ نفسه: محتوى CompositionLocalProvider ليس
+            // RowScope.)
+            val statusModifier = Modifier.weight(1f)
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                Text(
+                    text = statusText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Start,
+                    fontSize = 12.sp,
+                    color = if (statusIsError) ChatColors.rose else ChatColors.metaText,
+                    modifier = statusModifier,
                 )
             }
         }
@@ -667,14 +660,14 @@ private fun AudioControl(
                 CircularProgressIndicator(
                     progress = { (status.progress / 100).toFloat() },
                     strokeWidth = 2.dp,
-                    color = ChatColors.wavePlayed,
+                    color = ChatColors.controlIcon,
                     trackColor = ChatColors.waveRest,
                     modifier = Modifier.size(24.dp),
                 )
                 Icon(
                     Icons.Filled.Close,
                     contentDescription = "إلغاء التنزيل",
-                    tint = ChatColors.wavePlayed,
+                    tint = ChatColors.controlIcon,
                     modifier = Modifier.size(13.dp),
                 )
             }
@@ -690,7 +683,7 @@ private fun AudioControl(
                         else -> Icons.Filled.PlayArrow
                     },
                     contentDescription = null,
-                    tint = ChatColors.wavePlayed,
+                    tint = ChatColors.controlIcon,
                     modifier = Modifier.size(24.dp),
                 )
             }
@@ -715,12 +708,14 @@ private fun VoiceAvatar(
 ) {
     Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
         MemberAvatar(uid = uid, name = name, photo = photo, radius = 22)
+        // الشارة ملاصقة للصورة من **جهة الموجة** دائماً (الصفّ مفروض Ltr،
+        // فجهة الموجة هي BottomEnd في الاتجاهين) — لا BottomStart للصادرة.
         Box(
             Modifier
-                .align(if (mine) Alignment.BottomStart else Alignment.BottomEnd)
+                .align(Alignment.BottomEnd)
                 .size(19.dp)
                 .background(
-                    if (mine) ChatColors.mineBubble else ChatColors.surface,
+                    if (mine) ChatColors.mineBubble else ChatColors.otherBubble,
                     CircleShape,
                 ),
             contentAlignment = Alignment.Center,
@@ -737,6 +732,16 @@ private fun VoiceAvatar(
                 modifier = Modifier.size(15.dp),
             )
         }
+        // نقطة «غير مسموعة» الخضراء المصمتة (المواصفة بند ٢): ترافق
+        // الميكروفون الأخضر ما دامت الرسالة الواردة لم تُسمع، وتختفي بعده.
+        if (!mine && !listened) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .size(10.dp)
+                    .background(ChatColors.micUnheard, CircleShape),
+            )
+        }
     }
 }
 
@@ -750,7 +755,7 @@ private fun SpeedChip(speed: Float, mine: Boolean) {
     Box(
         Modifier
             .background(
-                if (mine) Color(0xFFC5EDBC) else Color(0xFFE7E7E7),
+                if (mine) ChatColors.speedChipMine else ChatColors.speedChipOther,
                 RoundedCornerShape(10.dp),
             )
             .clickable {

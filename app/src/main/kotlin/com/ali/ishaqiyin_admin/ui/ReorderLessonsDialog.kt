@@ -433,7 +433,8 @@ fun ReorderLessonsDialog(
                         CircularProgressIndicator(
                             modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp,
-                            color = Color.White,
+                            // حبر الزرّ المصمت لا أبيضَ ثابتاً.
+                            color = scheme.onPrimary,
                         )
                         Spacer(Modifier.size(8.dp))
                         Text("جارٍ الحفظ…")

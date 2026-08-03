@@ -28,6 +28,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -203,9 +204,13 @@ fun <T> AdminDropdown(
     }
 }
 
-/** مؤشّر دوّار صغير داخل زرّ (نظير _Spin). */
+/**
+ * مؤشّر دوّار صغير داخل زرّ (نظير _Spin).
+ * لونه الافتراضي حبر ما يحتويه لا أبيضَ ثابتاً: داخل زرّ مصمت يساوي
+ * `onPrimary` (أبيض في الفاتح كما كان، وحبر داكن فوق ذهب الليل).
+ */
 @Composable
-fun Spin(color: Color = Color.White, size: Int = 22) {
+fun Spin(color: Color = LocalContentColor.current, size: Int = 22) {
     CircularProgressIndicator(
         strokeWidth = 2.dp,
         color = color,

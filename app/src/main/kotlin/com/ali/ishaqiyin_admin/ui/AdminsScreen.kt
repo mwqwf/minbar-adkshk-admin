@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,7 +44,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -76,7 +76,7 @@ fun AdminsScreen(isOwner: Boolean, onBack: () -> Unit, onOpenSupervisors: () -> 
         ) {
             Card(
                 shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Row(
@@ -85,7 +85,7 @@ fun AdminsScreen(isOwner: Boolean, onBack: () -> Unit, onOpenSupervisors: () -> 
                 ) {
                     CircleIcon(
                         if (isOwner) Icons.Filled.VerifiedUser else Icons.Filled.Person,
-                        kTeal,
+                        MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.size(12.dp))
                     Column {
@@ -97,7 +97,7 @@ fun AdminsScreen(isOwner: Boolean, onBack: () -> Unit, onOpenSupervisors: () -> 
                                 "مشرف — صلاحية إدارة المحتوى"
                             },
                             fontSize = 12.sp,
-                            color = kMuted,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -108,27 +108,27 @@ fun AdminsScreen(isOwner: Boolean, onBack: () -> Unit, onOpenSupervisors: () -> 
                 Spacer(Modifier.height(12.dp))
                 Card(
                     shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenSupervisors),
                 ) {
                     Row(
                         Modifier.fillMaxWidth().padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        CircleIcon(Icons.Filled.SupervisorAccount, kTeal)
+                        CircleIcon(Icons.Filled.SupervisorAccount, MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.size(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text("إدارة المشرفين")
                             Text(
                                 "حظر مؤقّت/نهائي/إلغاء حظر/حذف",
                                 fontSize = 12.sp,
-                                color = kMuted,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Icon(
                             Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                             contentDescription = null,
-                            tint = kMuted,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -137,7 +137,7 @@ fun AdminsScreen(isOwner: Boolean, onBack: () -> Unit, onOpenSupervisors: () -> 
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .background(kBoxBg, RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(12.dp))
                     .padding(14.dp),
             ) {
                 Text(
@@ -162,10 +162,10 @@ fun AdminsScreen(isOwner: Boolean, onBack: () -> Unit, onOpenSupervisors: () -> 
                 Icon(
                     Icons.AutoMirrored.Filled.Logout,
                     contentDescription = null,
-                    tint = kDanger,
+                    tint = MaterialTheme.colorScheme.error,
                 )
                 Spacer(Modifier.size(8.dp))
-                Text("تسجيل الخروج", color = kDanger)
+                Text("تسجيل الخروج", color = MaterialTheme.colorScheme.error)
             }
         }
     }
@@ -197,7 +197,7 @@ private fun PendingOwnerCodeCards() {
             title = "إلغاء الرمز",
             body = "سيُبطَل رمز «${code.candidateEmail}» نهائياً ولن يقبله الخادم. متابعة؟",
             confirmLabel = "إلغاء الرمز",
-            confirmColor = kDanger,
+            confirmColor = MaterialTheme.colorScheme.error,
             onDismiss = { confirmCancel = null },
             onConfirm = {
                 confirmCancel = null
@@ -216,14 +216,14 @@ private fun PendingOwnerCodeCards() {
             val seconds = ((remaining / 1000) % 60).coerceIn(0, 59)
             Card(
                 shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = kTeal.copy(alpha = 0.08f)),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, kTeal.copy(alpha = 0.3f), RoundedCornerShape(12.dp)),
+                    .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f), RoundedCornerShape(12.dp)),
             ) {
                 Column(Modifier.padding(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.LockClock, contentDescription = null, tint = kTeal)
+                        Icon(Icons.Filled.LockClock, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.size(8.dp))
                         Text(
                             "طلب انضمام مشرف معلَّق",
@@ -232,7 +232,7 @@ private fun PendingOwnerCodeCards() {
                         )
                         Text(
                             "$minutes:${seconds.toString().padStart(2, '0')}",
-                            color = kTeal,
+                            color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
@@ -244,13 +244,13 @@ private fun PendingOwnerCodeCards() {
                             pending.candidateEmail
                         },
                         fontSize = 13.sp,
-                        color = kMuted,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(10.dp))
                     Box(
                         Modifier
                             .fillMaxWidth()
-                            .background(Color.White, RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(10.dp))
                             .padding(vertical = 14.dp),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -259,7 +259,7 @@ private fun PendingOwnerCodeCards() {
                             fontSize = 30.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 10.sp,
-                            color = kTeal,
+                            color = MaterialTheme.colorScheme.primary,
                         )
                     }
                     Spacer(Modifier.height(8.dp))
@@ -267,7 +267,7 @@ private fun PendingOwnerCodeCards() {
                         "بلّغ المرشّح بهذا الرمز (مكالمة/واتساب) ليُدخله في تطبيقه " +
                             "ويُعتمَد مشرفاً فوراً.",
                         fontSize = 12.sp,
-                        color = kMuted,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -289,11 +289,11 @@ private fun PendingOwnerCodeCards() {
                             Icon(
                                 Icons.Filled.Close,
                                 contentDescription = null,
-                                tint = kDanger,
+                                tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.size(16.dp),
                             )
                             Spacer(Modifier.size(6.dp))
-                            Text("إلغاء", color = kDanger)
+                            Text("إلغاء", color = MaterialTheme.colorScheme.error)
                         }
                     }
                 }
