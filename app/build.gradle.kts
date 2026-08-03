@@ -2,7 +2,8 @@ import java.util.Properties
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
+    // ⛔ لا تُعِد `org.jetbrains.kotlin.android`: دعم Kotlin مدمج في AGP 9
+    // فأصبح الملحق يرفض التطبيق ويوقف البناء.
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
@@ -44,8 +45,8 @@ android {
         // نسخة Flutter المثبَّتة على جهاز المشرف تحمل versionCode=2001 (بادئة
         // ABI التي يضيفها Flutter)، والتثبيت فوقها يتطلّب رقماً أعلى — وإلا
         // فُقدت جلسة الدخول بإلغاء التثبيت. الاسم يبقى كما هو.
-        versionCode = 2002
-        versionName = "1.0.0"
+        versionCode = 2003
+        versionName = "1.1.0"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -74,6 +75,9 @@ android {
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }
+            // رموز تصحيح المكتبات الأصليّة (WebRTC خصوصاً) كي تصل أعطال
+            // Play مفهومة بدل عناوين خام.
+            ndk { debugSymbolLevel = "SYMBOL_TABLE" }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -130,6 +134,10 @@ dependencies {
 
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-compose:1.13.0")
+    // صريحة رغم أنّها تأتي غير مباشرة (تُحلّ إلى 1.5.7): فحص AGP 9 الحاسم
+    // `InvalidFragmentVersionForActivityResult` لا يرى النسخة المُحلَّلة حين
+    // تكون غير مباشرة فيوقف بناء النشر بخطأ كاذب.
+    implementation("androidx.fragment:fragment:1.8.9")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
@@ -212,6 +220,28 @@ androidComponents {
                 "اسم اللوحة الظاهر في نوع البناء «${buildType.name}» صار «$label». " +
                     "يجب أن يبقى «$canonicalAppLabel» بلا أي لاحقة في كل الأنواع."
             }
+        }
+    }
+}
+
+// تحذير Play «لم يتم تحميل أي رموز لتصحيح الأخطاء»: مكتبات AndroidX الأصليّة
+// تأتي مجرّدةً من جدول الرموز الكامل (.symtab)، فمهمة AGP
+// extractReleaseNativeSymbolTables تخرج صفر ملفات ولا يُضمَّن شيء في الحزمة
+// فيبقى التحذير. المكتبات تحتفظ بجدولها الديناميكي (.dynsym) — وهو كل ما
+// يملكه أحد أصلاً لها — فنضمّنه بأنفسنا بصيغة <lib>.so.sym التي تلتقطها حزمة
+// AAB في BUNDLE-METADATA/com.android.tools.build.debugsymbols.
+tasks.matching { it.name == "extractReleaseNativeSymbolTables" }.configureEach {
+    doLast {
+        val mergedLibs = layout.buildDirectory
+            .dir("intermediates/merged_native_libs/release/mergeReleaseNativeLibs/out/lib")
+            .get().asFile
+        val symbolsOut = layout.buildDirectory
+            .dir("intermediates/native_symbol_tables/release/extractReleaseNativeSymbolTables/out")
+            .get().asFile
+        mergedLibs.walkTopDown().filter { it.isFile && it.extension == "so" }.forEach { so ->
+            val target = File(symbolsOut, "${so.parentFile.name}/${so.name}.sym")
+            target.parentFile.mkdirs()
+            so.copyTo(target, overwrite = true)
         }
     }
 }
