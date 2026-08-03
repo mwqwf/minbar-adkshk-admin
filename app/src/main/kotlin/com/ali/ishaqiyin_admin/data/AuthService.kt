@@ -105,7 +105,23 @@ object AuthService {
         } catch (_: NoCredentialException) {
             "لا يوجد حساب Google على هذا الجهاز. أضف حساباً ثم أعد المحاولة."
         } catch (e: GetCredentialException) {
-            "فشل تسجيل الدخول بـ Google: ${e.message ?: e.type}"
+            // السبب الأشيع لفشل الدخول في نسخة **المتجر** تحديداً: Play يُعيد
+            // توقيع الحزمة بمفتاحه، فبصمة التوقيع وقت التشغيل ليست بصمة مفتاح
+            // الرفع، وما لم تُسجَّل في Firebase يرفض Google إصدار رمز الهويّة.
+            // الرسالة الخام هنا مبهمة («Developer console is not set up
+            // correctly» أو رقم خطأ)، فنُسمّي السبب صراحةً.
+            val raw = e.message ?: e.type
+            val looksLikeSignatureMismatch = raw.contains("10", ignoreCase = true) ||
+                raw.contains("developer", ignoreCase = true) ||
+                raw.contains("console", ignoreCase = true) ||
+                raw.contains("no credentials", ignoreCase = true)
+            if (looksLikeSignatureMismatch) {
+                "تعذّر تسجيل الدخول: بصمة توقيع هذه النسخة غير مسجَّلة في " +
+                    "إعدادات المشروع. إن كانت النسخة من المتجر فأضِف بصمة " +
+                    "«توقيع التطبيق» من Play Console إلى Firebase. ($raw)"
+            } else {
+                "فشل تسجيل الدخول بـ Google: $raw"
+            }
         } catch (e: FirebaseAuthException) {
             authMessage(e.errorCode)
         } catch (e: Exception) {
