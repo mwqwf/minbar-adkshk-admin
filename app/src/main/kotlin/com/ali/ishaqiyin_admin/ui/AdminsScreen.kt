@@ -3,6 +3,8 @@ package com.ali.ishaqiyin_admin.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,14 +27,17 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.LockClock
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.SupervisorAccount
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -48,6 +53,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ali.ishaqiyin_admin.BuildConfig
 import com.ali.ishaqiyin_admin.core.AppConfig
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.AuthService
@@ -298,9 +304,55 @@ private fun PendingOwnerCodeCards() {
                     }
                 }
             }
+
+            // تذييل هادئ: سياسة الخصوصية ورقم الإصدار. موضعها هنا مقصود —
+            // Play يشترط رابطاً للسياسة داخل التطبيق لا في صفحة المتجر وحدها،
+            // وهذه شاشة حساب لا يفتحها المشرف إلا قاصداً، فلا تزاحم العمل
+            // اليومي في اللوحة الرئيسية.
+            Spacer(Modifier.height(28.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "الإصدار ${BuildConfig.VERSION_NAME}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(
+                    onClick = {
+                        val opened = runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_POLICY_URL))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }.isSuccess
+                        if (!opened) {
+                            copyToClipboard(context, PRIVACY_POLICY_URL)
+                            snack("تعذّر فتح المتصفّح — نُسخ الرابط.")
+                        }
+                    },
+                ) {
+                    Icon(
+                        Icons.Filled.PrivacyTip,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Text("سياسة الخصوصية", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Spacer(Modifier.height(16.dp))
         }
     }
 }
+
+/** سياسة خصوصية **لوحة الإدارة** — غير سياسة التطبيق العام (‏/privacy). */
+private const val PRIVACY_POLICY_URL =
+    "https://minbar-adkassahk.vercel.app/admin-privacy"
 
 private fun copyToClipboard(context: Context, text: String) {
     val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
