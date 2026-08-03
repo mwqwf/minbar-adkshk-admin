@@ -420,6 +420,19 @@ exports.onLessonCreated = functions.firestore
     // dispatchScheduledLesson قبل الإرسال. بلا هذا الفحص كان درس قديم
     // يصل لكل المستمعين بوصفه «درساً جديداً» بمجرّد التراجع عن حذفه.
     if (d.publishNotified === true) return null;
+    // ♻️ ووسم الاستعادة نفسه حارسٌ ثانٍ لا غنى عنه: الحارس أعلاه يعتمد على
+    // حقل `publishNotified`، وهو **غائب تماماً** من كل درس أُنشئ قبل وجود
+    // هذا الحقل (وهي أغلب المكتبة). فاستعادة درس قديم من السلة كانت تصل
+    // كإشعار «درس جديد» لكل المستمعين — نفس الفاجعة التي يمنعها السطر
+    // أعلاه للدروس الحديثة وحدها. `restoredAtMs` تكتبه restoreDeletedLesson
+    // لحظة الاستعادة، والنافذة قصيرة (١٠ دقائق) كي لا يُسكِت إضافةً لاحقة
+    // بالمعرّف نفسه — مطابقة لنافذة onLessonSuspicionCreated حرفياً.
+    const restoredAtMs = Number(d.restoredAtMs || 0);
+    if (restoredAtMs > 0 && Date.now() - restoredAtMs < 10 * 60 * 1000) {
+      await snap.ref.set({ publishNotified: true }, { merge: true })
+        .catch((error) => console.error("mark restored publishNotified failed", error));
+      return null;
+    }
     if (d.publishAt) {
       const at = Date.parse(d.publishAt);
       if (!Number.isNaN(at) && at > Date.now()) return null;
@@ -615,7 +628,15 @@ exports.publishScheduledLessons = functions.pubsub
     const snap = await db.collection("lessons")
       .where("publishAt", "<=", nowIso)
       .get();
-    await Promise.all(snap.docs.map(
+    // ⚠️ `publishAt` لا يُمسح بعد النشر إطلاقاً، فهذا الاستعلام يعيد **كل**
+    // درس سبقت جدولته منذ بدء المشروع. بلا هذا الترشيح كانت الدالة تفتح
+    // معاملةً (بقراءتين) لكل واحد منها كل ربع ساعة لتخلص إلى «مُشعَر أصلاً»
+    // — نموّ بلا سقف في القراءات، وطريقٌ مؤكَّد إلى نفاد مهلة المُجدوِل حين
+    // تكبر المكتبة. الترشيح محليّ فلا يحتاج فهرساً ولا يغيّر أي سلوك.
+    const due = snap.docs.filter(
+      (doc) => unwrapLegacy(doc.data()).publishNotified !== true,
+    );
+    await Promise.all(due.map(
       (doc) => dispatchScheduledLesson(doc, "scheduler")
         .catch((error) => console.error("scheduled publish failed", doc.id, error)),
     ));

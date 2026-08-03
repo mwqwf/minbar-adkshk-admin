@@ -573,7 +573,8 @@ object ChatRepository {
      * حذف عند الجميع — للمرسِل نفسه أو للمالك/مشرف المجموعة. تُمسح الحمولة
      * ويُحذف مرفق Storage (بأفضل جهد) وتبقى وثيقة "تم حذف الرسالة".
      *
-     * وإن كانت الرسالة هي **المثبَّتة** أُلغي تثبيتها في **نفس دفعة الكتابة**:
+     * وإن كانت الرسالة هي **المثبَّتة** حاولنا إلغاء تثبيتها بعدها (بكتابة
+     * مستقلّة — انظر التعليق في الجسم):
      * نصّ المعاينة نسخة مجمَّدة داخل `admin_chat_meta/group`، فمسح حمولة
      * الرسالة وحدها كان يُبقي نصّها معروضاً في شريط التثبيت وبطاقة معلومات
      * المجموعة لكلّ المشرفين — وصاحبها غير المشرف يملك «حذف عند الجميع» ولا
@@ -589,9 +590,14 @@ object ChatRepository {
             str((snapshot.dataMap()["pinned"] as? Map<*, *>)?.get("messageId"))
         }.getOrNull().orEmpty()
 
-        val batch = db.batch()
-        batch.update(
-            messages.document(msg.id),
+        // ⚠️ كتابتان **منفصلتان** لا دفعة واحدة: قاعدة `admin_chat_meta` لا
+        // تسمح بلمس `pinned` إلّا للمالك 👑 أو مشرف المجموعة ⭐، والدفعة
+        // ذرّيّة — فرفضُ كتابة التثبيت كان **يُسقط حذف الرسالة معها**. ولأن
+        // `commit()` بلا await فالرفض يقع صامتاً على الخادم بعد تطبيق محلّي:
+        // ترى الرسالة «محذوفة» لحظةً ثمّ تعود بنصّها كاملاً للجميع. المسار
+        // المصاب واقعيّ تماماً: مشرف عاديّ يحذف عند الجميع رسالته المثبَّتة.
+        // بالفصل يمرّ الحذف دائماً، ويُحاوَل إلغاء التثبيت بأفضل جهد.
+        messages.document(msg.id).update(
             mapOf(
                 "deleted" to true,
                 "deletedBy" to uid,
@@ -601,15 +607,13 @@ object ChatRepository {
             ),
         )
         if (pinnedId.isNotEmpty() && pinnedId == msg.id) {
-            batch.set(
-                meta,
-                mapOf("pinned" to null, "updatedAt" to FieldValue.serverTimestamp()),
-                SetOptions.merge(),
-            )
+            runCatching {
+                meta.set(
+                    mapOf("pinned" to null, "updatedAt" to FieldValue.serverTimestamp()),
+                    SetOptions.merge(),
+                )
+            }
         }
-        // بلا await: Firestore يطبّق الدفعة محليّاً فوراً ويعيد إرسالها عند
-        // عودة الشبكة — مطابق لبقيّة كتابات الدردشة.
-        batch.commit()
         val path = msg.attachment?.path.orEmpty()
         if (path.isNotEmpty()) {
             // أفضل جهد — الوثيقة حُذفت منطقيّاً على أيّ حال.
