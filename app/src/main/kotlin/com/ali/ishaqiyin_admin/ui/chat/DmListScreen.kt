@@ -1,7 +1,9 @@
 package com.ali.ishaqiyin_admin.ui.chat
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,13 +17,17 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -47,7 +53,9 @@ import com.ali.ishaqiyin_admin.data.ChatMember
 import com.ali.ishaqiyin_admin.data.ChatRepository
 import com.ali.ishaqiyin_admin.data.DmRepository
 import com.ali.ishaqiyin_admin.data.DmThread
+import com.ali.ishaqiyin_admin.data.arabicReason
 import com.ali.ishaqiyin_admin.ui.AdminScaffold
+import com.ali.ishaqiyin_admin.ui.ConfirmDialog
 import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.Routes
 import com.google.firebase.auth.FirebaseAuth
@@ -98,11 +106,104 @@ fun ChatsHomeScreen(nav: NavHostController, onBack: () -> Unit) {
     val groupUnread by remember { ChatRepository.unreadCountStream() }
         .collectAsState(initial = 0)
     var showPicker by remember { mutableStateOf(false) }
+    // المحادثة التي ضُغط عليها مطوّلاً — تفتح ورقة إجراءاتها (نمط واتساب).
+    var actionsFor by remember { mutableStateOf<DmThread?>(null) }
+    var confirmDelete by remember { mutableStateOf<DmThread?>(null) }
+    var deleting by remember { mutableStateOf(false) }
+
+    fun nameOf(thread: DmThread): String =
+        members[thread.otherOf(myUid)]?.displayName ?: "عضو سابق"
 
     fun openDm(member: ChatMember) {
         scope.launch {
             val threadId = DmRepository.ensureThread(member.uid)
             nav.navigate(Routes.dm(threadId, member.uid, member.displayName))
+        }
+    }
+
+    // 🗑️ إجراءات المحادثة الخاصّة: مسحٌ عندي وحدي، أو حذفٌ كامل عند
+    // الطرفين. الفرق بينهما مكتوب في الورقة نفسها لا في رأس المستعمِل.
+    actionsFor?.let { thread ->
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { actionsFor = null },
+            sheetState = sheetState,
+            containerColor = ChatColors.surface,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                Text(
+                    nameOf(thread),
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                )
+                HorizontalDivider()
+                ThreadActionRow(
+                    icon = Icons.Filled.CleaningServices,
+                    title = "مسح الرسائل عندي",
+                    subtitle = "تختفي عنك وحدك، ويبقى كلّ شيء عند الطرف الآخر",
+                    tint = ChatColors.textMuted,
+                ) {
+                    actionsFor = null
+                    deleting = true
+                    scope.launch {
+                        runCatching { DmRepository.clearForMe(thread.id) }
+                            .onSuccess { snack("مُسحت الرسائل عندك ($it رسالة).") }
+                            .onFailure { snack("تعذّر المسح: ${it.arabicReason()}") }
+                        deleting = false
+                    }
+                }
+                ThreadActionRow(
+                    icon = Icons.Filled.DeleteForever,
+                    title = "حذف المحادثة كاملةً",
+                    subtitle = "تُحذف هي ومحتواها عند الطرفين — بلا تراجع",
+                    tint = ChatColors.rose,
+                ) {
+                    actionsFor = null
+                    confirmDelete = thread
+                }
+            }
+        }
+    }
+
+    confirmDelete?.let { thread ->
+        ConfirmDialog(
+            title = "حذف المحادثة كاملةً",
+            body = "ستُحذف محادثتك مع ${nameOf(thread)} ومحتواها كلّه — الرسائل " +
+                "والصور والصوتيّات والملفّات — عندك وعنده معاً، ولا يمكن " +
+                "التراجع. متابعة؟",
+            confirmLabel = "حذف نهائيّاً",
+            confirmColor = ChatColors.rose,
+            onDismiss = { confirmDelete = null },
+            onConfirm = {
+                confirmDelete = null
+                deleting = true
+                scope.launch {
+                    runCatching { DmRepository.deleteThread(thread.id) }
+                        .onSuccess { snack("حُذفت المحادثة ومحتواها ($it رسالة).") }
+                        .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
+                    deleting = false
+                }
+            },
+        )
+    }
+
+    if (deleting) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = {}) {
+            Surface(shape = RoundedCornerShape(999.dp), color = ChatColors.surface) {
+                Row(
+                    Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        color = ChatColors.accent,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.size(12.dp))
+                    Text("جارٍ التنفيذ…", fontSize = 13.sp)
+                }
+            }
         }
     }
 
@@ -256,6 +357,7 @@ fun ChatsHomeScreen(nav: NavHostController, onBack: () -> Unit) {
                         val name = members[otherUid]?.displayName ?: "عضو"
                         nav.navigate(Routes.dm(visible[index].id, otherUid, name))
                     },
+                    onLongClick = { actionsFor = visible[index] },
                 )
                 HorizontalDivider(modifier = Modifier.padding(start = 76.dp))
             }
@@ -340,18 +442,45 @@ private fun GroupTile(
     }
 }
 
+/// سطر إجراء واحد داخل ورقة إجراءات المحادثة.
+@Composable
+private fun ThreadActionRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    tint: Color,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.size(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, color = tint)
+            Text(subtitle, fontSize = 11.5.sp, color = ChatColors.textMuted)
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ThreadTile(
     thread: DmThread,
     myUid: String,
     other: ChatMember?,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
     val unread = thread.hasUnreadFor(myUid)
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
