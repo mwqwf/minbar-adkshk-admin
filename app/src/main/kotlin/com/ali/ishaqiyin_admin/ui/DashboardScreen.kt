@@ -35,11 +35,16 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -621,6 +626,7 @@ private fun gridColors(): GridColors {
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
     // كلّ الشارات من التدفّقات المشتركة (WhileSubscribed): لا إعادة ربط
@@ -647,6 +653,11 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
         val subtitle: String,
         val badge: Int,
         val route: String,
+        /**
+         * أبواب هذه البطاقة حين تكون **مجمَّعة**: النقر يفتح ورقة تحمل
+         * هذه الأبواب بدل الانتقال مباشرةً. فارغة ⇒ بطاقة مباشرة.
+         */
+        val entries: List<ActionSpec> = emptyList(),
     )
 
     val cards = buildList {
@@ -660,72 +671,102 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
                 chatUnread + dmUnread, Routes.DM_LIST,
             ),
         )
+        // 📚 **المحتوى** — كلّ ما يخصّ الدروس والأقسام في باب واحد: إضافةً
+        // وتنظيماً وتعديلاً وتمييزاً واستعادةً. كانت خمس بطاقات متجاورة
+        // تؤدّي كلّها إلى الشيء نفسه (المحتوى) فتُغرق الشاشة بلا معنى.
+        add(
+            ActionSpec(
+                Icons.Filled.LibraryMusic, c.orange, "المحتوى",
+                "درس جديد، الأقسام، التعديل، المميّزة، المحذوفات",
+                trashCount + featuredActive, "",
+                entries = listOf(
+                    ActionSpec(
+                        Icons.Filled.LibraryMusic, c.orange, "إضافة درس صوتي",
+                        "رفع ملفات أو تسجيل مباشر", 0, Routes.ADD_LESSON,
+                    ),
+                    ActionSpec(
+                        Icons.Filled.AccountTree, c.tealDeep, "إدارة الأقسام",
+                        "إنشاء رئيسي وفرعي", 0, Routes.MANAGE_SECTIONS,
+                    ),
+                    ActionSpec(
+                        Icons.AutoMirrored.Filled.ManageSearch, c.blue, "التعديل والبحث",
+                        "تعديل وحذف وجدولة", 0, Routes.MANAGE_ALL,
+                    ),
+                    ActionSpec(
+                        Icons.Filled.Star, c.gold, "مختارات المنبر",
+                        "الدروس المميّزة ومدّتها", featuredActive, Routes.FEATURED,
+                    ),
+                    ActionSpec(
+                        Icons.Filled.RestoreFromTrash, c.danger, "سلة المحذوفات",
+                        "استعادة الدروس المحذوفة (30 يوماً)", trashCount, Routes.TRASH,
+                    ),
+                ),
+            ),
+        )
+        // 📥 المساهمات تبقى بطاقةً مستقلّة: صندوق وارد ينتظر قراراً، ودفنه
+        // داخل مجموعة يؤخّر ما يجب أن يُرى فوراً.
         add(
             ActionSpec(
                 Icons.Filled.HowToVote, c.gold, "المساهمات",
                 "دروس ونصوص المستمعين", pendingSubmissions, Routes.SUBMISSIONS,
             ),
         )
+        // 📈 قياس الأثر وسماع المستمعين وجهان لشيء واحد.
         add(
             ActionSpec(
-                Icons.Filled.RestoreFromTrash, c.danger, "سلة المحذوفات",
-                "استعادة الدروس المحذوفة (30 يوماً)", trashCount, Routes.TRASH,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.LibraryMusic, c.orange, "إضافة درس صوتي",
-                "رفع ملفات أو تسجيل مباشر", 0, Routes.ADD_LESSON,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.AccountTree, c.tealDeep, "إدارة الأقسام",
-                "إنشاء رئيسي وفرعي", 0, Routes.MANAGE_SECTIONS,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.AutoMirrored.Filled.ManageSearch, c.blue, "التعديل والبحث",
-                "تعديل وحذف وجدولة", 0, Routes.MANAGE_ALL,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.Star, c.gold, "مختارات المنبر",
-                "الدروس المميّزة ومدّتها", featuredActive, Routes.FEATURED,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.Insights, c.purple, "التحليلات والأثر",
-                "الاستماع والأقسام النشطة", 0, Routes.ANALYTICS,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.Forum, c.green, "تفاعل المستمعين",
-                "الملاحظات والبلاغات", 0, Routes.FEEDBACK,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.VerifiedUser, c.teal,
-                if (isOwner) "الحساب والمشرفون" else "الحساب والصلاحية",
-                if (isOwner) "الاعتماد والحظر والحذف" else "صلاحيتك وخروجك",
-                0, Routes.ADMINS,
-            ),
-        )
-        // لا تُنشأ البطاقة ولا البثّ لغير المالك، فلا يظهر له أي أثر.
-        if (isOwner) {
-            add(
-                ActionSpec(
-                    Icons.Filled.GppMaybe, c.danger, "الدروس المشبوهة",
-                    "مراجعة خاصة بالمالك", suspicious.size, Routes.OWNER_REVIEW,
+                Icons.Filled.Insights, c.purple, "التحليلات والتفاعل",
+                "الاستماع والأقسام والملاحظات", 0, "",
+                entries = listOf(
+                    ActionSpec(
+                        Icons.Filled.Insights, c.purple, "التحليلات والأثر",
+                        "الاستماع والأقسام النشطة", 0, Routes.ANALYTICS,
+                    ),
+                    ActionSpec(
+                        Icons.Filled.Forum, c.green, "تفاعل المستمعين",
+                        "الملاحظات والبلاغات", 0, Routes.FEEDBACK,
+                    ),
                 ),
-            )
-        }
+            ),
+        )
+        // ⚙️ الإدارة: الحسابات والصلاحيات، ومراجعة المالك، وضبط تذكير
+        // التحديث. (هذا الأخير كان **بلا أيّ مدخل في الواجهة** — شاشة
+        // مبنيّة لا يصلها أحد، فبقي رقم الإصدار المنشور قديماً.)
+        add(
+            ActionSpec(
+                Icons.Filled.VerifiedUser, c.teal, "الإدارة",
+                if (isOwner) "المشرفون والمراجعة وتذكير التحديث" else "صلاحيتك وحسابك",
+                suspicious.size, "",
+                entries = buildList {
+                    add(
+                        ActionSpec(
+                            Icons.Filled.VerifiedUser, c.teal,
+                            if (isOwner) "الحساب والمشرفون" else "الحساب والصلاحية",
+                            if (isOwner) "الاعتماد والحظر والحذف" else "صلاحيتك وخروجك",
+                            0, Routes.ADMINS,
+                        ),
+                    )
+                    // لغير المالك لا يُنشأ شيء من هذين، فلا يظهر له أثر.
+                    if (isOwner) {
+                        add(
+                            ActionSpec(
+                                Icons.Filled.GppMaybe, c.danger, "الدروس المشبوهة",
+                                "مراجعة خاصة بالمالك", suspicious.size, Routes.OWNER_REVIEW,
+                            ),
+                        )
+                        add(
+                            ActionSpec(
+                                Icons.Filled.SystemUpdate, c.blue, "تذكير التحديث",
+                                "أرقام إصدار التطبيق واللوحة", 0, Routes.UPDATE_CONFIG,
+                            ),
+                        )
+                    }
+                },
+            ),
+        )
     }
+
+    // البطاقة المجمَّعة المفتوحة الآن (ورقة أبوابها).
+    var openHub by remember { mutableStateOf<ActionSpec?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         cards.chunked(2).forEach { row ->
@@ -738,11 +779,99 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
                             label = spec.label,
                             subtitle = spec.subtitle,
                             badge = spec.badge,
-                            onClick = { nav.navigate(spec.route) },
+                            onClick = {
+                                if (spec.entries.isEmpty()) {
+                                    nav.navigate(spec.route)
+                                } else {
+                                    openHub = spec
+                                }
+                            },
                         )
                     }
                 }
                 if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+
+    openHub?.let { hub ->
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { openHub = null },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                Text(
+                    hub.label,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                )
+                HorizontalDivider()
+                hub.entries.forEach { entry ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                openHub = null
+                                nav.navigate(entry.route)
+                            }
+                            .padding(horizontal = 20.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(40.dp)
+                                .background(
+                                    entry.color.copy(alpha = 0.16f),
+                                    RoundedCornerShape(12.dp),
+                                ),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                entry.icon,
+                                contentDescription = null,
+                                tint = entry.color,
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
+                        Spacer(Modifier.size(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                entry.label,
+                                fontSize = 14.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                entry.subtitle,
+                                fontSize = 11.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        // الشارة تُرافق بابها داخل الورقة أيضاً، فيعرف المشرف
+                        // أين ينتظره العمل قبل أن يفتح.
+                        if (entry.badge > 0) {
+                            Box(
+                                Modifier
+                                    .background(entry.color, RoundedCornerShape(999.dp))
+                                    .padding(horizontal = 9.dp, vertical = 3.dp),
+                            ) {
+                                Text(
+                                    if (entry.badge > 99) "+99" else "${entry.badge}",
+                                    color = contentColorOn(entry.color),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }

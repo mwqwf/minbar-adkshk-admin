@@ -366,7 +366,10 @@ service cloud.firestore {
               .hasOnly(['deleted', 'deletedBy', 'deletedAt', 'text', 'att'])
           )
         );
-        allow delete: if false;
+        // 🗑️ حذف فعليّ لمحتوى محادثة خاصّة — **للمالك وحده** ومن داخلها.
+        // «حذف المحادثة عندي» لا يمرّ من هنا أصلاً (إخفاء بـhiddenFor)، فهذا
+        // مقصور على المحو النهائيّ الذي لا تراجع عنه.
+        allow delete: if isDmMember() && isOwner();
       }
     }
 

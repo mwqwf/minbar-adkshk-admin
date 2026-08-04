@@ -1,7 +1,9 @@
 package com.ali.ishaqiyin_admin.ui.chat
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,9 +17,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -47,7 +52,9 @@ import com.ali.ishaqiyin_admin.data.ChatMember
 import com.ali.ishaqiyin_admin.data.ChatRepository
 import com.ali.ishaqiyin_admin.data.DmRepository
 import com.ali.ishaqiyin_admin.data.DmThread
+import com.ali.ishaqiyin_admin.data.arabicReason
 import com.ali.ishaqiyin_admin.ui.AdminScaffold
+import com.ali.ishaqiyin_admin.ui.ConfirmDialog
 import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.Routes
 import com.google.firebase.auth.FirebaseAuth
@@ -68,7 +75,7 @@ private val dateOnlyFormat = SimpleDateFormat("yyyy/MM/dd", Locale.US)
  * يراسل ثلاثة مشرفين لا يرى محادثاتهم إلا بعد أن يتذكّر أنّ لها قسماً
  * مستقلاً — وهو عكس ما اعتاده الناس في تطبيقات المراسلة.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatsHomeScreen(nav: NavHostController, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -98,6 +105,80 @@ fun ChatsHomeScreen(nav: NavHostController, onBack: () -> Unit) {
     val groupUnread by remember { ChatRepository.unreadCountStream() }
         .collectAsState(initial = 0)
     var showPicker by remember { mutableStateOf(false) }
+    // ضغطة مطوّلة على محادثة ⇒ خيارات حذفها (نمط واتساب).
+    var menuFor by remember { mutableStateOf<DmThread?>(null) }
+    var confirmPurge by remember { mutableStateOf<DmThread?>(null) }
+    val iAmOwner = members[myUid]?.isOwner == true
+
+    fun nameOf(thread: DmThread): String =
+        members[thread.otherOf(myUid)]?.displayName ?: "عضو"
+
+    menuFor?.let { target ->
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { menuFor = null },
+            sheetState = sheetState,
+            containerColor = ChatColors.surface,
+            contentColor = ChatColors.textPrimary,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
+                Text(
+                    "محادثة ${nameOf(target)}",
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                )
+                HorizontalDivider()
+                ThreadMenuItem(
+                    icon = Icons.Filled.Delete,
+                    label = "حذف المحادثة عندي",
+                    subtitle = "تختفي من قائمتي ولا يفقد الطرف الآخر شيئاً، " +
+                        "وتعود إن راسلني ثانيةً.",
+                    tint = ChatColors.amber,
+                ) {
+                    val id = target.id
+                    menuFor = null
+                    scope.launch {
+                        runCatching { DmRepository.deleteThreadForMe(id) }
+                            .onSuccess { snack("حُذفت المحادثة عندك.") }
+                            .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
+                    }
+                }
+                if (iAmOwner) {
+                    ThreadMenuItem(
+                        icon = Icons.Filled.DeleteForever,
+                        label = "حذف المحادثة ومحتواها عند الطرفين 👑",
+                        subtitle = "محو نهائيّ للرسائل ومرفقاتها من الخادم — بلا تراجع.",
+                        tint = ChatColors.rose,
+                    ) {
+                        confirmPurge = target
+                        menuFor = null
+                    }
+                }
+            }
+        }
+    }
+
+    confirmPurge?.let { target ->
+        ConfirmDialog(
+            title = "محو محادثة ${nameOf(target)} نهائياً؟",
+            body = "ستُمحى كلّ رسائل هذه المحادثة ومرفقاتها (صور وصوتيّات " +
+                "وملفّات) من الخادم عند الطرفين معاً، بلا أيّ إمكانية " +
+                "استرجاع. إن أردت إخفاءها عنك وحدك فاستعمل «حذف المحادثة عندي».",
+            confirmLabel = "محو نهائيّ",
+            confirmColor = MaterialTheme.colorScheme.error,
+            onConfirm = {
+                val id = target.id
+                confirmPurge = null
+                scope.launch {
+                    runCatching { DmRepository.deleteThreadForEveryone(id) }
+                        .onSuccess { snack("مُحيت المحادثة ومحتواها ($it رسالة).") }
+                        .onFailure { snack("تعذّر المحو: ${it.arabicReason()}") }
+                }
+            },
+            onDismiss = { confirmPurge = null },
+        )
+    }
 
     fun openDm(member: ChatMember) {
         scope.launch {
@@ -256,6 +337,7 @@ fun ChatsHomeScreen(nav: NavHostController, onBack: () -> Unit) {
                         val name = members[otherUid]?.displayName ?: "عضو"
                         nav.navigate(Routes.dm(visible[index].id, otherUid, name))
                     },
+                    onLongPress = { menuFor = visible[index] },
                 )
                 HorizontalDivider(modifier = Modifier.padding(start = 76.dp))
             }
@@ -346,12 +428,13 @@ private fun ThreadTile(
     myUid: String,
     other: ChatMember?,
     onClick: () -> Unit,
+    onLongPress: () -> Unit = {},
 ) {
     val unread = thread.hasUnreadFor(myUid)
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongPress)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -398,6 +481,32 @@ private fun ThreadTile(
                 Spacer(Modifier.height(4.dp))
                 Box(Modifier.size(10.dp).background(ChatColors.accent, CircleShape))
             }
+        }
+    }
+}
+
+/** سطر في ورقة خيارات المحادثة (أيقونة + عنوان + شرح سبب/أثر). */
+@Composable
+private fun ThreadMenuItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    subtitle: String,
+    tint: Color,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.size(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, color = tint)
+            Spacer(Modifier.height(2.dp))
+            Text(subtitle, fontSize = 11.5.sp, color = ChatColors.textMuted, lineHeight = 16.sp)
         }
     }
 }

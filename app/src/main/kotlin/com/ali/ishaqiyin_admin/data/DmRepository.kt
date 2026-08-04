@@ -53,8 +53,18 @@ data class DmThread(
     val lastAtMs: Long,
     /** آخر لحظة قراءة لكلّ عضو {uid: ms}. */
     val readAtMs: Map<String, Long>,
+    /**
+     * لحظة «حذف المحادثة عندي» لكلّ عضو {uid: ms}. المحادثة تختفي من قائمته
+     * ما دام لا جديد بعدها، وتعود وحدها مع أوّل رسالة جديدة — نمط واتساب
+     * تماماً (الحذف عندي لا يقطع الصلة، بل يمسح ما مضى).
+     */
+    val clearedAtMs: Map<String, Long>,
 ) {
     fun otherOf(myUid: String): String = members.firstOrNull { it != myUid } ?: myUid
+
+    /** هل يعرضها قائمة [myUid]؟ (حُذفت عنده ولا جديد بعد الحذف ⇒ لا). */
+    fun visibleFor(myUid: String): Boolean =
+        lastAtMs > 0L && lastAtMs > (clearedAtMs[myUid] ?: 0L)
 
     /** عدد غير المقروء تقريبيّ: رسالة أحدث من آخر قراءتي ومن غيري. */
     fun hasUnreadFor(myUid: String): Boolean =
@@ -76,6 +86,10 @@ data class DmThread(
             (d["readAtMs"] as? Map<*, *>)?.forEach { (k, v) ->
                 if (v is Number) read[str(k)] = v.toLong()
             }
+            val cleared = mutableMapOf<String, Long>()
+            (d["clearedAtMs"] as? Map<*, *>)?.forEach { (k, v) ->
+                if (v is Number) cleared[str(k)] = v.toLong()
+            }
             return DmThread(
                 id = doc.id,
                 members = (d["members"] as? List<*>)?.map { str(it) } ?: emptyList(),
@@ -84,6 +98,7 @@ data class DmThread(
                 lastSenderId = str(d["lastSenderId"]),
                 lastAtMs = (d["lastAtMs"] as? Number)?.toLong() ?: 0L,
                 readAtMs = read,
+                clearedAtMs = cleared,
             )
         }
     }
@@ -106,7 +121,10 @@ object DmRepository {
         return db.collection(DmPaths.THREADS).whereArrayContains("members", me)
             .querySnapshots()
             .map { snap ->
-                snap.documents.map { DmThread.fromDoc(it) }.sortedByDescending { it.lastAtMs }
+                snap.documents.map { DmThread.fromDoc(it) }
+                    // المحذوفة عندي تختفي حتى تصل رسالة جديدة بعد حذفها.
+                    .filter { it.visibleFor(me) }
+                    .sortedByDescending { it.lastAtMs }
             }
     }
 
@@ -335,6 +353,75 @@ object DmRepository {
             }
             if (snapshot.size() < 300) return cleared
         }
+    }
+
+    /**
+     * 🗑️ **حذف المحادثة عندي** — نمط واتساب: تُخفى كلّ رسائلها عنّي وتختفي
+     * من قائمتي، ولا يفقد الطرف الآخر شيئاً. وتعود المحادثة وحدها إن راسلني
+     * لاحقاً (الحذف يمسح ما مضى ولا يقطع الصلة).
+     */
+    suspend fun deleteThreadForMe(threadId: String) {
+        val me = uid
+        if (me.isEmpty()) return
+        clearForMe(threadId)
+        // الختم **بعد** الإخفاء: أيّ رسالة تصل أثناء المسح تبقى ظاهرة لأنّ
+        // زمنها أحدث من الختم، فلا تُبتلع رسالة لم يرها أحد.
+        thread(threadId).set(
+            mapOf("clearedAtMs" to mapOf(me to System.currentTimeMillis())),
+            SetOptions.merge(),
+        ).await()
+    }
+
+    /**
+     * ☠️ **حذف المحادثة عند الطرفين ومعها محتواها** — للمالك وحده.
+     *
+     * حذفٌ فعليّ لا إخفاء: تُمحى وثائق الرسائل من Firestore وتُمحى مرفقاتها
+     * من التخزين (صور/صوت/ملفّات)، ثمّ تُصفَّر معاينة المحادثة فتختفي من
+     * قائمتَي الطرفين. الوثيقة نفسها تبقى (معرّفها حتميّ ويُعاد استعماله عند
+     * أوّل رسالة جديدة) لكنّها تصير فارغة تماماً.
+     *
+     * ⚠️ بلا تراجع، ولذلك هو للمالك وحده — في القواعد قبل الواجهة.
+     * يعيد عدد الرسائل التي مُحيت.
+     */
+    suspend fun deleteThreadForEveryone(threadId: String): Int {
+        val storage = FirebaseStorage.getInstance()
+        var removed = 0
+        while (true) {
+            // بلا startAfter: كلّ دورة تقرأ رأس ما بقي بعد حذف سابقتها.
+            val snapshot = msgs(threadId)
+                .orderBy("sentAtMs", Query.Direction.DESCENDING)
+                .limit(200)
+                .get()
+                .await()
+            if (snapshot.isEmpty) break
+            // المرفقات أوّلاً: حذف الوثيقة قبل ملفّها يترك ملفاً يتيماً في
+            // التخزين لا وثيقة تشير إليه ولا واجهة تعرضه.
+            snapshot.documents.forEach { doc ->
+                val path = ((doc.dataMap()["att"] as? Map<*, *>)?.get("path") as? String).orEmpty()
+                if (path.isNotEmpty()) {
+                    runCatching { storage.reference.child(path).delete().await() }
+                }
+            }
+            val batch = db.batch()
+            snapshot.documents.forEach { batch.delete(it.reference) }
+            batch.commit().await()
+            removed += snapshot.size()
+            if (snapshot.size() < 200) break
+        }
+        // تصفير المعاينة والأختام: بلاه تبقى المحادثة في القائمتين بنصّ آخر
+        // رسالة وقد مُحيت فعلاً.
+        thread(threadId).set(
+            mapOf(
+                "lastText" to "",
+                "lastType" to "text",
+                "lastSenderId" to "",
+                "lastAtMs" to 0L,
+                "clearedAtMs" to emptyMap<String, Long>(),
+                "readAtMs" to emptyMap<String, Long>(),
+            ),
+            SetOptions.merge(),
+        ).await()
+        return removed
     }
 
     /** حذف عند الطرفين — للمرسِل نفسه فقط (لا إشراف في المحادثات الخاصّة). */
