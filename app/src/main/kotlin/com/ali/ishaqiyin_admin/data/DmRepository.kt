@@ -337,6 +337,53 @@ object DmRepository {
         }
     }
 
+    /**
+     * 🗑️ حذف محادثة خاصّة **بكامل محتواها**: كلّ رسائلها، ومرفقاتها في
+     * التخزين، ونسخها المحليّة على الجهاز، ثمّ وثيقة المحادثة نفسها. الحذف
+     * عند الطرفين معاً ولا تراجع فيه — نظير «حذف المحادثة» في واتساب.
+     *
+     * ⚠️ الترتيب مُلزِم: قاعدة حذف الرسالة تقرأ `members` من وثيقة المحادثة
+     * بـ`get()`، فلو حُذفت الوثيقة أوّلاً سقط كلّ ما بعدها وبقيت المجموعة
+     * الفرعيّة يتيمةً لا يصل إليها أحد ولا يحذفها شيء.
+     *
+     * ⚠️ ولا `orderBy` هنا: الترتيب يُسقط أيّ وثيقة ينقصها حقل الترتيب،
+     * والحذف لا يحتمل استثناءً واحداً. ولا `startAfter` أيضاً — الصفحة
+     * تُحذف فيصير التالي هو أوّل النتائج.
+     *
+     * @return عدد الرسائل المحذوفة فعلاً.
+     */
+    suspend fun deleteThread(threadId: String): Int {
+        if (uid.isEmpty()) return 0
+        val storage = FirebaseStorage.getInstance()
+        var removed = 0
+        while (true) {
+            val snapshot = msgs(threadId).limit(200).get().await()
+            if (snapshot.isEmpty) break
+            // المرفق قبل وثيقته: حذف الوثيقة أوّلاً يضيّع مسار الملفّ فيبقى
+            // في التخزين بلا شيء يدلّ عليه.
+            snapshot.documents.forEach { doc ->
+                val att = ChatMessage.fromDoc(doc).attachment ?: return@forEach
+                ChatMediaStore.deleteLocal(att)
+                if (att.path.isNotEmpty()) {
+                    runCatching { storage.reference.child(att.path).delete().await() }
+                }
+            }
+            val batch = db.batch()
+            snapshot.documents.forEach { batch.delete(it.reference) }
+            batch.commit().await()
+            removed += snapshot.size()
+        }
+        // كنسٌ أخير لمجلّد المحادثة: مرفقات رسائل سبق حذفها عند الطرفين، أو
+        // بقايا رفع انقطع قبل أن تُكتب رسالته — لا وثيقة تدلّ على أيٍّ منها.
+        runCatching {
+            storage.reference.child("${DmPaths.STORAGE_FOLDER}/$threadId")
+                .listAll().await().items
+                .forEach { runCatching { it.delete().await() } }
+        }
+        thread(threadId).delete().await()
+        return removed
+    }
+
     /** حذف عند الطرفين — للمرسِل نفسه فقط (لا إشراف في المحادثات الخاصّة). */
     suspend fun deleteForEveryone(threadId: String, msg: ChatMessage) {
         msgs(threadId).document(msg.id).update(

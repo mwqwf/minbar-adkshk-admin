@@ -175,6 +175,10 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
     var searchQuery by remember { mutableStateOf("") }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClearChat by remember { mutableStateOf(false) }
+    var confirmDeleteThread by remember { mutableStateOf(false) }
+    // حذف المحادثة قد يستغرق صفحات ومرفقات — الشاشة تبقى قائمة حتى ينتهي
+    // كي لا يرى المشرف قائمة محادثات لم تتغيّر بعد.
+    var deletingThread by remember { mutableStateOf(false) }
     var confirmDeleteAll by remember { mutableStateOf<ChatMessage?>(null) }
 
     val listState = rememberLazyListState()
@@ -517,6 +521,52 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         )
     }
 
+    if (confirmDeleteThread) {
+        ConfirmDialog(
+            title = "حذف المحادثة كاملةً",
+            body = "ستُحذف هذه المحادثة ومحتواها كلّه — الرسائل والصور " +
+                "والصوتيّات والملفّات — عندك وعند ${other?.displayName ?: otherName} " +
+                "معاً، ولا يمكن التراجع. متابعة؟",
+            confirmLabel = "حذف نهائيّاً",
+            confirmColor = ChatColors.rose,
+            onDismiss = { confirmDeleteThread = false },
+            onConfirm = {
+                confirmDeleteThread = false
+                deletingThread = true
+                scope.launch {
+                    runCatching { DmRepository.deleteThread(threadId) }
+                        .onSuccess {
+                            snack("حُذفت المحادثة ومحتواها ($it رسالة).")
+                            // لا شيء يبقى ليُعرَض: الوثيقة ذهبت ومستمعوها
+                            // سيرجعون فارغين، فالمغادرة جزءٌ من العمليّة.
+                            onBack()
+                        }
+                        .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
+                    deletingThread = false
+                }
+            },
+        )
+    }
+
+    if (deletingThread) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = {}) {
+            Surface(shape = CircleShape, color = ChatColors.surface) {
+                Row(
+                    Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        color = ChatColors.accent,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.size(12.dp))
+                    Text("جارٍ حذف المحادثة ومحتواها…", fontSize = 13.sp)
+                }
+            }
+        }
+    }
+
     forwarding?.let { msg ->
         ForwardPickerSheet(
             members = membersList,
@@ -670,6 +720,22 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                                 onClick = {
                                     menuOpen = false
                                     confirmClearChat = true
+                                },
+                            )
+                            // الفرق عن سابقه جوهريّ: ذاك يُخفي عندي وحدي،
+                            // وهذا يمحو المحتوى من الخادم عند الطرفين.
+                            DropdownMenuItem(
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.DeleteForever,
+                                        contentDescription = null,
+                                        tint = ChatColors.rose,
+                                    )
+                                },
+                                text = { Text("حذف المحادثة كاملةً", color = ChatColors.rose) },
+                                onClick = {
+                                    menuOpen = false
+                                    confirmDeleteThread = true
                                 },
                             )
                         }

@@ -25,7 +25,6 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.GppMaybe
-import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.RestoreFromTrash
 import androidx.compose.material.icons.filled.Insights
@@ -35,11 +34,14 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -590,13 +592,10 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
  */
 private class GridColors(
     val teal: Color,
-    val tealDeep: Color,
     val blue: Color,
     val gold: Color,
-    val danger: Color,
     val orange: Color,
     val purple: Color,
-    val green: Color,
 )
 
 /**
@@ -611,16 +610,47 @@ private fun gridColors(): GridColors {
     val dark = isAdminDarkTheme()
     return GridColors(
         teal = if (dark) scheme.tertiary else kTeal,
-        tealDeep = if (dark) scheme.onTertiaryContainer else kTealDark,
         blue = adminBlue,
         gold = adminGold,
-        danger = if (dark) scheme.error else kDanger,
         orange = adminOrange,
         purple = if (dark) PurpleOnDark else kPurple,
-        green = adminGreen,
     )
 }
 
+/** وجهة واحدة داخل بطاقة مجمّعة — شاشة بعينها بشارتها الخاصّة. */
+private data class ActionEntry(
+    val icon: ImageVector,
+    val label: String,
+    val subtitle: String,
+    val badge: Int,
+    val route: String,
+)
+
+/**
+ * بطاقة الشبكة بعد الدمج: عنوان جامع وتحته وجهاته.
+ *
+ * ذات الوجهة الواحدة تفتحها مباشرة بلا وسيط — الورقة لصفٍّ واحد نقرة
+ * زائدة لا تفيد شيئاً.
+ */
+private data class ActionGroup(
+    val icon: ImageVector,
+    val color: Color,
+    val label: String,
+    val subtitle: String,
+    val entries: List<ActionEntry>,
+) {
+    val badge: Int get() = entries.sumOf { it.badge }
+}
+
+/**
+ * 🧩 شبكة الإجراءات — بطاقات مجمّعة بحسب العمل لا بحسب الشاشة.
+ *
+ * كانت إحدى عشرة بطاقة في صفٍّ طويل يُمرَّر بحثاً عن واحدة، وأكثرها
+ * أخواتٌ في العمل نفسه: الإضافة والأقسام والتعديل والمختارات والسلة كلّها
+ * «مكتبة صوتيّة». صارت خمساً، **بلا فقد وجهة واحدة**: كلّ شاشة كانت لها
+ * بطاقة صار لها سطر داخل بطاقة أهلها، بعنوانها ووصفها وشارتها كما كانت،
+ * وشارة البطاقة مجموع شارات ما تحتها فلا يختفي رقم خلف الدمج.
+ */
 @Composable
 private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
     // كلّ الشارات من التدفّقات المشتركة (WhileSubscribed): لا إعادة ربط
@@ -640,109 +670,234 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
     val suspicious by DashboardBadges.suspicious(isOwner).collectAsState()
     val c = gridColors()
 
-    data class ActionSpec(
-        val icon: ImageVector,
-        val color: Color,
-        val label: String,
-        val subtitle: String,
-        val badge: Int,
-        val route: String,
-    )
+    var openGroup by remember { mutableStateOf<ActionGroup?>(null) }
 
-    val cards = buildList {
+    val groups = buildList {
         // بطاقة واحدة للمحادثات كلّها: المجموعة والخاصّ في قائمة واحدة
         // كواتساب. بطاقتان منفصلتان كانتا تُخفيان محادثات المشرف الخاصّة
         // خلف باب لا يتذكّره أحد.
         add(
-            ActionSpec(
+            ActionGroup(
                 Icons.Filled.Forum, c.teal, "المحادثات",
                 "مجموعة الإدارة والرسائل الخاصّة",
-                chatUnread + dmUnread, Routes.DM_LIST,
+                listOf(
+                    ActionEntry(
+                        Icons.Filled.Forum, "المحادثات",
+                        "مجموعة الإدارة والرسائل الخاصّة",
+                        chatUnread + dmUnread, Routes.DM_LIST,
+                    ),
+                ),
+            ),
+        )
+        // 🎧 كلّ ما يمسّ الدرس الصوتيّ من مولده إلى سلّته.
+        add(
+            ActionGroup(
+                Icons.Filled.LibraryMusic, c.orange, "المكتبة الصوتيّة",
+                "إضافة وأقسام وتعديل ومختارات وسلة",
+                listOf(
+                    ActionEntry(
+                        Icons.Filled.LibraryMusic, "إضافة درس صوتي",
+                        "رفع ملفات أو تسجيل مباشر", 0, Routes.ADD_LESSON,
+                    ),
+                    ActionEntry(
+                        Icons.Filled.AccountTree, "إدارة الأقسام",
+                        "إنشاء رئيسي وفرعي", 0, Routes.MANAGE_SECTIONS,
+                    ),
+                    ActionEntry(
+                        Icons.AutoMirrored.Filled.ManageSearch, "التعديل والبحث",
+                        "تعديل وحذف وجدولة", 0, Routes.MANAGE_ALL,
+                    ),
+                    ActionEntry(
+                        Icons.Filled.Star, "مختارات المنبر",
+                        "الدروس المميّزة ومدّتها", featuredActive, Routes.FEATURED,
+                    ),
+                    ActionEntry(
+                        Icons.Filled.RestoreFromTrash, "سلة المحذوفات",
+                        "استعادة الدروس المحذوفة (30 يوماً)", trashCount, Routes.TRASH,
+                    ),
+                ),
+            ),
+        )
+        // 🗳️ ما ينتظر قراراً: مساهمات المستمعين، ومراجعة المالك السرّيّة.
+        add(
+            ActionGroup(
+                Icons.Filled.HowToVote, c.gold, "المساهمات والمراجعة",
+                if (isOwner) "قرارات المستمعين والمشبوهة" else "دروس ونصوص المستمعين",
+                buildList {
+                    add(
+                        ActionEntry(
+                            Icons.Filled.HowToVote, "مساهمات المستمعين",
+                            "دروس ونصوص تنتظر قرارك",
+                            pendingSubmissions, Routes.SUBMISSIONS,
+                        ),
+                    )
+                    // لا سطر ولا بثّ لغير المالك، فلا يظهر له أي أثر.
+                    if (isOwner) {
+                        add(
+                            ActionEntry(
+                                Icons.Filled.GppMaybe, "الدروس المشبوهة",
+                                "مراجعة خاصة بالمالك",
+                                suspicious.size, Routes.OWNER_REVIEW,
+                            ),
+                        )
+                    }
+                },
+            ),
+        )
+        // 📈 قراءة الأثر: أرقام الاستماع وكلام المستمعين — كلاهما «كيف وقع؟».
+        add(
+            ActionGroup(
+                Icons.Filled.Insights, c.purple, "التحليلات والتفاعل",
+                "الاستماع والملاحظات والبلاغات",
+                listOf(
+                    ActionEntry(
+                        Icons.Filled.Insights, "التحليلات والأثر",
+                        "الاستماع والأقسام النشطة", 0, Routes.ANALYTICS,
+                    ),
+                    ActionEntry(
+                        Icons.Filled.Forum, "تفاعل المستمعين",
+                        "الملاحظات والبلاغات", 0, Routes.FEEDBACK,
+                    ),
+                ),
             ),
         )
         add(
-            ActionSpec(
-                Icons.Filled.HowToVote, c.gold, "المساهمات",
-                "دروس ونصوص المستمعين", pendingSubmissions, Routes.SUBMISSIONS,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.RestoreFromTrash, c.danger, "سلة المحذوفات",
-                "استعادة الدروس المحذوفة (30 يوماً)", trashCount, Routes.TRASH,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.LibraryMusic, c.orange, "إضافة درس صوتي",
-                "رفع ملفات أو تسجيل مباشر", 0, Routes.ADD_LESSON,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.AccountTree, c.tealDeep, "إدارة الأقسام",
-                "إنشاء رئيسي وفرعي", 0, Routes.MANAGE_SECTIONS,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.AutoMirrored.Filled.ManageSearch, c.blue, "التعديل والبحث",
-                "تعديل وحذف وجدولة", 0, Routes.MANAGE_ALL,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.Star, c.gold, "مختارات المنبر",
-                "الدروس المميّزة ومدّتها", featuredActive, Routes.FEATURED,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.Insights, c.purple, "التحليلات والأثر",
-                "الاستماع والأقسام النشطة", 0, Routes.ANALYTICS,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.Forum, c.green, "تفاعل المستمعين",
-                "الملاحظات والبلاغات", 0, Routes.FEEDBACK,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.VerifiedUser, c.teal,
+            ActionGroup(
+                Icons.Filled.VerifiedUser, c.blue,
                 if (isOwner) "الحساب والمشرفون" else "الحساب والصلاحية",
                 if (isOwner) "الاعتماد والحظر والحذف" else "صلاحيتك وخروجك",
-                0, Routes.ADMINS,
+                listOf(
+                    ActionEntry(
+                        Icons.Filled.VerifiedUser,
+                        if (isOwner) "الحساب والمشرفون" else "الحساب والصلاحية",
+                        if (isOwner) "الاعتماد والحظر والحذف" else "صلاحيتك وخروجك",
+                        0, Routes.ADMINS,
+                    ),
+                ),
             ),
         )
-        // لا تُنشأ البطاقة ولا البثّ لغير المالك، فلا يظهر له أي أثر.
-        if (isOwner) {
-            add(
-                ActionSpec(
-                    Icons.Filled.GppMaybe, c.danger, "الدروس المشبوهة",
-                    "مراجعة خاصة بالمالك", suspicious.size, Routes.OWNER_REVIEW,
-                ),
-            )
-        }
+    }
+
+    openGroup?.let { group ->
+        ActionGroupSheet(
+            group = group,
+            onDismiss = { openGroup = null },
+            onPick = { entry ->
+                openGroup = null
+                nav.navigate(entry.route)
+            },
+        )
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        cards.chunked(2).forEach { row ->
+        groups.chunked(2).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                row.forEach { spec ->
+                row.forEach { group ->
                     Box(Modifier.weight(1f)) {
                         ActionCard(
-                            icon = spec.icon,
-                            color = spec.color,
-                            label = spec.label,
-                            subtitle = spec.subtitle,
-                            badge = spec.badge,
-                            onClick = { nav.navigate(spec.route) },
+                            icon = group.icon,
+                            color = group.color,
+                            label = group.label,
+                            subtitle = group.subtitle,
+                            badge = group.badge,
+                            onClick = {
+                                val only = group.entries.singleOrNull()
+                                if (only != null) nav.navigate(only.route) else openGroup = group
+                            },
                         )
                     }
                 }
                 if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/**
+ * ورقة وجهات البطاقة المجمّعة: صفٌّ لكلّ شاشة بأيقونتها ووصفها وشارتها —
+ * وهي نفسها التي كانت مكتوبة على البطاقة قبل الدمج، فلا يفقد المشرف
+ * دليله إلى شيء.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ActionGroupSheet(
+    group: ActionGroup,
+    onDismiss: () -> Unit,
+    onPick: (ActionEntry) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(group.icon, contentDescription = null, tint = group.color)
+                Spacer(Modifier.size(10.dp))
+                Text(
+                    group.label,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            group.entries.forEach { entry ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { onPick(entry) }
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .size(40.dp)
+                            .background(
+                                group.color.copy(alpha = if (isAdminDarkTheme()) 0.20f else 0.14f),
+                                RoundedCornerShape(12.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            entry.icon,
+                            contentDescription = null,
+                            tint = group.color,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                    Spacer(Modifier.size(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            entry.label,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            entry.subtitle,
+                            fontSize = 11.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (entry.badge > 0) {
+                        Spacer(Modifier.size(8.dp))
+                        Box(
+                            Modifier
+                                .background(group.color, RoundedCornerShape(999.dp))
+                                .padding(horizontal = 9.dp, vertical = 3.dp),
+                        ) {
+                            Text(
+                                if (entry.badge > 99) "+99" else "${entry.badge}",
+                                color = contentColorOn(group.color),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
