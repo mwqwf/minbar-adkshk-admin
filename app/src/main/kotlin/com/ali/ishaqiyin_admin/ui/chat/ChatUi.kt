@@ -13,6 +13,20 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -464,6 +478,100 @@ fun MemberAvatar(
                     )
                     // حدّ النقطة بلون السطح لا أبيض ثابتاً (يختفي في الداكن).
                     .border(2.dp, ChatColors.surface, CircleShape),
+            )
+        }
+    }
+}
+
+/**
+ * 😀 **كبسولة التفاعلات السريعة** بنمط واتساب: شريط عائم مستدير تماماً
+ * بظلّ خفيف، إيموجي كبيرة تدخل واحدة بعد الأخرى بتأثير قفزة، والمختار
+ * منها داخل دائرة مميّزة، وزرّ ＋ لبقيّة الإيموجي.
+ *
+ * كانت الإيموجي مصفوفة عارية على سطح الورقة بلا حاوية ولا حركة، فبدت
+ * كصفّ نصّ لا كعنصر تفاعل — وهو ما جعل المظهر «قبيحاً» في الاستعمال.
+ */
+@Composable
+fun QuickReactionsPill(
+    myReaction: String?,
+    onPick: (String) -> Unit,
+    onMore: () -> Unit,
+) {
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
+    Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Surface(
+            color = ChatColors.surfaceAlt,
+            shape = CircleShape,
+            shadowElevation = 3.dp,
+            modifier = Modifier.align(Alignment.Center),
+        ) {
+            Row(
+                Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                com.ali.ishaqiyin_admin.data.QUICK_REACTIONS.forEachIndexed { index, emoji ->
+                    val selected = myReaction == emoji
+                    // دخول متدرّج: كلّ إيموجي بعد سابقتها بـ40ms (واتساب).
+                    val scale by animateFloatAsState(
+                        targetValue = if (shown) 1f else 0.3f,
+                        animationSpec = tween(durationMillis = 220, delayMillis = index * 40),
+                        label = "reactionIn",
+                    )
+                    Box(
+                        Modifier
+                            .scale(scale)
+                            .clip(CircleShape)
+                            .background(
+                                if (selected) ChatColors.accentDark.copy(alpha = 0.22f)
+                                else Color.Transparent,
+                            )
+                            .clickable { onPick(emoji) }
+                            .padding(horizontal = 6.dp, vertical = 5.dp),
+                    ) { Text(emoji, fontSize = 27.sp) }
+                }
+                Box(
+                    Modifier
+                        .padding(start = 2.dp)
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(ChatColors.surface)
+                        .clickable(onClick = onMore),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "تفاعلات أخرى",
+                        tint = ChatColors.textMuted,
+                        modifier = Modifier.size(21.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * صورة المجموعة الدائريّة (صورتها إن وُجدت، وإلّا أيقونة أعضاء) — نظير
+ * [MemberAvatar] كي يتطابق صفّ المجموعة مع صفوف المحادثات الخاصّة.
+ */
+@Composable
+fun GroupAvatar(photo: String, name: String, radius: Int = 24) {
+    val diameter = radius * 2
+    Box(
+        Modifier
+            .size(diameter.dp)
+            .background(ChatColors.accentDark.copy(alpha = 0.18f), CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (photo.isNotEmpty()) {
+            RemoteImage(photo, Modifier.size(diameter.dp).clip(CircleShape))
+        } else {
+            Icon(
+                Icons.Filled.Groups,
+                contentDescription = name,
+                tint = ChatColors.accentDark,
+                modifier = Modifier.size((radius * 1.1).dp),
             )
         }
     }

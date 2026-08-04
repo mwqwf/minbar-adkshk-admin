@@ -60,12 +60,17 @@ private val hourFormat = SimpleDateFormat("HH:mm", Locale.US)
 private val dateOnlyFormat = SimpleDateFormat("yyyy/MM/dd", Locale.US)
 
 /**
- * 💬 «الرسائل الخاصّة» — قائمة المحادثات الفرديّة بين المشرفين (نمط واتساب:
- * آخر رسالة، وقتها، وشارة غير المقروء)، مع زرّ لبدء محادثة مع أيّ عضو.
+ * 💬 «المحادثات» — قائمة **واحدة** كواتساب تماماً: مجموعة الإدارة في
+ * أعلاها ثم المحادثات الفرديّة، لكلّ منها آخر رسالة ووقتها وشارة غير
+ * المقروء، وزرّ «محادثة جديدة» يفتح قائمة المشرفين.
+ *
+ * **لماذا وُحِّدت؟** كان للمجموعة بابٌ وللخاصّ بابٌ آخر في اللوحة، فمن
+ * يراسل ثلاثة مشرفين لا يرى محادثاتهم إلا بعد أن يتذكّر أنّ لها قسماً
+ * مستقلاً — وهو عكس ما اعتاده الناس في تطبيقات المراسلة.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DmListScreen(nav: NavHostController, onBack: () -> Unit) {
+fun ChatsHomeScreen(nav: NavHostController, onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
@@ -84,6 +89,14 @@ fun DmListScreen(nav: NavHostController, onBack: () -> Unit) {
     val members = remember(membersList) { membersList.associateBy { it.uid } }
     val threads by remember { DmRepository.threadsStream() }
         .collectAsState(initial = emptyList())
+    // بطاقة المجموعة داخل القائمة نفسها: هويّتها وآخر رسالة فيها وعدد ما
+    // لم يُقرأ — ثلاثة تدفّقات خفيفة (وثيقة، وثيقة، ٦٠ رسالة على الأكثر).
+    val groupMeta by remember { ChatRepository.metaStream() }
+        .collectAsState(initial = null)
+    val groupLast by remember { ChatRepository.lastMessageStream() }
+        .collectAsState(initial = null)
+    val groupUnread by remember { ChatRepository.unreadCountStream() }
+        .collectAsState(initial = 0)
     var showPicker by remember { mutableStateOf(false) }
 
     fun openDm(member: ChatMember) {
@@ -166,7 +179,7 @@ fun DmListScreen(nav: NavHostController, onBack: () -> Unit) {
     }
 
     AdminScaffold(
-        title = "الرسائل الخاصّة",
+        title = "المحادثات",
         onBack = onBack,
         floatingActionButton = {
             ExtendedFloatingActionButton(
@@ -181,36 +194,58 @@ fun DmListScreen(nav: NavHostController, onBack: () -> Unit) {
         },
     ) { padding ->
         val visible = threads.filter { it.lastAtMs > 0 }
-        if (visible.isEmpty()) {
-            Box(
-                Modifier.padding(padding).fillMaxSize().padding(32.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Outlined.Forum,
-                        contentDescription = null,
-                        tint = ChatColors.textMuted,
-                        modifier = Modifier.size(64.dp),
-                    )
-                    Spacer(Modifier.height(14.dp))
-                    Text("لا محادثات خاصّة بعد", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "تستطيع مراسلة أيّ مشرف على حدة — بعيداً عن المجموعة.\n" +
-                            "ومن المجموعة: اضغط مطوّلاً على رسالة ثم «ردّ بشكل خاص».",
-                        textAlign = TextAlign.Center,
-                        fontSize = 12.5.sp,
-                        color = ChatColors.textMuted,
-                    )
-                }
-            }
-            return@AdminScaffold
-        }
         LazyColumn(
             modifier = Modifier.padding(padding).fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 90.dp),
         ) {
+            // 👥 المجموعة أوّلاً ودائماً — حتى قبل أوّل رسالة فيها.
+            item {
+                GroupTile(
+                    name = groupMeta?.name?.takeIf { it.isNotBlank() } ?: "مجموعة الإدارة",
+                    photo = groupMeta?.photoUrl.orEmpty(),
+                    preview = groupLast?.let { previewOf(it, members) }
+                        ?: "دردشة المالك والمشرفين",
+                    timeMs = groupLast?.createdAtMs ?: 0L,
+                    unread = groupUnread,
+                    // singleTop: نقرتان سريعتان كانتا تكدّسان نسختين من
+                    // شاشة المجموعة، فيحتاج الرجوع ضغطتين.
+                    onClick = {
+                        nav.navigate(
+                            Routes.CHAT,
+                            androidx.navigation.NavOptions.Builder()
+                                .setLaunchSingleTop(true)
+                                .build(),
+                        )
+                    },
+                )
+                HorizontalDivider(modifier = Modifier.padding(start = 76.dp))
+            }
+            if (visible.isEmpty()) {
+                item {
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 40.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Forum,
+                            contentDescription = null,
+                            tint = ChatColors.textMuted,
+                            modifier = Modifier.size(56.dp),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text("لا محادثات خاصّة بعد", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "اضغط «محادثة جديدة» لمراسلة أيّ مشرف على حدة.\n" +
+                                "ومن المجموعة: اضغط مطوّلاً على رسالة ثم «ردّ بشكل خاص».",
+                            textAlign = TextAlign.Center,
+                            fontSize = 12.5.sp,
+                            color = ChatColors.textMuted,
+                        )
+                    }
+                }
+                return@LazyColumn
+            }
             items(visible.size) { index ->
                 ThreadTile(
                     thread = visible[index],
@@ -223,6 +258,83 @@ fun DmListScreen(nav: NavHostController, onBack: () -> Unit) {
                     },
                 )
                 HorizontalDivider(modifier = Modifier.padding(start = 76.dp))
+            }
+        }
+    }
+}
+
+/// معاينة سطر واحد لآخر رسالة في المجموعة: «الاسم: النصّ» أو نوع المرفق.
+private fun previewOf(
+    msg: com.ali.ishaqiyin_admin.data.ChatMessage,
+    members: Map<String, ChatMember>,
+): String {
+    val sender = members[msg.senderId]?.displayName ?: msg.senderName
+    val body = when {
+        msg.deleted -> "تم حذف هذه الرسالة"
+        msg.text.isNotBlank() -> msg.text
+        else -> com.ali.ishaqiyin_admin.data.chatTypeLabel(msg.type)
+    }
+    return if (sender.isBlank()) body else "$sender: $body"
+}
+
+/// بطاقة مجموعة الإدارة داخل قائمة المحادثات — بنية [ThreadTile] نفسها
+/// (صورة، اسم، معاينة، وقت، شارة) كي يبدو الصفّان من عائلة واحدة.
+@Composable
+private fun GroupTile(
+    name: String,
+    photo: String,
+    preview: String,
+    timeMs: Long,
+    unread: Int,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        GroupAvatar(photo = photo, name = name, radius = 24)
+        Spacer(Modifier.size(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                name,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 14.5.sp,
+                fontWeight = if (unread > 0) FontWeight.ExtraBold else FontWeight.SemiBold,
+            )
+            Text(
+                preview,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 12.5.sp,
+                color = if (unread > 0) ChatColors.accentDark else ChatColors.textMuted,
+                fontWeight = if (unread > 0) FontWeight.SemiBold else FontWeight.Normal,
+            )
+        }
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                timeLabel(timeMs),
+                fontSize = 10.5.sp,
+                color = if (unread > 0) ChatColors.accent else ChatColors.textMuted,
+                fontWeight = if (unread > 0) FontWeight.Bold else FontWeight.Normal,
+            )
+            if (unread > 0) {
+                Spacer(Modifier.height(4.dp))
+                Box(
+                    Modifier
+                        .background(ChatColors.accent, CircleShape)
+                        .padding(horizontal = 6.dp, vertical = 1.dp),
+                ) {
+                    Text(
+                        if (unread > 99) "99+" else "$unread",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
             }
         }
     }

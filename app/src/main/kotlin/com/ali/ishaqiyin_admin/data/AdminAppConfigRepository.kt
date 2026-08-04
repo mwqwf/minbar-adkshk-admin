@@ -67,6 +67,48 @@ class AdminAppConfigRepository private constructor(context: Context) {
         prefs.edit().putInt(KEY_DISMISSED, latest).apply()
     }
 
+    /**
+     * ⚙️ **نشر ذاتيّ لإصدار اللوحة** — يُنادى عند دخول المالك.
+     *
+     * الآليّة كانت تعتمد خطوة يدويّة (يفتح المالك شاشة التذكير ويكتب الرقم)،
+     * وقد نُسيت فعلاً: بقي `latestVersionCode` عند 10 بينما التطبيق المنشور
+     * 13، فلم يُذكَّر أحد بشيء. الآن: أوّل مرّة يفتح فيها المالكُ **بناءً
+     * أحدث مما في الوثيقة** تُحدَّث الوثيقة وحدها، ويصل التذكير لبقيّة
+     * المشرفين بلا أن يتذكّر أحد شيئاً.
+     *
+     * مقصور على المالك: القاعدة لا تسمح لغيره بالكتابة أصلاً، ولأنّ مالك
+     * الإصدار هو من يعرف أنّه نُشر فعلاً على المتجر.
+     *
+     * يعيد `true` إن نشر شيئاً (فتُرسِل الواجهة إعلان المجموعة).
+     */
+    suspend fun autoPublishOwnVersion(): Boolean {
+        val current = BuildConfig.VERSION_CODE
+        if (prefs.getInt(KEY_PUBLISHED, 0) >= current) return false
+        val reference = db.collection(COLLECTION).document(DOCUMENT)
+        val doc = runCatching { reference.get().await() }.getOrNull() ?: return false
+        val published = (doc.getLong("latestVersionCode") ?: 0L).toInt()
+        if (published >= current) {
+            // الوثيقة محدَّثة أصلاً: نختم محليّاً كي لا نقرأها كل تشغيل.
+            prefs.edit().putInt(KEY_PUBLISHED, current).apply()
+            return false
+        }
+        val saved = runCatching {
+            reference.set(
+                mapOf(
+                    "latestVersionCode" to current,
+                    "minSupportedVersionCode" to
+                        (doc.getLong("minSupportedVersionCode") ?: 0L).toInt(),
+                    "message" to doc.getString("message").orEmpty(),
+                    "storeUrl" to PLAY_URL,
+                    "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+                    "updatedBy" to AuthService.currentUser?.email.orEmpty(),
+                ),
+            ).await()
+        }.isSuccess
+        if (saved) prefs.edit().putInt(KEY_PUBLISHED, current).apply()
+        return saved
+    }
+
     private suspend fun refreshIfStale() {
         val now = System.currentTimeMillis()
         if (now - prefs.getLong(KEY_CHECKED, 0L) < CHECK_INTERVAL_MS) return
@@ -111,6 +153,9 @@ class AdminAppConfigRepository private constructor(context: Context) {
         private const val KEY_CHECKED = "checked_at_ms"
         private const val KEY_DISMISSED = "dismissed_for"
         private const val KEY_PROMPTED = "prompted_at_ms"
+
+        /** آخر إصدار نشره هذا الجهاز تلقائياً — كي لا يُقرأ ويُكتب كل تشغيل. */
+        private const val KEY_PUBLISHED = "auto_published_version"
         private const val PROMPT_INTERVAL_MS = 24 * 60 * 60 * 1000L
         private const val CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L
 

@@ -502,21 +502,80 @@ fun VoiceMicButton(state: VoiceRecorderState, modifier: Modifier = Modifier) {
     val haptic = LocalHapticFeedback.current
     val holding = state.phase == VoicePhase.Holding
     val scale by animateFloatAsState(if (holding) 1.3f else 1f, label = "micScale")
+    val amplitudes by state.amplitudes.collectAsState()
+    // هالة تتنفّس مع الصوت خلف الزرّ (واتساب): تكبر مع علوّ الصوت فيرى
+    // المستخدم أنّ الميكروفون يسمعه فعلاً — كان الزرّ يكبر وحده بلا أثر.
+    val level = (amplitudes.lastOrNull() ?: 0).coerceIn(0, 100) / 100f
+    val halo by animateFloatAsState(
+        targetValue = if (holding) 1.5f + level * 0.9f else 1f,
+        label = "micHalo",
+    )
+    Box(modifier, contentAlignment = Alignment.Center) {
+        if (holding) {
+            Box(
+                Modifier
+                    .size(48.dp)
+                    .scale(halo)
+                    .background(ChatColors.rose.copy(alpha = 0.18f), CircleShape),
+            )
+        }
+        Surface(
+            color = if (holding) ChatColors.rose else ChatColors.accentDark,
+            shape = CircleShape,
+            shadowElevation = 6.dp,
+            modifier = Modifier
+                .size(48.dp)
+                .scale(scale)
+                .voiceHoldGesture(state, haptic),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Filled.Mic,
+                    contentDescription = "تسجيل رسالة صوتيّة — اضغط للبدء",
+                    tint = Color.White,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 🔒 **كبسولة القفل العائمة فوق الميكروفون** — نمط واتساب حرفيّاً: عمود
+ * مستدير يحمل سهماً وقفلاً، يرتفع مع سحب الإصبع ويشتدّ لونه حتى العتبة.
+ *
+ * كان القفل أيقونةً محشورة في صفّ الشريط، فلا يفهم المستخدم أنّ عليه
+ * السحب إلى **أعلى** ولا يرى تقدّمه نحو القفل.
+ */
+@Composable
+fun VoiceLockPill(state: VoiceRecorderState, modifier: Modifier = Modifier) {
+    if (state.phase != VoicePhase.Holding) return
+    val thresholdPx = with(LocalDensity.current) { SWIPE_THRESHOLD_DP.dp.toPx() }
+    val progress = (-state.dragY / thresholdPx).coerceIn(0f, 1f)
     Surface(
-        color = if (holding) ChatColors.rose else ChatColors.accentDark,
-        shape = CircleShape,
-        shadowElevation = 6.dp,
+        color = ChatColors.surfaceAlt,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+        shadowElevation = 4.dp,
         modifier = modifier
-            .size(48.dp)
-            .scale(scale)
-            .voiceHoldGesture(state, haptic),
+            .width(44.dp)
+            .graphicsLayer { translationY = -progress * 14.dp.toPx() },
     ) {
-        Box(contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.padding(vertical = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             Icon(
-                Icons.Filled.Mic,
-                contentDescription = "تسجيل رسالة صوتيّة — اضغط للبدء",
-                tint = Color.White,
-                modifier = Modifier.size(20.dp),
+                Icons.Filled.Lock,
+                contentDescription = "اسحب للأعلى لتثبيت التسجيل",
+                tint = if (progress >= 1f) ChatColors.accentDark else ChatColors.textMuted,
+                modifier = Modifier.size((17 + 5 * progress).dp),
+            )
+            Icon(
+                Icons.Filled.KeyboardArrowUp,
+                contentDescription = null,
+                tint = ChatColors.textMuted.copy(alpha = 0.35f + progress * 0.65f),
+                modifier = Modifier.size(16.dp),
             )
         }
     }
@@ -568,20 +627,8 @@ fun VoiceHoldOverlay(state: VoiceRecorderState, modifier: Modifier = Modifier) {
             )
             Text("اسحب للإلغاء", color = ChatColors.textMuted, fontSize = 12.5.sp)
         }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                Icons.Filled.KeyboardArrowUp,
-                contentDescription = null,
-                tint = ChatColors.textMuted.copy(alpha = 0.4f + lockProgress * 0.6f),
-                modifier = Modifier.size(14.dp),
-            )
-            Icon(
-                Icons.Filled.Lock,
-                contentDescription = "اسحب للأعلى للقفل",
-                tint = if (lockProgress >= 1f) ChatColors.accentDark else ChatColors.textMuted,
-                modifier = Modifier.size((15 + 5 * lockProgress).dp),
-            )
-        }
+        // القفل صار كبسولة عائمة فوق الميكروفون ([VoiceLockPill]) لا أيقونة
+        // محشورة هنا — بقاؤها في الصفّين معاً تكرار يشوّش.
     }
 }
 

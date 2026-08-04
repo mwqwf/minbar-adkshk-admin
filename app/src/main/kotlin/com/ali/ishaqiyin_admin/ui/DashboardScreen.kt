@@ -650,16 +650,14 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
     )
 
     val cards = buildList {
+        // بطاقة واحدة للمحادثات كلّها: المجموعة والخاصّ في قائمة واحدة
+        // كواتساب. بطاقتان منفصلتان كانتا تُخفيان محادثات المشرف الخاصّة
+        // خلف باب لا يتذكّره أحد.
         add(
             ActionSpec(
-                Icons.Filled.Groups, c.teal, "مجموعة الإدارة",
-                "دردشة المالك والمشرفين", chatUnread, Routes.CHAT,
-            ),
-        )
-        add(
-            ActionSpec(
-                Icons.Filled.Forum, c.blue, "الرسائل الخاصّة",
-                "مراسلة مشرف على حدة", dmUnread, Routes.DM_LIST,
+                Icons.Filled.Forum, c.teal, "المحادثات",
+                "مجموعة الإدارة والرسائل الخاصّة",
+                chatUnread + dmUnread, Routes.DM_LIST,
             ),
         )
         add(

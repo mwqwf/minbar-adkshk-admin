@@ -45,8 +45,8 @@ android {
         // نسخة Flutter المثبَّتة على جهاز المشرف تحمل versionCode=2001 (بادئة
         // ABI التي يضيفها Flutter)، والتثبيت فوقها يتطلّب رقماً أعلى — وإلا
         // فُقدت جلسة الدخول بإلغاء التثبيت. الاسم يبقى كما هو.
-        versionCode = 2006
-        versionName = "1.1.3"
+        versionCode = 2007
+        versionName = "1.1.4"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

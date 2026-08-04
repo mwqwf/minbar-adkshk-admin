@@ -80,7 +80,7 @@ import com.ali.ishaqiyin_admin.data.DmRepository
 import com.ali.ishaqiyin_admin.data.chatTypeForMime
 import com.ali.ishaqiyin_admin.ui.chat.ChatColors
 import com.ali.ishaqiyin_admin.ui.chat.ChatScreen
-import com.ali.ishaqiyin_admin.ui.chat.DmListScreen
+import com.ali.ishaqiyin_admin.ui.chat.ChatsHomeScreen
 import com.ali.ishaqiyin_admin.ui.chat.DmScreen
 import com.ali.ishaqiyin_admin.ui.chat.GroupInfoScreen
 import com.ali.ishaqiyin_admin.ui.chat.MemberAvatar
@@ -347,7 +347,7 @@ fun AdminApp() {
 
                 access == AccessState.Owner || access == AccessState.Supervisor ->
                     // 🔔 تذكير تحديث اللوحة قبل محتواها — دعوة لا بوّابة.
-                    AdminUpdateGate {
+                    AdminUpdateGate(isOwner = access == AccessState.Owner) {
                         AdminNavHost(isOwner = access == AccessState.Owner)
                     }
 
@@ -454,7 +454,7 @@ private fun AdminNavHost(isOwner: Boolean) {
         composable(Routes.GROUP_INFO) {
             GroupInfoScreen(isOwner = isOwner, nav = nav, onBack = { nav.popBackStack() })
         }
-        composable(Routes.DM_LIST) { DmListScreen(nav = nav, onBack = { nav.popBackStack() }) }
+        composable(Routes.DM_LIST) { ChatsHomeScreen(nav = nav, onBack = { nav.popBackStack() }) }
         composable(Routes.DM) { entry ->
             DmScreen(
                 threadId = entry.arguments?.getString("threadId").orEmpty(),

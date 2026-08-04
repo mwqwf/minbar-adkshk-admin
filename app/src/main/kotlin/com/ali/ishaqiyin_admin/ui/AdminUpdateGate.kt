@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ali.ishaqiyin_admin.data.AdminAppConfigRepository
+import com.ali.ishaqiyin_admin.data.ChatRepository
 
 /**
  * 🔔 بوّابة تذكير تحديث اللوحة.
@@ -46,7 +47,7 @@ import com.ali.ishaqiyin_admin.data.AdminAppConfigRepository
  * اللوحة عن العمل يوقف النشر والإشراف كلّه — فزرّ المتابعة موجود دائماً.
  */
 @Composable
-fun AdminUpdateGate(content: @Composable () -> Unit) {
+fun AdminUpdateGate(isOwner: Boolean, content: @Composable () -> Unit) {
     val context = LocalContext.current
     val repo = remember { AdminAppConfigRepository.get(context) }
     var status by remember {
@@ -54,7 +55,21 @@ fun AdminUpdateGate(content: @Composable () -> Unit) {
     }
     var deferred by rememberSaveable { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(isOwner) {
+        // 1) المالك على بناء أحدث ⇒ يُنشَر رقمه تلقائياً ويُعلَن في المجموعة
+        //    مرّة واحدة. هذه هي الخطوة التي كانت تُنسى فيبقى المشرفون على
+        //    نسخ قديمة بلا أيّ تذكير.
+        if (isOwner && runCatching { repo.autoPublishOwnVersion() }.getOrDefault(false)) {
+            runCatching {
+                ChatRepository.sendText(
+                    "📣 صدر إصدار جديد من لوحة الإدارة (رقم " +
+                        "${com.ali.ishaqiyin_admin.BuildConfig.VERSION_CODE}).\n" +
+                        "حدِّث اللوحة من صفحة الاختبار المغلق:\n" +
+                        AdminAppConfigRepository.PLAY_URL,
+                )
+            }
+        }
+        // 2) ثم الفحص المعتاد لهذا الجهاز.
         status = runCatching { repo.status() }
             .getOrDefault(AdminAppConfigRepository.Status.None)
     }
@@ -86,13 +101,10 @@ fun AdminUpdateGate(content: @Composable () -> Unit) {
         },
         onLater = {
             deferred = true
+            // ⚠️ **markPrompted فقط، لا dismiss**: الصرف النهائيّ كان يُسكت
+            // التذكير إلى الأبد لتلك النسخة، فيبقى المشرف على بناء قديم بلا
+            // أن يُذكَّر ثانيةً. الآن يعود بعد ٢٤ ساعة — تذكير يوميّ لطيف.
             repo.markPrompted()
-            val latest = when (pending) {
-                is AdminAppConfigRepository.Status.Optional -> pending.latest
-                else -> 0
-            }
-            // التذكير القويّ يعود كل تشغيل: لا يُصرَف لنسخته.
-            if (latest > 0) repo.dismiss(latest)
         },
     )
 }

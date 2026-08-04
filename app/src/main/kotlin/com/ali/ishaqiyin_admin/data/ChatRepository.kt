@@ -876,6 +876,15 @@ object ChatRepository {
         }
     }
 
+    /**
+     * آخر رسالة في المجموعة — لمعاينة سطر واحد في قائمة المحادثات الموحّدة
+     * (نمط واتساب). وثيقة واحدة فقط، فالكلفة مهملة.
+     */
+    fun lastMessageStream(): Flow<ChatMessage?> =
+        messages.orderBy("sentAtMs", Query.Direction.DESCENDING).limit(1)
+            .querySnapshots()
+            .map { snap -> snap.documents.firstOrNull()?.let { ChatMessage.fromDoc(it) } }
+
     fun membersStream(): Flow<List<ChatMember>> = members.orderBy("name")
         .querySnapshots()
         .map { snap -> snap.documents.map { ChatMember.fromDoc(it) } }

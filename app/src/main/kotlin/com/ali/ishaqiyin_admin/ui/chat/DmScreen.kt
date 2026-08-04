@@ -402,37 +402,24 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         ) {
             Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                 if (!msg.deleted) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(start = 12.dp, top = 4.dp, end = 12.dp, bottom = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                    ) {
-                        QUICK_REACTIONS.forEach { emoji ->
-                            Box(
-                                Modifier
-                                    .background(
-                                        if (msg.reactions[myUid] == emoji) {
-                                            ChatColors.highlight
-                                        } else {
-                                            Color.Transparent
-                                        },
-                                        androidx.compose.foundation.shape.CircleShape,
-                                    )
-                                    .clickable {
-                                        actionsFor = null
-                                        scope.launch {
-                                            DmRepository.setReaction(
-                                                threadId,
-                                                msg.id,
-                                                if (msg.reactions[myUid] == emoji) null else emoji,
-                                            )
-                                        }
-                                    }
-                                    .padding(7.dp),
-                            ) { Text(emoji, fontSize = 26.sp) }
-                        }
-                    }
+                    // الكبسولة نفسها المستعملة في المجموعة — لا صفّان
+                    // مختلفان لشيء واحد.
+                    QuickReactionsPill(
+                        myReaction = msg.reactions[myUid],
+                        onPick = { emoji ->
+                            actionsFor = null
+                            scope.launch {
+                                DmRepository.setReaction(
+                                    threadId,
+                                    msg.id,
+                                    if (msg.reactions[myUid] == emoji) null else emoji,
+                                )
+                            }
+                        },
+                        // لا لوحة إيموجي كاملة في الخاصّ بعد — ＋ يفتح
+                        // السريعة نفسها، فلا يعِد بما لا يوجد.
+                        onMore = { actionsFor = null },
+                    )
                     HorizontalDivider()
                     DmSheetItem(Icons.AutoMirrored.Filled.Reply, "ردّ", ChatColors.accent) {
                         actionsFor = null

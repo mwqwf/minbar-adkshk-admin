@@ -1438,6 +1438,15 @@ fun InputBar(
         // طبقة التسجيل تُرسم فوق الشريط بلا تغيير أبعاده (انظر تعليقها).
         if (voice.phase == VoicePhase.Holding) {
             VoiceHoldOverlay(voice, Modifier.matchParentSize())
+            // كبسولة القفل **فوق** الشريط تماماً عند طرف الميكروفون —
+            // بإزاحة سالبة فلا تزيد ارتفاع الشريط ولا تُربك الإيماءة.
+            VoiceLockPill(
+                voice,
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(end = 10.dp)
+                    .offset(y = (-74).dp),
+            )
         }
     }
 }
@@ -1513,44 +1522,11 @@ private fun MessageActionsSheet(
     ) {
         Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
             if (!msg.deleted) {
-                // شريط التفاعلات السريعة (مثل واتساب).
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(start = 12.dp, top = 4.dp, end = 12.dp, bottom = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    QUICK_REACTIONS.forEach { emoji ->
-                        Box(
-                            Modifier
-                                .clip(CircleShape)
-                                .background(
-                                    if (myReaction == emoji) {
-                                        ChatColors.highlight
-                                    } else {
-                                        Color.Transparent
-                                    },
-                                )
-                                .clickable { onAction("react:$emoji") }
-                                .padding(7.dp),
-                        ) { Text(emoji, fontSize = 26.sp) }
-                    }
-                    Box(
-                        Modifier
-                            .clip(CircleShape)
-                            .background(ChatColors.surfaceAlt)
-                            .clickable { onAction("react_more") }
-                            .padding(9.dp),
-                    ) {
-                        Icon(
-                            Icons.Filled.Add,
-                            contentDescription = null,
-                            tint = ChatColors.textMuted,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    }
-                }
+                QuickReactionsPill(
+                    myReaction = myReaction,
+                    onPick = { emoji -> onAction("react:$emoji") },
+                    onMore = { onAction("react_more") },
+                )
                 HorizontalDivider()
                 SheetItem(Icons.AutoMirrored.Filled.Reply, "ردّ", ChatColors.accent) {
                     onAction("reply")

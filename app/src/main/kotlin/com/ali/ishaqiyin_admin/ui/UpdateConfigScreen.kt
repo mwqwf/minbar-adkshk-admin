@@ -32,6 +32,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ali.ishaqiyin_admin.core.AppConfig
 import com.ali.ishaqiyin_admin.data.AdminAppConfigRepository
 import com.ali.ishaqiyin_admin.data.ChatRepository
 import com.ali.ishaqiyin_admin.data.UpdateConfig
@@ -124,6 +125,37 @@ fun UpdateConfigScreen(onBack: () -> Unit) {
                         fontSize = 13.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+            }
+
+            // 🧭 الرقم المعروف لهذا البناء — يملأ الحقل بضغطة بدل أن يُكتب
+            // من الذاكرة. نسيان هذه الخطوة هو ما أبقى الرقم عند 10 بينما
+            // المنشور 13، فلم يُذكَّر أحد بالتحديث طوال ذلك الوقت.
+            val known = when (target) {
+                UpdateConfigRepository.Target.AdminApp ->
+                    com.ali.ishaqiyin_admin.BuildConfig.VERSION_CODE
+                UpdateConfigRepository.Target.PublicApp -> AppConfig.PUBLIC_APP_VERSION_CODE
+            }
+            if ((latest.toIntOrNull() ?: 0) < known) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = adminOrange.copy(alpha = 0.14f),
+                    ),
+                ) {
+                    Column(
+                        Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            "الرقم المحفوظ (${latest.ifBlank { "0" }}) أقدم من آخر إصدار " +
+                                "نعرفه ($known) — لن يُذكَّر أحد بالتحديث ما لم يُرفَع.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Button(onClick = { latest = known.toString() }) {
+                            Text("استعمل $known")
+                        }
+                    }
                 }
             }
 
