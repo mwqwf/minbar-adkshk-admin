@@ -32,7 +32,12 @@ object ChatNotifications {
     suspend fun syncSubscription() {
         val muted = isMuted
         // عمليتان مستقلّتان: فشل إلغاء الاشتراك يجب ألّا يمنع كتابة علم الكتم.
-        runCatching { FirebaseMessaging.getInstance().unsubscribeFromTopic(TOPIC).await() }
+        // إلغاء اشتراك الموضوع القديم نداء شبكيّ لا يلزم إلّا مرّة لكلّ
+        // تثبيت — تكراره في كلّ إقلاع وكلّ تبديل للكتم كان هدراً محضاً.
+        if (!AppPrefs.legacyTopicUnsubscribed) {
+            runCatching { FirebaseMessaging.getInstance().unsubscribeFromTopic(TOPIC).await() }
+                .onSuccess { AppPrefs.legacyTopicUnsubscribed = true }
+        }
         val user = FirebaseAuth.getInstance().currentUser
         if (user != null) {
             // بلا await: تُجدوَل الكتابة محليّاً وتصل عند عودة الشبكة.

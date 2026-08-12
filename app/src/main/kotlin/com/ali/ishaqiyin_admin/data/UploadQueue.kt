@@ -203,6 +203,30 @@ object UploadQueue {
         AppPrefs.init(context)
         _items.value = load()
         _paused.value = prefs().getBoolean(PAUSED_KEY, false)
+        sweepOrphans()
+    }
+
+    /**
+     * 🧹 كنس الملفّات اليتيمة في مجلّد الطابور: انهيار العمليّة بين نسخ
+     * الملفّ والحفظ (أو فشل حذف مبتلَع في `runCatching`) كان يترك نسخاً
+     * حتى 100MB لا يشير إليها أيّ عنصر ولا تُحذف أبداً. يُكنس ما لا يشير
+     * إليه عنصر معلَّق **وعمره يتجاوز يوماً** — الهامش يحمي نسخة يجري
+     * نسخها الآن في `enqueue` قبل أن تُحفظ في القائمة.
+     */
+    private fun sweepOrphans() {
+        cleanupScope.launch {
+            runCatching {
+                val referenced = _items.value
+                    .flatMap { it.transcriptImagePaths + it.localPath }
+                    .toSet()
+                val cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000
+                queueDir().listFiles()?.forEach { f ->
+                    if (f.isFile && f.absolutePath !in referenced && f.lastModified() < cutoff) {
+                        runCatching { f.delete() }
+                    }
+                }
+            }
+        }
     }
 
     fun isPaused(): Boolean = _paused.value

@@ -133,10 +133,24 @@ object ChatUploader {
                 // إلغاء الكوروتين، ومستمعها يقرأ العلم ليلغي نفسه.
                 jobs.remove(id)
                 _uploads.update { list -> list.filterNot { it.id == id } }
+                scheduleAbortFlagCleanup(id)
             }
         }
         jobs[id] = job
         return id
+    }
+
+    /**
+     * إزالة علم الإلغاء بعد مهلة سماح: مهمّة Storage تلفظ أنفاسها خلال
+     * ثوانٍ بعد الإلغاء، وبقاء الأعلام إلى الأبد كان يُنمّي المجموعة بلا
+     * حدّ طوال عمر العمليّة.
+     */
+    private fun scheduleAbortFlagCleanup(id: Long) {
+        if (!abortedIds.contains(id)) return
+        scope.launch {
+            kotlinx.coroutines.delay(60_000)
+            abortedIds.remove(id)
+        }
     }
 
     /**
@@ -164,6 +178,7 @@ object ChatUploader {
             } finally {
                 jobs.remove(id)
                 _uploads.update { list -> list.filterNot { it.id == id } }
+                scheduleAbortFlagCleanup(id)
             }
         }
         jobs[id] = job

@@ -13,10 +13,12 @@ import com.google.firebase.firestore.SetOptions
 import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.StorageException
 import com.google.firebase.storage.StorageMetadata
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import java.io.IOException
 
 /**
  * دردشة إدارة منبر ادكصهك الجماعيّة — منقولة من لوحة نبراس بكامل مزاياها،
@@ -403,7 +405,20 @@ suspend fun chatUploadFile(
 
     if (isAborted?.invoke() == true) error("تمّ إلغاء الرفع.")
 
-    val url = ref.downloadUrl.await().toString()
+    // جلب الرابط بمحاولات: البايتات كلّها وصلت فعلاً، فتعثّر شبكيّ عابر
+    // في هذا النداء الأخير وحده كان يُفشل الرفع كاملاً ويعيده من الصفر.
+    var url = ""
+    for (attempt in 0 until 3) {
+        try {
+            url = ref.downloadUrl.await().toString()
+            break
+        } catch (e: Exception) {
+            val transient = e is IOException ||
+                generateSequence(e.cause) { it.cause }.take(6).any { it is IOException }
+            if (attempt == 2 || !transient) throw e
+            delay(1200L * (attempt + 1))
+        }
+    }
     return ChatUploadResult(url = url, path = path, contentType = ct, size = size)
 }
 

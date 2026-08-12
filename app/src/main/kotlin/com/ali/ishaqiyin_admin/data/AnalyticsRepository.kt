@@ -4,6 +4,8 @@ import android.content.Context
 import com.google.firebase.firestore.AggregateSource
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.tasks.await
 import org.json.JSONArray
 import org.json.JSONObject
@@ -153,15 +155,24 @@ object AnalyticsRepository {
         snap.documents.firstOrNull()?.let { parseDateMs(it.dataMap()["updatedAt"]) } ?: 0L
     }.getOrDefault(0L)
 
-    /** عدّادات خفيفة من الخادم (استعلام count تجميعي — لا يجلب الوثائق). */
-    suspend fun fetchCounts(): ContentCounts {
-        val lessons = db.collection("lessons").count()
-            .get(AggregateSource.SERVER).await().count.toInt()
-        val books = db.collection("books").count()
-            .get(AggregateSource.SERVER).await().count.toInt()
-        val transcripts = db.collection("lesson_transcripts").count()
-            .get(AggregateSource.SERVER).await().count.toInt()
-        return ContentCounts(lessons, books, transcripts, latestLessonUpdateMs())
+    /**
+     * عدّادات خفيفة من الخادم (استعلام count تجميعي — لا يجلب الوثائق).
+     * الاستعلامات الأربعة مستقلّة فتُطلق **متوازيةً**: أربع جولات شبكة
+     * متتابعة كانت تضاعف انتظار فتح الشاشة على الشبكات البطيئة.
+     */
+    suspend fun fetchCounts(): ContentCounts = coroutineScope {
+        val lessons = async {
+            db.collection("lessons").count().get(AggregateSource.SERVER).await().count.toInt()
+        }
+        val books = async {
+            db.collection("books").count().get(AggregateSource.SERVER).await().count.toInt()
+        }
+        val transcripts = async {
+            db.collection("lesson_transcripts").count()
+                .get(AggregateSource.SERVER).await().count.toInt()
+        }
+        val latest = async { latestLessonUpdateMs() }
+        ContentCounts(lessons.await(), books.await(), transcripts.await(), latest.await())
     }
 
     /** هل تطابق اللقطة المحفوظة مقاييس الخادم الحالية؟ */

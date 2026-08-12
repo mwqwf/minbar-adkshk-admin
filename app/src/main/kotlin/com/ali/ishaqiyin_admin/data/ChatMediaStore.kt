@@ -77,7 +77,12 @@ object ChatMediaStore {
     /** مرفقات توقّفت لانقطاع الشبكة — تُستأنف تلقائياً عند عودتها. */
     private val pending = ConcurrentHashMap<String, ChatAttachment>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @Volatile
     private var watchingNetwork = false
+
+    @Volatile
+    private var sweptStale = false
 
     /** مفتاح ثابت للمرفق: مسار Storage إن وُجد، وإلّا الرابط (للرسائل القديمة). */
     fun keyOf(att: ChatAttachment): String = att.path.ifEmpty { att.url }
@@ -131,7 +136,29 @@ object ChatMediaStore {
         val flow = flowOf(key)
         scope.launch { hydrate(att, flow) }
         watchNetwork()
+        sweepStaleTemp()
         return flow
+    }
+
+    /**
+     * 🧹 كنس بقايا التنزيلات المهجورة مرّة لكلّ تشغيل: ملفّات `.part`/`.sdk`
+     * لم تُلمس منذ أسبوع لن تُستأنف (رسالتها غالباً خرجت من آخر 60 رسالة)
+     * وكانت تتراكم بلا حدّ في مجلّد الوسائط.
+     */
+    private fun sweepStaleTemp() {
+        if (sweptStale) return
+        sweptStale = true
+        scope.launch {
+            runCatching {
+                val cutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
+                mediaDir().listFiles()?.forEach { f ->
+                    val temp = f.name.endsWith(".part") || f.name.endsWith(".sdk")
+                    if (f.isFile && temp && f.lastModified() < cutoff) {
+                        runCatching { f.delete() }
+                    }
+                }
+            }
+        }
     }
 
     /** استئناف تلقائي لما توقّف بسبب انقطاع الشبكة. */
@@ -266,6 +293,9 @@ object ChatMediaStore {
     ): File {
         var connection: HttpURLConnection? = null
         try {
+            // جزئيّ أكبر من حجم المرفق المعلَن = بقايا فاسدة (استُبدل الملفّ
+            // أو تشوّهت كتابة سابقة) — استئنافه يُنتج ملفاً تالفاً، فيُهمل.
+            if (att.size > 0L && partial.length() > att.size) partial.delete()
             val resumeFrom = partial.length().takeIf { it > 0L } ?: 0L
             connection = (URL(att.url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 20_000

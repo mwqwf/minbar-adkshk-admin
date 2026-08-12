@@ -75,4 +75,21 @@ object AppPrefs {
     var lastManageSubcategoryId: String?
         get() = readId(KEY_LAST_MANAGE_SUBCATEGORY)
         set(value) = writeId(KEY_LAST_MANAGE_SUBCATEGORY, value)
+
+    // ── تقليل كتابات/نداءات الشبكة المتكرّرة عند كلّ إقلاع ──
+
+    /** بصمة آخر رمز جهاز كُتب فعلاً في Firestore (رمز+دور+كتم). */
+    var lastDeviceTokenSig: String?
+        get() = readId("device_token_sig_v1")
+        set(value) = writeId("device_token_sig_v1", value)
+
+    /** لحظة آخر كتابة لرمز الجهاز — لإعادة الكتابة الدوريّة رغم ثبات البصمة. */
+    var lastDeviceTokenWriteMs: Long
+        get() = prefs.getLong("device_token_write_ms_v1", 0L)
+        set(value) = prefs.edit().putLong("device_token_write_ms_v1", value).apply()
+
+    /** أُلغي اشتراك موضوع FCM القديم على هذا الجهاز (يكفي مرّة لكلّ تثبيت). */
+    var legacyTopicUnsubscribed: Boolean
+        get() = prefs.getBoolean("legacy_topic_unsubscribed_v1", false)
+        set(value) = prefs.edit().putBoolean("legacy_topic_unsubscribed_v1", value).apply()
 }

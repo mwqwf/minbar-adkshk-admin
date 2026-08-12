@@ -158,12 +158,21 @@ object AdminNotificationService {
             .onFailure { Log.d(TAG, "FCM token refresh failed: $it") }
     }
 
+    /** أقصى عمر لبصمة الرمز قبل إعادة الكتابة رغم ثباتها (يُبقي updatedAt حيّاً). */
+    private const val TOKEN_REWRITE_MS = 3L * 24 * 60 * 60 * 1000
+
     private suspend fun saveToken(
         user: FirebaseUser,
         email: String,
         token: String,
         isOwner: Boolean,
     ) {
+        // كتابة واحدة عند التغيّر فقط: الرمز والدور والكتم لا تتبدّل غالباً
+        // بين إقلاعين، وكانت الوثيقة تُكتب في كلّ فتح للتطبيق بلا داعٍ.
+        // تُعاد الكتابة دوريّاً كي لا يبدو الرمز بائتاً لمن ينظّف بالخادم.
+        val sig = "${user.uid}|$email|$isOwner|$token|${ChatNotifications.isMuted}"
+        val fresh = System.currentTimeMillis() - AppPrefs.lastDeviceTokenWriteMs < TOKEN_REWRITE_MS
+        if (sig == AppPrefs.lastDeviceTokenSig && fresh) return
         FirebaseFirestore.getInstance()
             .collection("admin_device_tokens").document(user.uid)
             .set(
@@ -178,9 +187,14 @@ object AdminNotificationService {
                 ),
                 SetOptions.merge(),
             ).await()
+        AppPrefs.lastDeviceTokenSig = sig
+        AppPrefs.lastDeviceTokenWriteMs = System.currentTimeMillis()
     }
 
     suspend fun unregisterCurrentDevice() {
+        // تُمسح البصمة كي تُكتب الوثيقة من جديد عند الدخول التالي.
+        AppPrefs.lastDeviceTokenSig = null
+        AppPrefs.lastDeviceTokenWriteMs = 0L
         val user = FirebaseAuth.getInstance().currentUser
         if (user != null) {
             // تسجيل الخروج يجب ألا يُحتجز بسبب تعذّر تنظيف الرمز.
