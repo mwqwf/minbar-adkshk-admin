@@ -121,9 +121,12 @@ object DmRepository {
         return db.collection(DmPaths.THREADS).whereArrayContains("members", me)
             .querySnapshots()
             .map { snap ->
+                // الهويّة تُقرأ عند كلّ لقطة: تبديل الحساب دون قتل العمليّة
+                // كان يُبقي الترشيح على هويّة الحساب القديم.
+                val current = uid
                 snap.documents.map { DmThread.fromDoc(it) }
                     // المحذوفة عندي تختفي حتى تصل رسالة جديدة بعد حذفها.
-                    .filter { it.visibleFor(me) }
+                    .filter { it.visibleFor(current) }
                     .sortedByDescending { it.lastAtMs }
             }
     }
@@ -132,17 +135,20 @@ object DmRepository {
     fun unreadThreadsStream(): Flow<Int> {
         val me = uid
         if (me.isEmpty()) return flowOf(0)
-        return threadsStream().map { list -> list.count { it.hasUnreadFor(me) } }
+        return threadsStream().map { list ->
+            val current = uid
+            list.count { it.hasUnreadFor(current) }
+        }
     }
 
     fun threadStream(threadId: String): Flow<DmThread?> =
         thread(threadId).docSnapshots().map { if (it.exists()) DmThread.fromDoc(it) else null }
 
     fun messagesStream(threadId: String, limit: Long = 60): Flow<ChatPage> {
-        val me = uid
         return msgs(threadId).orderBy("sentAtMs", Query.Direction.DESCENDING).limit(limit)
             .querySnapshots()
             .map { snap ->
+                val me = uid
                 ChatPage(
                     messages = snap.documents
                         .map { ChatMessage.fromDoc(it) }

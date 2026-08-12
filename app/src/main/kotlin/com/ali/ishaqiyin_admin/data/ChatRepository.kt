@@ -403,7 +403,12 @@ suspend fun chatUploadFile(
         throw e
     }
 
-    if (isAborted?.invoke() == true) error("تمّ إلغاء الرفع.")
+    if (isAborted?.invoke() == true) {
+        // الإلغاء وصل بعد اكتمال البايتات: بلا حذفٍ هنا يبقى الملف المرفوع
+        // يتيماً في التخزين إلى الأبد (لا وثيقة رسالة تشير إليه).
+        runCatching { ref.delete().await() }
+        error("تمّ إلغاء الرفع.")
+    }
 
     // جلب الرابط بمحاولات: البايتات كلّها وصلت فعلاً، فتعثّر شبكيّ عابر
     // في هذا النداء الأخير وحده كان يُفشل الرفع كاملاً ويعيده من الصفر.
@@ -464,10 +469,12 @@ object ChatRepository {
      * رسالتك لحظيّاً وتعمل الدردشة دون انقطاع أثناء ضعف الشبكة.
      */
     fun messagesStream(limit: Long = 60): Flow<ChatPage> {
-        val me = uid
         return messages.orderBy("sentAtMs", Query.Direction.DESCENDING).limit(limit)
             .querySnapshots()
             .map { snap ->
+                // uid يُقرأ داخل الـmap لا عند إنشاء البثّ: تبديل الحساب دون
+                // قتل العمليّة كان يُبقي الترشيح على هويّة الحساب القديم.
+                val me = uid
                 ChatPage(
                     messages = snap.documents
                         .map { ChatMessage.fromDoc(it) }

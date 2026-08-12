@@ -145,6 +145,14 @@ class LessonUploadWorker(
                 UploadQueue.setProgress(null)
                 throw cancel
             } catch (e: Exception) {
+                // إلغاء المشرف للعنصر الجاري يُلغي مهمّة Firebase فترمي
+                // استثناءً عاماً: بلا هذا الفحص كان يُحسب محاولةً على عنصر
+                // أزيل أصلاً ويُعاد العامل بتأخير backoff يعطّل بقية الطابور،
+                // ويبقى العلم في `cancelled` إلى الأبد.
+                if (UploadQueue.consumeCancelled(item.id) || UploadQueue.byId(item.id) == null) {
+                    UploadQueue.setProgress(null)
+                    continue
+                }
                 // ⏸ الإيقاف يُلغي مهمّة Firebase فترمي استثناءً — وهو ليس
                 // فشلاً: لا يُحسب من المحاولات، ولا تُمسح جلسة الاستئناف،
                 // فيُكمل «استئناف» من البايت نفسه. الفحص **قبل** فحص الشبكة
@@ -196,6 +204,10 @@ class LessonUploadWorker(
                     return Result.retry()
                 }
                 UploadQueue.setProgress(null)
+            } finally {
+                // كانت تُمسح عند النجاح فقط؛ عند الفشل يبقى زوج إلغاء قديم
+                // يشير إلى مهمّة ميتة.
+                UploadQueue.clearActiveTask(item.id)
             }
         }
 

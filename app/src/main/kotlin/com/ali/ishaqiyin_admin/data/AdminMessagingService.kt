@@ -95,10 +95,11 @@ class AdminMessagingService : FirebaseMessagingService() {
             return
         }
         // رسالة خاصّة: لا تُزعج إن كانت محادثتها نفسها مفتوحة أمام المستخدم.
+        // كتم «إشعارات المجموعة» لا يشمل الخاص (نمط واتساب): الكتم يخصّ
+        // المحادثة المكتومة وحدها، والرسائل الشخصية تصل دائماً.
         if (type == "admin_dm") {
             val threadId = message.data["threadId"].orEmpty()
             if (threadId.isNotEmpty() && ChatNotifications.openDmThreadId == threadId) return
-            if (ChatNotifications.isMuted) return
         }
         val title = message.notification?.title ?: message.data["title"] ?: "تنبيه الإدارة"
         val body = message.notification?.body ?: message.data["body"].orEmpty()

@@ -139,7 +139,7 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
     val snack = LocalSnack.current
     val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
 
-    var limit by remember { mutableIntStateOf(60) }
+    var limit by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(60) }
     // المسودّة والاقتباسات تصمد أمام التدوير (كانت تضيع مع كلّ دوران).
     var text by rememberSaveable { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }

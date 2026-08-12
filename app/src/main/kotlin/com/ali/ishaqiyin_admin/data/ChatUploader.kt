@@ -83,12 +83,15 @@ object ChatUploader {
                 val prepared = ImageCompressor.prepare(AppPrefs.context, file, contentType)
                 temp = prepared.temp
                 val payload = prepared.file
+                // الصورة المضغوطة صارت JPEG فعلاً — تمرير النوع الأصلي
+                // (PNG/WebP…) كان يكذب في بيانات التخزين وامتداد الحفظ.
+                val effectiveContentType = if (prepared.temp != null) "image/jpeg" else contentType
                 when (target) {
                     is ChatUploadTarget.Group -> {
                         ChatRepository.sendAttachment(
                             uri = payload.uri,
                             filename = payload.name,
-                            contentType = contentType,
+                            contentType = effectiveContentType,
                             type = type,
                             caption = caption,
                             durationMs = durationMs,
@@ -106,7 +109,7 @@ object ChatUploader {
                             otherUid = target.otherUid,
                             uri = payload.uri,
                             filename = payload.name,
-                            contentType = contentType,
+                            contentType = effectiveContentType,
                             type = type,
                             caption = caption,
                             durationMs = durationMs,
@@ -188,7 +191,9 @@ object ChatUploader {
     /** إلغاء عمليّة واحدة دون المساس ببقيّة العمليّات الجارية. */
     fun cancel(id: Long) {
         abortedIds.add(id)
-        jobs[id]?.cancel()
+        // إن كانت المهمّة انتهت لتوّها فمرحلة التنظيف فاتت على العلم —
+        // نجدولها هنا وإلّا بقي في المجموعة إلى الأبد.
+        jobs[id]?.cancel() ?: scheduleAbortFlagCleanup(id)
     }
 
     private fun setPercent(id: Long, percent: Double) {

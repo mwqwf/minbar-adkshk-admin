@@ -60,6 +60,8 @@ object ImageCompressor {
                 rotated.compress(Bitmap.CompressFormat.JPEG, QUALITY, stream)
             }
             if (rotated !== decoded) decoded.recycle()
+            // الوسيطة `scaled` كانت تُنسى حين تكون كائناً ثالثاً مستقلاً.
+            if (scaled !== decoded && scaled !== rotated) scaled.recycle()
             rotated.recycle()
 
             // لا فائدة إن لم يصغر الحجم فعلاً.

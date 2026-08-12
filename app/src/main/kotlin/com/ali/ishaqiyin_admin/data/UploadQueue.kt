@@ -467,8 +467,12 @@ object UploadQueue {
     fun remove(id: String) = synchronized(lock) {
         val list = load()
         list.firstOrNull { it.id == id }?.let { item ->
-            runCatching { File(item.localPath).delete() }
-            item.transcriptImagePaths.forEach { path -> runCatching { File(path).delete() } }
+            // حذف الملفات في الخلفية: `cancel` يصل من نقرات الواجهة، وحذف
+            // نسخة صوت تبلغ ~100MB على الخيط الرئيسي يجمّد الإطارات.
+            cleanupScope.launch {
+                runCatching { File(item.localPath).delete() }
+                item.transcriptImagePaths.forEach { path -> runCatching { File(path).delete() } }
+            }
         }
         persist(list.filterNot { it.id == id })
         // تأكيد إضافة لعنصر لم يعد موجوداً يُربك: يُمسح مع خروجه.
@@ -507,7 +511,15 @@ object UploadQueue {
      */
     fun cancel(id: String) {
         cancelled.add(id)
-        val orphanPath = byId(id)?.uploadedPath?.takeIf { it.isNotEmpty() }
+        // حذف اليتيم من التخزين يخصّ العناصر **المركونة** فقط: العنصر النشط
+        // يتكفّل العامل بحذف ما رفعه بعد فحص الإلغاء — وحذفه هنا كان يسابق
+        // إنشاء الوثيقة فيحذف صوت درس يُنشر فعلاً (درس حيّ برابط ميت).
+        val isActive = activeCancel?.first == id
+        val orphanPath = if (isActive) {
+            null
+        } else {
+            byId(id)?.uploadedPath?.takeIf { it.isNotEmpty() }
+        }
         activeCancel?.let { (activeId, stop) -> if (activeId == id) runCatching { stop() } }
         remove(id)
         if (_progress.value?.id == id) _progress.value = null
@@ -525,7 +537,9 @@ object UploadQueue {
         _progress.value = p
     }
 
-    fun isEmpty(): Boolean = load().isEmpty()
+    // من مرآة الذاكرة لا من القرص: كانت كلّ نبضة تقدّم تعيد قراءة التفضيلات
+    // وتحليل JSON الطابور كاملاً (حتى ~100 مرّة لكل ملف).
+    fun isEmpty(): Boolean = _items.value.isEmpty()
 
-    fun count(): Int = load().size
+    fun count(): Int = _items.value.size
 }

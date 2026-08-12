@@ -31,6 +31,13 @@ object NetworkMonitor {
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
+        // الحالة الابتدائية تُحسب **قبل** تسجيل المستمع: حسابها بعده كان
+        // قد يدوس قيمة onAvailable المبكرة بـfalse عابرة (activeNetwork
+        // متقلّب لحظة الإقلاع) فيعلق «دون اتصال» رغم اتصال سليم.
+        _online.value = runCatching {
+            val capabilities = manager.getNetworkCapabilities(manager.activeNetwork)
+            capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        }.getOrDefault(true)
         runCatching {
             manager.registerNetworkCallback(
                 request,
@@ -50,10 +57,5 @@ object NetworkMonitor {
                 },
             )
         }
-        // الحالة الابتدائية قبل وصول أوّل نداء.
-        _online.value = runCatching {
-            val capabilities = manager.getNetworkCapabilities(manager.activeNetwork)
-            capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-        }.getOrDefault(true)
     }
 }

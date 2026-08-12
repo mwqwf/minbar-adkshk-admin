@@ -211,7 +211,7 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
     val snack = LocalSnack.current
     val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
 
-    var limit by remember { mutableIntStateOf(60) }
+    var limit by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(60) }
     // المسودّة ومرجع الردّ يصمدان أمام التدوير (كانا يضيعان مع كلّ دوران).
     var replyTo by rememberSaveable(stateSaver = chatReplyRefSaver) {
         mutableStateOf<ChatReplyRef?>(null)

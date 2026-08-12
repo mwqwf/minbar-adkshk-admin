@@ -313,44 +313,37 @@ async function pushToToken(token, title, body, data) {
 async function activeAdminTokens(ownerOnly) {
   const snap = await db.collection("admin_device_tokens").get();
   if (snap.empty) return [];
+  const rows = snap.docs
+    .map((doc) => {
+      const value = doc.data() || {};
+      return {
+        ref: doc.ref,
+        token: cleanString(value.token, 4096),
+        email: normalizeEmail(value.email),
+        uid: cleanString(value.uid || doc.id, 180),
+        chatMuted: value.chatMuted === true,
+      };
+    })
+    .filter((item) => item.email && item.token);
+  // قراءات dashboard_admins بالتوازي لا واحدة-واحدة: القراءة التسلسلية كانت
+  // تضاعف زمن كلّ بثّ/إشعار بعدد الأجهزة.
+  const emails = [...new Set(
+    rows.filter((item) => item.email !== OWNER_EMAIL).map((item) => item.email),
+  )];
   const adminCache = new Map();
-  const accepted = [];
-  for (const doc of snap.docs) {
-    const value = doc.data() || {};
-    const email = normalizeEmail(value.email);
-    const token = cleanString(value.token, 4096);
-    if (!email || !token) continue;
-    if (email === OWNER_EMAIL) {
-      accepted.push({
-        ref: doc.ref,
-        token,
-        email,
-        uid: cleanString(value.uid || doc.id, 180),
-        chatMuted: value.chatMuted === true,
-      });
-      continue;
-    }
-    if (ownerOnly) continue;
-    let authorized = adminCache.get(email);
-    if (authorized === undefined) {
-      const adminSnap = await db.collection(ADMINS_COLLECTION).doc(email).get();
-      const data = adminSnap.data() || {};
-      authorized = adminSnap.exists
-        && data.role === "supervisor"
-        && data.blocked !== true;
-      adminCache.set(email, authorized);
-    }
-    if (authorized) {
-      accepted.push({
-        ref: doc.ref,
-        token,
-        email,
-        uid: cleanString(value.uid || doc.id, 180),
-        chatMuted: value.chatMuted === true,
-      });
-    }
-  }
-  return accepted;
+  await Promise.all(emails.map(async (email) => {
+    const adminSnap = await db.collection(ADMINS_COLLECTION).doc(email).get();
+    const data = adminSnap.data() || {};
+    adminCache.set(
+      email,
+      adminSnap.exists && data.role === "supervisor" && data.blocked !== true,
+    );
+  }));
+  return rows.filter((item) => {
+    if (item.email === OWNER_EMAIL) return true;
+    if (ownerOnly) return false;
+    return adminCache.get(item.email) === true;
+  });
 }
 
 async function pushToAdmins(title, body, data, ownerOnly = false) {
@@ -2731,10 +2724,35 @@ exports.onAdminDmMessageCreated = functions.firestore
       || typeLabels[messageType]
       || "رسالة خاصّة";
 
-    // الرمز المستهدف: جهاز العضو المعتمَد فقط، مع احترام كتم الدردشة.
-    const tokens = (await activeAdminTokens(false)).filter(
-      (item) => item.uid === target && !item.chatMuted,
-    );
+    // الرمز المستهدف مباشرة: الوثائق مفهرسة بالـuid، فقراءة المجموعة كاملة
+    // كانت تكلّف N قراءة لإشعار شخص واحد. وكتم «إشعارات المجموعة» لا يشمل
+    // الخاص (نمط واتساب): الرسائل الشخصية تصل دائماً.
+    const targetDoc = await db.collection("admin_device_tokens").doc(target).get();
+    const tokens = [];
+    if (targetDoc.exists) {
+      const value = targetDoc.data() || {};
+      const email = normalizeEmail(value.email);
+      const token = cleanString(value.token, 4096);
+      if (email && token) {
+        let authorized = email === OWNER_EMAIL;
+        if (!authorized) {
+          const adminSnap = await db.collection(ADMINS_COLLECTION).doc(email).get();
+          const data = adminSnap.data() || {};
+          authorized = adminSnap.exists
+            && data.role === "supervisor"
+            && data.blocked !== true;
+        }
+        if (authorized) {
+          tokens.push({
+            ref: targetDoc.ref,
+            token,
+            email,
+            uid: cleanString(value.uid || targetDoc.id, 180),
+            chatMuted: value.chatMuted === true,
+          });
+        }
+      }
+    }
     return sendToAdminTargets(
       tokens,
       `رسالة خاصّة من ${senderName}`,
