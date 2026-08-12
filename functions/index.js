@@ -466,6 +466,26 @@ exports.onLessonCreated = functions.firestore
     return null;
   });
 
+// 🔔 إعلان الإصدار الجديد لكل المستخدمين عبر FCM لحظة رفع رقمه في
+// `app_config/android`. ضروريّ خصوصاً للنسخ المثبَّتة القديمة التي كان
+// فحص التحديث فيها يقرأ من الكاش إلى الأبد فلا يرى الرقم الجديد أبداً —
+// دفعة FCM تصلها مهما كان حال فحصها الداخلي.
+exports.onAppUpdatePublished = functions.firestore
+  .document("app_config/android")
+  .onWrite(async (change) => {
+    const before = change.before.exists ? change.before.data() : {};
+    const after = change.after.exists ? change.after.data() : null;
+    if (!after) return null;
+    const latest = Number(after.latestVersionCode || 0);
+    const previous = Number((before && before.latestVersionCode) || 0);
+    // إشعار عند ارتفاع الرقم فقط — تعديل الرسالة أو الرابط لا يُزعج أحداً.
+    if (!(latest > previous)) return null;
+    const body = cleanString(after.message, 500)
+      || "حدِّث التطبيق من المتجر لتصلك المزايا والإصلاحات الجديدة.";
+    await pushToTopic("تتوفّر نسخة أحدث من منبر ادكصهك", body, { type: "manual" });
+    return null;
+  });
+
 exports.onSubcategoryCreated = functions.firestore
   .document("subcategories/{id}")
   .onCreate((snap) => {

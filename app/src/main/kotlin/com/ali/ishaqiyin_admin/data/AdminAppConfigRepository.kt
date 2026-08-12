@@ -113,13 +113,14 @@ class AdminAppConfigRepository private constructor(context: Context) {
         val now = System.currentTimeMillis()
         if (now - prefs.getLong(KEY_CHECKED, 0L) < CHECK_INTERVAL_MS) return
         val reference = db.collection(COLLECTION).document(DOCUMENT)
-        // ⚠️ قراءة الكاش ترمي استثناءً حين لا تكون الوثيقة مخزَّنة أصلاً، فلا
-        // تُجمع مع قراءة الخادم في runCatching واحد: على تثبيت جديد لا وثيقة
-        // في الكاش أبداً، فلا يعمل التذكير قطّ.
-        val cached = runCatching { reference.get(Source.CACHE).await() }
-            .getOrNull()
-            ?.takeIf { it.exists() }
-        val doc = cached ?: runCatching { reference.get().await() }.getOrNull() ?: return
+        // ⚠️ الخادم أوّلاً دائماً: تقديم الكاش كان يجمّد القيم على أوّل قراءة
+        // إلى الأبد (الوثيقة تصير مخزَّنة فلا يُسأل الخادم بعدها قطّ، فلا يصل
+        // تذكير أيّ إصدار لاحق). الكاش هنا خطّة بديلة عند فشل الشبكة فقط.
+        val doc = runCatching { reference.get(Source.SERVER).await() }.getOrNull()
+            ?: runCatching { reference.get(Source.CACHE).await() }
+                .getOrNull()
+                ?.takeIf { it.exists() }
+            ?: return
         if (!doc.exists()) {
             prefs.edit().putLong(KEY_CHECKED, now).apply()
             return
