@@ -44,7 +44,7 @@ object AppConfig {
      * يُعيد الخطأ الذي حدث فعلاً: بقي الرقم المنشور 10 والتطبيق 13، فلم
      * يُذكَّر أحد بالتحديث.
      */
-    const val PUBLIC_APP_VERSION_CODE = 15
+    const val PUBLIC_APP_VERSION_CODE = 18
 }
 
 /** إعداد Firebase لمشروع التطبيق نفسه (mxqp-8d1e8) بحزمة اللوحة. */
