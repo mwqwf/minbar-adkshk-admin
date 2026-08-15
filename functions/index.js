@@ -474,8 +474,15 @@ exports.onAppUpdatePublished = functions.firestore
     // إشعار عند ارتفاع الرقم فقط — تعديل الرسالة أو الرابط لا يُزعج أحداً.
     if (!(latest > previous)) return null;
     const body = cleanString(after.message, 500)
-      || "حدِّث التطبيق من المتجر لتصلك المزايا والإصلاحات الجديدة.";
-    await pushToTopic("تتوفّر نسخة أحدث من منبر ادكصهك", body, { type: "manual" });
+      || "اضغط هنا للتحديث الآن — نسخة أحدث من منبر ادكصهك جاهزة.";
+    // ⚠️ النوع `update` لا `manual`: التطبيق يفتح به **المتجر مباشرة** عند
+    // النقر (شريط الإشعارات أو شاشة الإشعارات) بلا إظهار أي رابط للمستخدم.
+    // كان `manual` يعني «لا وجهة» فينتهي النقر بفتح الرئيسية ولا يُحدَّث شيء.
+    await pushToTopic("تتوفّر نسخة أحدث من منبر ادكصهك", body, {
+      type: "update",
+      route: "store",
+      storeUrl: cleanString(after.storeUrl, 512) || "",
+    });
     return null;
   });
 
