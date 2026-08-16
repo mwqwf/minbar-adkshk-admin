@@ -480,10 +480,33 @@ exports.onLessonCreated = functions.firestore
 const VERSION_REPORT_QUORUM = 3;
 const VERSION_MAX_JUMP = 50;
 
+// ⏳ **مهلة النضج قبل الإعلان.**
+//
+// درسٌ من عطل واقع (2026-08-16): بلّغت نسخةٌ قيد التجربة عن نفسها فانطلق
+// إشعار «تتوفّر نسخة أحدث» إلى كل المستخدمين **قبل نشر الإصدار على المتجر**
+// بساعات — فمن ضغط الإشعار وجد المتجر بلا جديد. والنصاب وحده لم يمنع ذلك:
+// كل مسحٍ لبيانات التطبيق يولّد هويّة مجهولة جديدة، فبدا الجهاز الواحد
+// أجهزةً عدّة.
+//
+// فالمهلة شرطٌ ثانٍ مستقلّ: لا يُعلَن عن نسخة إلا بعد مضيّ ساعة على **أوّل**
+// بلاغ عنها. وهي تكفي لأنّ الرفع إلى Play يسبق وصول النسخة إلى الأجهزة، فلا
+// يبلّغ عنها أحد أصلاً قبل توفّرها فعلاً.
+const VERSION_PUBLISH_DELAY_MS = 60 * 60 * 1000;
+
+/// ⛔ حزمة التطبيق العام وحدها. نسخة التطوير لاحقتها `.dev`، وتبليغها
+/// يعني إعلاناً عن نسخة لم تُنشر — وهو ما وقع فعلاً.
+const PUBLIC_PACKAGE = "com.ali.menbaradkshk";
+
 exports.reportAppVersion = functions.https.onCall(async (data, context) => {
   const versionCode = Math.trunc(Number(data && data.versionCode) || 0);
   if (!versionCode || versionCode <= 0) {
     throw new functions.https.HttpsError("invalid-argument", "رقم إصدار غير صالح");
+  }
+  // اسم الحزمة اختياريّ في النسخ القديمة، فلا نرفض غيابه — لكن وجودَه
+  // مخالفاً يُرفض قطعاً.
+  const pkg = cleanString(data && data.packageName, 100);
+  if (pkg && pkg !== PUBLIC_PACKAGE) {
+    return { ok: true, published: false, reason: "not-public-build" };
   }
   const configRef = db.collection("app_config").doc("android");
   const config = await configRef.get();
@@ -513,20 +536,35 @@ exports.reportAppVersion = functions.https.onCall(async (data, context) => {
       || cleanString(data && data.summary, 300);
     const versionName = (previous && previous.versionName)
       || cleanString(data && data.versionName, 40);
+    // ⏱️ الختم بالمللي ثانية لا `serverTimestamp` وحده: قراءة الطابع داخل
+    // المعاملة نفسها التي تكتبه تعيد رمزاً غير محلول، فيتعذّر حساب المهلة.
+    const firstSeenMs = (previous && previous.firstSeenMs) || Date.now();
     tx.set(reportRef, {
       versionCode,
       versionName,
       summary,
       devices: Array.from(devices).slice(0, 50),
       count: devices.size,
+      firstSeenMs,
       firstSeenAt: (previous && previous.firstSeenAt) || admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
-    return { count: devices.size, summary };
+    return { count: devices.size, summary, firstSeenMs };
   });
 
   if (outcome.count < VERSION_REPORT_QUORUM) {
     return { ok: true, published: false, count: outcome.count };
+  }
+  // شرطٌ ثانٍ مستقلّ عن النصاب: مهلة نضج تكفي لأن يكون الإصدار قد نُشر فعلاً
+  // على المتجر قبل أن نعلن عنه.
+  const waited = Date.now() - Number(outcome.firstSeenMs || 0);
+  if (waited < VERSION_PUBLISH_DELAY_MS) {
+    return {
+      ok: true,
+      published: false,
+      reason: "cooling-off",
+      remainingMs: VERSION_PUBLISH_DELAY_MS - waited,
+    };
   }
 
   // بلغ النصاب: نكتب الإعداد، ويتكفّل `onAppUpdatePublished` بدفعة FCM.
