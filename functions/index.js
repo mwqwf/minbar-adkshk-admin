@@ -491,7 +491,17 @@ const VERSION_MAX_JUMP = 50;
 // فالمهلة شرطٌ ثانٍ مستقلّ: لا يُعلَن عن نسخة إلا بعد مضيّ ساعة على **أوّل**
 // بلاغ عنها. وهي تكفي لأنّ الرفع إلى Play يسبق وصول النسخة إلى الأجهزة، فلا
 // يبلّغ عنها أحد أصلاً قبل توفّرها فعلاً.
+// وهي **حلٌّ احتياطيّ فحسب**: البرهان المباشر أفضل منها — انظر PLAY_INSTALLER
+// أدناه — فمتى توفّر أُعلن فوراً بلا انتظار.
 const VERSION_PUBLISH_DELAY_MS = 60 * 60 * 1000;
+
+// 🎯 **البرهان المباشر يُغني عن المهلة.**
+//
+// إن كان مثبِّت التطبيق على الجهاز المبلِّغ هو متجر Play، فالنسخة منشورةٌ
+// بالضرورة — لا يسلّم المتجر ما لم ينشره. فالانتظار عندئذ تأخيرٌ بلا فائدة،
+// والإعلان يخرج لحظة رفعها. أمّا ما ثُبِّت بـADB أو من ملف APK فلا يبرهن
+// شيئاً، فيبقى خاضعاً للمهلة.
+const PLAY_INSTALLER = "com.android.vending";
 
 /// ⛔ حزمة التطبيق العام وحدها. نسخة التطوير لاحقتها `.dev`، وتبليغها
 /// يعني إعلاناً عن نسخة لم تُنشر — وهو ما وقع فعلاً.
@@ -530,6 +540,12 @@ exports.reportAppVersion = functions.https.onCall(async (data, context) => {
     const previous = snap.exists ? snap.data() : null;
     const devices = new Set((previous && previous.devices) || []);
     devices.add(String(device).slice(0, 200));
+    // أجهزة برهنت أنّها نالت النسخة من المتجر نفسه — تُعدّ على حدة لأنّها
+    // وحدها التي تُسقط المهلة.
+    const proven = new Set((previous && previous.provenDevices) || []);
+    if (cleanString(data && data.installer, 100) === PLAY_INSTALLER) {
+      proven.add(String(device).slice(0, 200));
+    }
     // الموجز يُؤخذ من **أوّل** مُبلِّغ ويُثبَّت: لو أُخذ من الأخير لاستطاع
     // مُبلِّغٌ متأخّر أن يبدّل نصّ إشعارٍ سيصل إلى كل الناس.
     const summary = (previous && previous.summary)
@@ -545,20 +561,22 @@ exports.reportAppVersion = functions.https.onCall(async (data, context) => {
       summary,
       devices: Array.from(devices).slice(0, 50),
       count: devices.size,
+      provenDevices: Array.from(proven).slice(0, 50),
+      provenCount: proven.size,
       firstSeenMs,
       firstSeenAt: (previous && previous.firstSeenAt) || admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
-    return { count: devices.size, summary, firstSeenMs };
+    return { count: devices.size, proven: proven.size, summary, firstSeenMs };
   });
 
   if (outcome.count < VERSION_REPORT_QUORUM) {
     return { ok: true, published: false, count: outcome.count };
   }
   // شرطٌ ثانٍ مستقلّ عن النصاب: مهلة نضج تكفي لأن يكون الإصدار قد نُشر فعلاً
-  // على المتجر قبل أن نعلن عنه.
+  // على المتجر قبل أن نعلن عنه — **ما لم يقم البرهان المباشر**، فيُعلَن فوراً.
   const waited = Date.now() - Number(outcome.firstSeenMs || 0);
-  if (waited < VERSION_PUBLISH_DELAY_MS) {
+  if (outcome.proven < 1 && waited < VERSION_PUBLISH_DELAY_MS) {
     return {
       ok: true,
       published: false,
