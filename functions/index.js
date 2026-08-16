@@ -463,6 +463,89 @@ exports.onLessonCreated = functions.firestore
 // `app_config/android`. ضروريّ خصوصاً للنسخ المثبَّتة القديمة التي كان
 // فحص التحديث فيها يقرأ من الكاش إلى الأبد فلا يرى الرقم الجديد أبداً —
 // دفعة FCM تصلها مهما كان حال فحصها الداخلي.
+// 📣 الإعلان الذاتيّ عن إصدار جديد — بلا أيّ خطوة يدويّة.
+//
+// **المشكلة**: كان نشرُ رقم الإصدار ورسالته يدوياً من لوحة التحكّم بعد كل
+// رفعٍ إلى المتجر. خطوةٌ تُنسى — ونُسيت — فيبقى الناس على نسخة قديمة لا
+// يعلمون أنّ بعدها شيئاً.
+//
+// **الحلّ**: النسخة الجديدة تُعلن عن نفسها. حين تعمل نسخةٌ أحدث ممّا في
+// `app_config` على جهاز، تُبلّغ هذه الدالةَ برقمها وموجزها. ولا يقع ذلك إلا
+// بعد أن ينشر المتجر النسخة فعلاً، فالإعلان لا يسبق التوفّر أبداً.
+//
+// ⚠️ **النصاب هو الأمان**: جهازٌ واحد لا يكفي. لو كفى لاستطاع متلاعبٌ أن
+// يدّعي رقماً ضخماً فيُطلق إشعاراً كاذباً لكل المستخدمين، ويحبس الناس على
+// شاشة «حدِّث» إلى نسخةٍ لا وجود لها. فنشترط **ثلاثة أجهزة متمايزة** تُبلّغ
+// بالرقم نفسه، ونحدّ القفزة بخمسين إصداراً فوق المنشور.
+const VERSION_REPORT_QUORUM = 3;
+const VERSION_MAX_JUMP = 50;
+
+exports.reportAppVersion = functions.https.onCall(async (data, context) => {
+  const versionCode = Math.trunc(Number(data && data.versionCode) || 0);
+  if (!versionCode || versionCode <= 0) {
+    throw new functions.https.HttpsError("invalid-argument", "رقم إصدار غير صالح");
+  }
+  const configRef = db.collection("app_config").doc("android");
+  const config = await configRef.get();
+  const published = Number((config.exists && config.data().latestVersionCode) || 0);
+  // لا شيء يُفعل: المنشور أحدث أو مساوٍ.
+  if (versionCode <= published) return { ok: true, published: false, reason: "not-newer" };
+  if (versionCode > published + VERSION_MAX_JUMP) {
+    throw new functions.https.HttpsError("out-of-range", "قفزة إصدار غير معقولة");
+  }
+
+  // مُعرّف الجهاز: مُعرّف التثبيت من App Check إن وُجد، وإلا مُعرّف المستخدم
+  // المجهول. كلاهما يتمايز بين الأجهزة، وهو كلّ ما يلزم للنصاب.
+  const device = (context.app && context.app.appId)
+    || (context.auth && context.auth.uid)
+    || (context.rawRequest && context.rawRequest.ip)
+    || "unknown";
+  const reportRef = db.collection("app_version_reports").doc(String(versionCode));
+
+  const outcome = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(reportRef);
+    const previous = snap.exists ? snap.data() : null;
+    const devices = new Set((previous && previous.devices) || []);
+    devices.add(String(device).slice(0, 200));
+    // الموجز يُؤخذ من **أوّل** مُبلِّغ ويُثبَّت: لو أُخذ من الأخير لاستطاع
+    // مُبلِّغٌ متأخّر أن يبدّل نصّ إشعارٍ سيصل إلى كل الناس.
+    const summary = (previous && previous.summary)
+      || cleanString(data && data.summary, 300);
+    const versionName = (previous && previous.versionName)
+      || cleanString(data && data.versionName, 40);
+    tx.set(reportRef, {
+      versionCode,
+      versionName,
+      summary,
+      devices: Array.from(devices).slice(0, 50),
+      count: devices.size,
+      firstSeenAt: (previous && previous.firstSeenAt) || admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { count: devices.size, summary };
+  });
+
+  if (outcome.count < VERSION_REPORT_QUORUM) {
+    return { ok: true, published: false, count: outcome.count };
+  }
+
+  // بلغ النصاب: نكتب الإعداد، ويتكفّل `onAppUpdatePublished` بدفعة FCM.
+  // ⚠️ `hasOnly` في قواعد Firestore يحصر المفاتيح الستّة — نلتزم بها هنا
+  // أيضاً وإن كانت الكتابة من الخادم، كي يبقى شكل الوثيقة واحداً.
+  await configRef.set({
+    latestVersionCode: versionCode,
+    minSupportedVersionCode: Number(
+      (config.exists && config.data().minSupportedVersionCode) || 0,
+    ),
+    message: outcome.summary || "",
+    storeUrl: (config.exists && config.data().storeUrl)
+      || "https://play.google.com/store/apps/details?id=com.ali.menbaradkshk",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedBy: "auto:reportAppVersion",
+  });
+  return { ok: true, published: true, count: outcome.count };
+});
+
 exports.onAppUpdatePublished = functions.firestore
   .document("app_config/android")
   .onWrite(async (change) => {

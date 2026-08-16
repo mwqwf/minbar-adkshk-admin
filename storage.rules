@@ -84,6 +84,18 @@ service firebase.storage {
       allow delete: if canManageContent();
     }
 
+    // 🕌 صفحات المصحف المصوَّر الملوّن — ملفّات مجمع الملك فهد الرسميّة
+    // (حفص ١٤٤١، ورش ١٤٤٢، قالون ١٤٤٣)، مرفوعةٌ مرّة واحدة من جهاز المالك.
+    //
+    // **القراءة عامّة** لأنّ التطبيق يجلبها بلا تسجيل دخول (كصور الدروس)،
+    // و**الكتابة ممنوعة من العميل بالكامل**: هذه أصول ثابتة لا يرفعها أحد من
+    // داخل التطبيق، فلا داعي لفتح ثغرة كتابةٍ لا تُستعمل. تحديثها يقع من
+    // جهاز المالك بأداة سطر الأوامر لا من التطبيق.
+    match /quran/{allPaths=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     // صور صفحات الكتاب المرفقة باقتراح نص مشروح (خاصة بصاحبها والمشرفين).
     match /transcript_submissions/{uid}/{submissionId}/{fileName} {
       allow read: if canManageContent() || (signedIn() && request.auth.uid == uid);
