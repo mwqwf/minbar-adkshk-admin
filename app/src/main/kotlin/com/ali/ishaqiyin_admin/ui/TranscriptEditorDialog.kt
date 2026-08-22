@@ -47,7 +47,10 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -57,8 +60,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil3.compose.AsyncImage
 import com.ali.ishaqiyin_admin.data.TranscriptsRepository
+import com.ali.ishaqiyin_admin.data.arabicReason
 import com.ali.ishaqiyin_admin.util.ImageMerger
 import com.canhub.cropper.CropImageContract
 import com.canhub.cropper.CropImageContractOptions
@@ -78,6 +83,42 @@ private data class EditorImage(
     val isLocal: Boolean get() = local != null
     val model: Any get() = local ?: remoteUrl.orEmpty()
 }
+
+/**
+ * حفظ صور المحرر عبر إعادة إنشاء النشاط: كل صورة سطر واحد (المسار ثم
+ * الرابط ثم الملف المحلي). تدوير الشاشة كان يمحو المسوّدة كاملة بصورها.
+ */
+private val editorImagesSaver = listSaver<SnapshotStateList<EditorImage>, String>(
+    save = { list ->
+        list.map { "${it.remotePath.orEmpty()}\n${it.remoteUrl.orEmpty()}\n${it.local ?: ""}" }
+    },
+    restore = { saved ->
+        mutableStateListOf<EditorImage>().apply {
+            saved.forEach { entry ->
+                val parts = entry.split("\n", limit = 3)
+                if (parts.size == 3) {
+                    add(
+                        EditorImage(
+                            remotePath = parts[0].ifEmpty { null },
+                            remoteUrl = parts[1].ifEmpty { null },
+                            local = parts[2].takeIf { it.isNotEmpty() }?.let(Uri::parse),
+                        ),
+                    )
+                }
+            }
+        }
+    },
+)
+
+/** الصور المنتظرة للقصّ تعبر إعادة الإنشاء كذلك — وإلّا ضاعت بلا أثر. */
+private val pendingUrisSaver = listSaver<SnapshotStateList<Uri>, String>(
+    save = { list -> list.map { it.toString() } },
+    restore = { saved ->
+        mutableStateListOf<Uri>().apply {
+            saved.filter { it.isNotEmpty() }.forEach { add(Uri.parse(it)) }
+        }
+    },
+)
 
 /**
  * 📖 محرر «النص المشروح» لدرس من شاشة الإدارة: نص المتن + اسم الكتاب +
@@ -102,16 +143,25 @@ fun TranscriptEditorDialog(
     var saving by remember { mutableStateOf(false) }
     var extracting by remember { mutableStateOf(false) }
     var merging by remember { mutableStateOf(false) }
-    var existed by remember { mutableStateOf(false) }
+    // المسوّدة كلّها محفوظة: تدوير الشاشة (أو تبديل سمة النظام) كان يمحو
+    // النص والصور بعد تعبئتهما بلا تنبيه ولا وسيلة استرجاع.
+    var existed by rememberSaveable { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
-    var text by remember { mutableStateOf("") }
-    var bookTitle by remember { mutableStateOf("") }
-    var sourceRef by remember { mutableStateOf("") }
+    var text by rememberSaveable { mutableStateOf("") }
+    var bookTitle by rememberSaveable { mutableStateOf("") }
+    var sourceRef by rememberSaveable { mutableStateOf("") }
     var viewingImage by remember { mutableStateOf<Any?>(null) }
-    var cropIndex by remember { mutableIntStateOf(-1) }
-    val images = remember { mutableStateListOf<EditorImage>() }
+    var cropIndex by rememberSaveable { mutableIntStateOf(-1) }
+    val images = rememberSaveable(saver = editorImagesSaver) {
+        mutableStateListOf<EditorImage>()
+    }
 
     LaunchedEffect(lessonId) {
+        // مسوّدة مستعادة: الجلب من الخادم هنا كان يدهسها بعد إعادة الإنشاء.
+        if (text.isNotBlank() || images.isNotEmpty()) {
+            loading = false
+            return@LaunchedEffect
+        }
         runCatching { TranscriptsRepository.fetchTranscript(lessonId) }
             .onSuccess { transcript ->
                 if (transcript != null) {
@@ -131,12 +181,15 @@ fun TranscriptEditorDialog(
         // كان للدرس نصّ محفوظ، فيضيع على المشرف بلا رسالة ولا وسيلة استرجاع
         // — الآن يُلحق أسفل الموجود تماماً كما يفعل مسار OCR أدناه.
         if (initialText.isNotBlank()) {
-            text = if (text.isBlank()) {
-                initialText
-            } else {
-                "$text\n\n$initialText"
-            }.take(20000)
-            if (existed) snack("أُلحق النص الوارد أسفل النص المحفوظ — دقّقه قبل الحفظ.")
+            val combined = if (text.isBlank()) initialText else "$text\n\n$initialText"
+            val trimmed = combined.length > 20000
+            text = combined.take(20000)
+            // القصّ الصامت أخطر هنا: الحمولة المشارَكة استُهلكت فلا تعود.
+            if (trimmed) {
+                snack("أُلحق النص الوارد وقُصّ عند 20 ألف حرف — راجع آخره.")
+            } else if (existed) {
+                snack("أُلحق النص الوارد أسفل النص المحفوظ — دقّقه قبل الحفظ.")
+            }
         }
         initialImages.forEach { uri ->
             if (images.size < TranscriptsRepository.MAX_IMAGES) {
@@ -148,7 +201,9 @@ fun TranscriptEditorDialog(
 
     // «القصّ أثناء المعاينة»: كل صورة تُختار تمرّ بشاشة القصّ قبل إدراجها؛
     // الإلغاء داخل الشاشة يعني «أدرِجها كما هي».
-    val pendingNew = remember { mutableStateListOf<Uri>() }
+    val pendingNew = rememberSaveable(saver = pendingUrisSaver) {
+        mutableStateListOf<Uri>()
+    }
     var cropActive by remember { mutableStateOf(false) }
 
     fun cropOptions(uri: Uri) = CropImageContractOptions(
@@ -173,9 +228,14 @@ fun TranscriptEditorDialog(
             }
             return@rememberLauncherForActivityResult
         }
+        // نتيجة بلا صورة منتظِرة نتيجةٌ لا صاحب لها — تُهمَل بدل إدراجها.
         val source = pendingNew.removeFirstOrNull()
+        if (source == null) {
+            cropActive = false
+            return@rememberLauncherForActivityResult
+        }
         val final = if (result.isSuccessful) (result.uriContent ?: source) else source
-        if (final != null && images.size < TranscriptsRepository.MAX_IMAGES) {
+        if (images.size < TranscriptsRepository.MAX_IMAGES) {
             images.add(EditorImage(local = final))
         }
         cropActive = false
@@ -207,19 +267,25 @@ fun TranscriptEditorDialog(
         cropper.launch(cropOptions(local))
     }
 
+    // ملء الشاشة بعرض الصورة كاملاً مع تمرير رأسي: صفحة طويلة (وأشدّها
+    // الناتجة عن الدمج) كانت تُحشر في ارتفاع الحوار فتُرسم شريطاً لا يُقرأ.
     viewingImage?.let { model ->
-        Dialog(onDismissRequest = { viewingImage = null }) {
+        Dialog(
+            onDismissRequest = { viewingImage = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
             Box(
                 Modifier
-                    .fillMaxWidth()
-                    .background(Color.Black, RoundedCornerShape(12.dp))
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .verticalScroll(rememberScrollState())
                     .clickable { viewingImage = null },
                 contentAlignment = Alignment.Center,
             ) {
                 AsyncImage(
                     model = model,
                     contentDescription = "صورة الصفحة",
-                    contentScale = ContentScale.Fit,
+                    contentScale = ContentScale.FillWidth,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -498,24 +564,44 @@ fun TranscriptEditorDialog(
                                     extracting = true
                                     scope.launch {
                                         try {
+                                            // سبب فشل الخادم (مثل «فعّل Cloud
+                                            // Vision API») كان يُبتلع فيُعرض
+                                            // الفشل كأنّ الصور بلا نص.
+                                            var lastError: Throwable? = null
                                             val parts = remotePaths.mapNotNull { path ->
                                                 runCatching {
                                                     TranscriptsRepository.extractText(path)
-                                                }.getOrNull()?.takeIf { it.isNotBlank() }
+                                                }.onFailure { lastError = it }
+                                                    .getOrNull()?.takeIf { it.isNotBlank() }
                                             }
                                             if (parts.isEmpty()) {
-                                                snack("لم يُستخرج نص من الصور المنشورة.")
+                                                snack(
+                                                    lastError?.let {
+                                                        "تعذّر الاستخراج: ${it.arabicReason()}"
+                                                    } ?: "لم يُستخرج نص من الصور المنشورة.",
+                                                )
                                             } else {
                                                 val joined = parts.joinToString("\n\n")
-                                                text = if (text.isBlank()) {
+                                                val combined = if (text.isBlank()) {
                                                     joined
                                                 } else {
                                                     "$text\n\n$joined"
-                                                }.take(20000)
-                                                snack("أُلحق النص المستخرج — دقّقه قبل الحفظ.")
+                                                }
+                                                // القصّ الصامت يضيّع آخر النص
+                                                // المستخرج بلا أن يدري المشرف.
+                                                val trimmed = combined.length > 20000
+                                                text = combined.take(20000)
+                                                snack(
+                                                    if (trimmed) {
+                                                        "أُلحق النص وقُصّ عند 20 ألف حرف — " +
+                                                            "راجع آخره."
+                                                    } else {
+                                                        "أُلحق النص المستخرج — دقّقه قبل الحفظ."
+                                                    },
+                                                )
                                             }
                                         } catch (e: Exception) {
-                                            snack(e.message ?: "تعذّر استخراج النص.")
+                                            snack("تعذّر استخراج النص: ${e.arabicReason()}")
                                         }
                                         extracting = false
                                     }
@@ -572,14 +658,22 @@ fun TranscriptEditorDialog(
                         runCatching {
                             // «محلي أولاً»: الصور الجديدة تُرفع الآن فقط، ثم
                             // يُرسل الترتيب الكامل (منشور + جديد) كما رتّبه المشرف.
-                            val orderedPaths = images.map { image ->
-                                image.remotePath
-                                    ?: TranscriptsRepository.uploadTranscriptImage(
+                            // المسار يُكتب في الصورة فور نجاح رفعها: سقوط
+                            // الحفظ بعده كان يجعل إعادة المحاولة ترفعها كلّها
+                            // من جديد. والحلقة بالفهارس لا forEach لأن القائمة
+                            // تُعدَّل أثناءها.
+                            for (i in images.indices) {
+                                val image = images[i]
+                                if (image.remotePath == null) {
+                                    val uploaded = TranscriptsRepository.uploadTranscriptImage(
                                         context,
                                         lessonId,
                                         requireNotNull(image.local),
                                     )
+                                    images[i] = image.copy(remotePath = uploaded)
+                                }
                             }
+                            val orderedPaths = images.mapNotNull { it.remotePath }
                             TranscriptsRepository.upsert(
                                 lessonId = lessonId,
                                 text = text,

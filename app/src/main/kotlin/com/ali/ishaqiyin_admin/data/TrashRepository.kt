@@ -4,8 +4,10 @@ import com.google.firebase.firestore.AggregateSource
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.functions.FirebaseFunctions
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 
@@ -68,12 +70,14 @@ object TrashRepository {
     private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
     const val COLLECTION = "deleted_lessons"
 
+    // فكّ الترميز والفرز خارج الخيط الرئيسي: وثيقة كل درس محذوف تحمل نسخته
+    // كاملةً بنصّه المشروح، وكانت تُفكّ في سياق الجامع (Main) فتُقطّع الحركة.
     fun watchAll(): Flow<List<TrashedLesson>> =
         db.collection(COLLECTION).querySnapshots().map { snap ->
             snap.documents
                 .map { TrashedLesson.fromDoc(it) }
                 .sortedByDescending { it.deletedAtMs }
-        }
+        }.flowOn(Dispatchers.Default)
 
     /**
      * عدد ما في السلة — استعلام **عدّ خادميّ** خفيف لا يجلب الوثائق.

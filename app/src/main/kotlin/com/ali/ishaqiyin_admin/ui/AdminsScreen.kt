@@ -21,7 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -131,8 +131,10 @@ fun AdminsScreen(isOwner: Boolean, onBack: () -> Unit, onOpenSupervisors: () -> 
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                        // ‏RTL: الرمز تلقائي الانعكاس، فـRight يُرسم يساراً —
+                        // وإلّا صار سهم «ادخل» مطابقاً لسهم «ارجع» في الشريط.
                         Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -173,6 +175,7 @@ fun AdminsScreen(isOwner: Boolean, onBack: () -> Unit, onOpenSupervisors: () -> 
                 Spacer(Modifier.size(8.dp))
                 Text("تسجيل الخروج", color = MaterialTheme.colorScheme.error)
             }
+            AccountFooter()
         }
     }
 }
@@ -304,50 +307,60 @@ private fun PendingOwnerCodeCards() {
                     }
                 }
             }
-
-            // تذييل هادئ: سياسة الخصوصية ورقم الإصدار. موضعها هنا مقصود —
-            // Play يشترط رابطاً للسياسة داخل التطبيق لا في صفحة المتجر وحدها،
-            // وهذه شاشة حساب لا يفتحها المشرف إلا قاصداً، فلا تزاحم العمل
-            // اليومي في اللوحة الرئيسية.
-            Spacer(Modifier.height(28.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Spacer(Modifier.height(12.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "الإصدار ${BuildConfig.VERSION_NAME}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                TextButton(
-                    onClick = {
-                        val opened = runCatching {
-                            context.startActivity(
-                                Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_POLICY_URL))
-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                            )
-                        }.isSuccess
-                        if (!opened) {
-                            copyToClipboard(context, PRIVACY_POLICY_URL)
-                            snack("تعذّر فتح المتصفّح — نُسخ الرابط.")
-                        }
-                    },
-                ) {
-                    Icon(
-                        Icons.Filled.PrivacyTip,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.size(6.dp))
-                    Text("سياسة الخصوصية", style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            Spacer(Modifier.height(16.dp))
         }
     }
+}
+
+/**
+ * تذييل هادئ: سياسة الخصوصية ورقم الإصدار.
+ *
+ * موضعه في هذه الشاشة مقصود — Play يشترط رابطاً للسياسة داخل التطبيق لا في
+ * صفحة المتجر وحدها، وهذه شاشة حساب لا يفتحها المشرف إلا قاصداً، فلا تزاحم
+ * العمل اليومي في اللوحة الرئيسية. **وهو خارج بطاقات الرموز المعلَّقة** لأن
+ * الشرط أن يظهر دائماً: كان بداخل حلقتها فيختفي بلا رموز (الحالة الغالبة)
+ * ويتكرّر مع كلّ مرشّح.
+ */
+@Composable
+private fun AccountFooter() {
+    val context = LocalContext.current
+    val snack = LocalSnack.current
+    Spacer(Modifier.height(28.dp))
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    Spacer(Modifier.height(12.dp))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "الإصدار ${BuildConfig.VERSION_NAME}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(
+            onClick = {
+                val opened = runCatching {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_POLICY_URL))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }.isSuccess
+                if (!opened) {
+                    copyToClipboard(context, PRIVACY_POLICY_URL)
+                    snack("تعذّر فتح المتصفّح — نُسخ الرابط.")
+                }
+            },
+        ) {
+            Icon(
+                Icons.Filled.PrivacyTip,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.size(6.dp))
+            Text("سياسة الخصوصية", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+    Spacer(Modifier.height(16.dp))
 }
 
 /** سياسة خصوصية **لوحة الإدارة** — غير سياسة التطبيق العام (‏/privacy). */

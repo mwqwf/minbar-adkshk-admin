@@ -41,9 +41,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -78,17 +76,17 @@ import com.ali.ishaqiyin_admin.util.copyUriToCache
 import com.ali.ishaqiyin_admin.util.pickedFileFrom
 import com.ali.ishaqiyin_admin.util.smartTitleFromFileName
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Calendar
 
-private fun fmtDate(millis: Long): String {
-    val c = Calendar.getInstance().apply { timeInMillis = millis }
-    fun p(v: Int) = v.toString().padStart(2, '0')
-    return "${c.get(Calendar.YEAR)}/${p(c.get(Calendar.MONTH) + 1)}/${p(c.get(Calendar.DAY_OF_MONTH))} " +
-        "${p(c.get(Calendar.HOUR_OF_DAY))}:${p(c.get(Calendar.MINUTE))}"
-}
+/**
+ * نافذة اعتبار الإدراج مكرَّراً: تدوير الشاشة يعيد النموذج ممتلئاً بينما
+ * الدرس دخل الطابور فعلاً، فضغطة «رفع» ثانية تُنشئ درساً مكرَّراً.
+ */
+private const val DUPLICATE_WINDOW_MS = 60_000L
 
 /** منتقي تاريخ ثم وقت بحوارات النظام (نظير showDatePicker/showTimePicker). */
 fun pickDateTime(context: Context, initialMs: Long, onPicked: (Long) -> Unit) {
@@ -332,6 +330,26 @@ fun AddLessonScreen(onBack: () -> Unit) {
             isError = true
             return
         }
+        // 🛡️ حارس التكرار: تدوير الشاشة أثناء التجهيز يعيد النموذج ممتلئاً
+        // بينما الدرس دخل الطابور فعلاً، فضغطة «رفع» ثانية كانت تُنشئ درساً
+        // مكرَّراً — وclientKey يختلف بين العنصرين فلا يمنعه الخادم.
+        val pendingName = if (files.size == 1) files.first().name else null
+        val duplicate = UploadQueue.items.value.any { item ->
+            val sameFile = if (pendingName != null) {
+                item.fileName == pendingName
+            } else {
+                // الدمج يُدرج باسم موحّد (merged.mp3/merged.m4a) لا باسم أيّ
+                // ملفّ مختار، فالمقارنة على بادئته.
+                item.fileName.startsWith("merged.")
+            }
+            sameFile && item.title == title.trim() &&
+                System.currentTimeMillis() - item.queuedAtMs < DUPLICATE_WINDOW_MS
+        }
+        if (duplicate) {
+            message = "«${title.trim()}» في طابور الرفع منذ أقلّ من دقيقة — لم يُضف مرّة ثانية."
+            isError = true
+            return
+        }
         queuing = true
         merging = false
         message = ""
@@ -349,87 +367,99 @@ fun AddLessonScreen(onBack: () -> Unit) {
         AppPrefs.lastAddSubcategoryId = subcategoryId
         scope.launch {
             try {
-                val queued = if (files.size == 1) {
-                    UploadQueue.enqueue(
-                        context = context,
-                        sourceUri = files.first().uri,
-                        fileName = files.first().name,
-                        title = snapshotTitle,
-                        categoryId = categoryId!!,
-                        subcategoryId = subcategoryId!!,
-                        sectionLabel = label,
-                        featured = featured,
-                        featuredUntilMs = featuredUntil,
-                        addedBy = AuthService.currentUser?.email.orEmpty(),
-                        categoryName = catLabel,
-                        subcategoryName = subLabel,
-                        transcriptText = transcriptText,
-                        transcriptBookTitle = transcriptBookTitle,
-                        transcriptSourceRef = transcriptSourceRef,
-                        transcriptImages = transcriptImages.toList(),
-                    )
-                } else {
-                    // عدّة ملفات = درس واحد متّصل: يُدمج محليّاً أوّلاً (لا
-                    // يحتاج شبكة) ثم يدخل الطابور ملفّاً واحداً. كل الملفات
-                    // MP3 → لصق إطارات بلا إعادة ترميز؛ غير ذلك أو ترميزات
-                    // MP3 متنافرة → فكّ الجميع وإعادة ترميز AAC/M4A — الدمج
-                    // يصحّ مهما اختلفت الصيغ والناتج صيغة واحدة.
-                    merging = true
-                    val stamp = System.currentTimeMillis()
-                    val locals = files.map { context.copyUriToCache(it.uri, it.name) }
-                    var mergedName = "merged.mp3"
-                    val merged = withContext(Dispatchers.IO) {
-                        if (files.all { AudioMerger.isMp3(it.name) }) {
-                            try {
-                                AudioMerger.mergeMp3(
-                                    inputs = locals,
-                                    outputPath = File(
-                                        context.cacheDir,
-                                        "merged_$stamp.mp3",
-                                    ).absolutePath,
-                                )
-                            } catch (_: Mp3FormatException) {
+                // ⛔ كلّ العمل الدائم (دمج ← إدراج ← إيقاظ العامل) داخل
+                // NonCancellable على IO: مغادرة الشاشة أو تدويرها أثناء التجهيز
+                // كانت تُلغي هذا الكوروتين فور اكتمال الدمج وقبل الإدراج، فيبقى
+                // الملفّ المدموج في الكاش ولا يدخل الدرس الطابور أصلاً ولا رسالة
+                // تُنبّه. وتحديث الواجهة يبقى خارجها فلا يُكتب لشاشة زالت.
+                val (position, total) = withContext(NonCancellable + Dispatchers.IO) {
+                    val queued = if (files.size == 1) {
+                        UploadQueue.enqueue(
+                            context = context,
+                            sourceUri = files.first().uri,
+                            fileName = files.first().name,
+                            title = snapshotTitle,
+                            categoryId = categoryId!!,
+                            subcategoryId = subcategoryId!!,
+                            sectionLabel = label,
+                            featured = featured,
+                            featuredUntilMs = featuredUntil,
+                            addedBy = AuthService.currentUser?.email.orEmpty(),
+                            categoryName = catLabel,
+                            subcategoryName = subLabel,
+                            transcriptText = transcriptText,
+                            transcriptBookTitle = transcriptBookTitle,
+                            transcriptSourceRef = transcriptSourceRef,
+                            transcriptImages = transcriptImages.toList(),
+                        )
+                    } else {
+                        // عدّة ملفات = درس واحد متّصل: يُدمج محليّاً أوّلاً (لا
+                        // يحتاج شبكة) ثم يدخل الطابور ملفّاً واحداً. كل الملفات
+                        // MP3 → لصق إطارات بلا إعادة ترميز؛ غير ذلك أو ترميزات
+                        // MP3 متنافرة → فكّ الجميع وإعادة ترميز AAC/M4A — الدمج
+                        // يصحّ مهما اختلفت الصيغ والناتج صيغة واحدة.
+                        merging = true
+                        val stamp = System.currentTimeMillis()
+                        val locals = files.map { context.copyUriToCache(it.uri, it.name) }
+                        var mergedName = "merged.mp3"
+                        val merged = try {
+                            if (files.all { AudioMerger.isMp3(it.name) }) {
+                                try {
+                                    AudioMerger.mergeMp3(
+                                        inputs = locals,
+                                        outputPath = File(
+                                            context.cacheDir,
+                                            "merged_$stamp.mp3",
+                                        ).absolutePath,
+                                    )
+                                } catch (_: Mp3FormatException) {
+                                    mergedName = "merged.m4a"
+                                    AudioTranscodeMerger.mergeToM4a(
+                                        locals,
+                                        File(context.cacheDir, "merged_$stamp.m4a").absolutePath,
+                                    )
+                                }
+                            } else {
                                 mergedName = "merged.m4a"
                                 AudioTranscodeMerger.mergeToM4a(
                                     locals,
                                     File(context.cacheDir, "merged_$stamp.m4a").absolutePath,
                                 )
                             }
-                        } else {
-                            mergedName = "merged.m4a"
-                            AudioTranscodeMerger.mergeToM4a(
-                                locals,
-                                File(context.cacheDir, "merged_$stamp.m4a").absolutePath,
-                            )
+                        } finally {
+                            // النسخ المؤقّتة تُمسح في النجاح والفشل معاً: كان
+                            // الحذف بعد الدمج وحده، فأيّ استثناء يترك نسخة كلّ
+                            // ملفّ في cacheDir بلا كانس يمرّ عليها.
+                            locals.forEach { runCatching { it.delete() } }
                         }
+                        merging = false
+                        UploadQueue.enqueueLocalFile(
+                            file = merged,
+                            fileName = mergedName,
+                            title = snapshotTitle,
+                            categoryId = categoryId!!,
+                            subcategoryId = subcategoryId!!,
+                            sectionLabel = label,
+                            featured = featured,
+                            featuredUntilMs = featuredUntil,
+                            addedBy = AuthService.currentUser?.email.orEmpty(),
+                            context = context,
+                            categoryName = catLabel,
+                            subcategoryName = subLabel,
+                            transcriptText = transcriptText,
+                            transcriptBookTitle = transcriptBookTitle,
+                            transcriptSourceRef = transcriptSourceRef,
+                            transcriptImages = transcriptImages.toList(),
+                        )
                     }
-                    locals.forEach { runCatching { it.delete() } }
-                    merging = false
-                    UploadQueue.enqueueLocalFile(
-                        file = merged,
-                        fileName = mergedName,
-                        title = snapshotTitle,
-                        categoryId = categoryId!!,
-                        subcategoryId = subcategoryId!!,
-                        sectionLabel = label,
-                        featured = featured,
-                        featuredUntilMs = featuredUntil,
-                        addedBy = AuthService.currentUser?.email.orEmpty(),
-                        context = context,
-                        categoryName = catLabel,
-                        subcategoryName = subLabel,
-                        transcriptText = transcriptText,
-                        transcriptBookTitle = transcriptBookTitle,
-                        transcriptSourceRef = transcriptSourceRef,
-                        transcriptImages = transcriptImages.toList(),
-                    )
+                    // يُقرأ الموقع **قبل** إيقاظ العامل: ملفّ صغير قد يُرفع
+                    // ويخرج من الطابور قبل أن نصل إلى بناء الرسالة، فيصير
+                    // «الترتيب 0» بلا معنى.
+                    val position = UploadQueue.positionOf(queued.id)
+                    val total = UploadQueue.liveCount()
+                    LessonUploadWorker.kick(context)
+                    position to total
                 }
-                // يُقرأ الموقع **قبل** إيقاظ العامل: ملفّ صغير قد يُرفع
-                // ويخرج من الطابور قبل أن نصل إلى بناء الرسالة، فيصير
-                // «الترتيب 0» بلا معنى.
-                val position = UploadQueue.positionOf(queued.id)
-                val total = UploadQueue.liveCount()
-                LessonUploadWorker.kick(context)
 
                 // إفراغ النموذج فوراً — المشرف يواصل إضافة درس آخر.
                 // العنوان لا يُفرَغ إن كان جزءاً من سلسلة مرقّمة: يُقترح
@@ -465,6 +495,10 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     }
                 isError = false
                 snack("أُضيف «$snapshotTitle» إلى طابور الرفع$order")
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                // مغادرة الشاشة بعد تمام الإدراج: العمل الدائم تمّ داخل
+                // NonCancellable، فلا رسالة خطأ — يُحترم الإلغاء ويُعاد رميه.
+                throw cancel
             } catch (e: Exception) {
                 queuing = false
                 merging = false

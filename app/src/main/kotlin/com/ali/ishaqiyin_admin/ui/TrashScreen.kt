@@ -25,7 +25,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -119,6 +118,9 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
             onDismiss = { restoring = null },
             onConfirm = {
                 restoring = null
+                // البطاقة تختفي مع الوثيقة فيختفي شريط التحكّم، والصوت يواصل
+                // التشغيل بلا وسيلة إيقاف — فيُوقَف قبل زوالها.
+                if (player.playingId == item.id) player.stop()
                 run("استُعيد الدرس. ✅") { TrashRepository.restore(item) }
             },
         )
@@ -133,6 +135,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
             onDismiss = { purging = null },
             onConfirm = {
                 purging = null
+                if (player.playingId == item.id) player.stop()
                 run("حُذف نهائياً.") { TrashRepository.purge(item) }
             },
         )
@@ -147,6 +150,8 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
             onDismiss = { emptying = false },
             onConfirm = {
                 emptying = false
+                // كل البطاقات ستزول، فأيّ معاينة جارية تفقد شريطها.
+                player.stop()
                 run("") {
                     val purged = TrashRepository.emptyAll()
                     snack("فُرّغت السلة — حُذف $purged درساً نهائياً.")
@@ -310,13 +315,10 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                                 shape = RoundedCornerShape(8.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = adminGreen,
-                                    // أخضر الوضع الداكن فاتح، فيلزمه حبر داكن
-                                    // فوقه؛ والفاتح يبقى على لون محتواه كما كان.
-                                    contentColor = if (isAdminDarkTheme()) {
-                                        contentColorOn(adminGreen)
-                                    } else {
-                                        LocalContentColor.current
-                                    },
+                                    // الحبر يُشتقّ من الخلفيّة في الوضعين: لون
+                                    // محتوى البطاقة فوق الأخضر الداكن كان يرسب
+                                    // في التباين بالوضع الفاتح.
+                                    contentColor = contentColorOn(adminGreen),
                                 ),
                                 modifier = Modifier.weight(1f),
                             ) {

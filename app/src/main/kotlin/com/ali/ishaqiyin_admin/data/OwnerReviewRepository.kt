@@ -6,6 +6,7 @@ import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import java.util.concurrent.TimeUnit
 
 /** نتيجة فحص أمني خاصة بالمالك. المجموعة وقواعدها لا تُقرأ من المشرفين. */
 data class SuspiciousLessonReview(
@@ -67,6 +68,9 @@ data class SuspiciousLessonReview(
 
 /** حصيلة الاعتماد الجماعي: كم مراجعة حُسمت، وكم منها لدرس لم يعد موجوداً. */
 data class BulkVerifyResult(val verified: Int, val missingLessons: Int)
+
+/** حصيلة بناء فهرس بحث المتون: كم متناً فُحص وكم أُدرج في الفهرس. */
+data class TranscriptIndexBackfillResult(val scanned: Int, val indexed: Int)
 
 object OwnerReviewRepository {
     private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
@@ -138,5 +142,42 @@ object OwnerReviewRepository {
                 "action" to action,
             ),
         ).await()
+    }
+
+    /**
+     * 🏗️ بناء فهرس بحث المتون لما اعتُمد قبل نشر الفهرس (backfill) — للمالك
+     * وحده، وتكفي مرّة واحدة: المسار العاديّ يفهرس كل اعتمادٍ لاحق بنفسه.
+     *
+     * الخادم يمشي دفعاتٍ ويعيد `nextStartAfter` إن لم يُتمّ قبل مهلته، فنعيد
+     * النداء تلقائياً بالمؤشّر حتى يقول `done` — زرّ واحد مهما كثرت المتون.
+     * والنداء آمن التكرار: المفهرس أصلاً يُتخطّى بلا كتابة.
+     * [onProgress] يتلقّى (فُحص، فُهرس) تراكمياً بعد كل دفعة.
+     */
+    suspend fun backfillTranscriptIndex(
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+    ): TranscriptIndexBackfillResult {
+        var scanned = 0
+        var indexed = 0
+        var cursor = ""
+        while (true) {
+            val payload = if (cursor.isEmpty()) emptyMap() else mapOf("startAfter" to cursor)
+            // مهلة عميل بطول مهلة الدالّة (540ث): المهلة الافتراضيّة 70ث كانت
+            // ستقطع انتظار دفعةٍ خادميّة طويلة والخادمُ ماضٍ فيها.
+            val result = functions.getHttpsCallable("backfillTranscriptIndex")
+                .withTimeout(540, TimeUnit.SECONDS)
+                .call(payload)
+                .await()
+            val data = result.getData() as? Map<*, *>
+                ?: error("استجابة الخادم غير مفهومة.")
+            scanned += (data["scanned"] as? Number)?.toInt() ?: 0
+            indexed += (data["indexed"] as? Number)?.toInt() ?: 0
+            onProgress(scanned, indexed)
+            if (data["done"] == true) break
+            val next = data["nextStartAfter"]?.toString().orEmpty()
+            // حارس من دورانٍ لا ينتهي إن أخلّ الخادم بعقده.
+            check(next.isNotEmpty() && next != cursor) { "الخادم لم يُرجع مؤشّر المتابعة." }
+            cursor = next
+        }
+        return TranscriptIndexBackfillResult(scanned, indexed)
     }
 }

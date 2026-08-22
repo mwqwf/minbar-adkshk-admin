@@ -14,11 +14,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- المكالمات الصوتيّة في المحادثات الخاصّة بين المشرفين (WebRTC):
          الخدمة الأماميّة تبقى حيّة أثناء المكالمة، وتوجيه الصوت يحتاج
-         MODIFY_AUDIO_SETTINGS، وسمّاعة البلوتوث تحتاج BLUETOOTH_CONNECT
-         على API 31+، وشاشة الرنين فوق القفل تحتاج USE_FULL_SCREEN_INTENT. -->
+         MODIFY_AUDIO_SETTINGS، وشاشة الرنين فوق القفل تحتاج
+         USE_FULL_SCREEN_INTENT. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -84,12 +83,16 @@
             tools:replace="android:theme,android:exported" />
 
         <!-- شاشة المكالمة: تظهر فوق شاشة القفل وتوقظ الشاشة عند الرنين،
-             ولا تُترك أثراً في «الأخيرة» بعد انتهاء المكالمة. -->
+             ولا تُترك أثراً في «الأخيرة» بعد انتهاء المكالمة.
+             ⚠️ رأسيّة إلزاماً: في الوضع الأفقي تُقصّ أزرار القبول/الرفض خارج
+             الشاشة، وتثبيتها رأسيّاً يمنع كذلك إعادة إنشاء الشاشة عند التدوير
+             (مصدر عطلَين سابقين في المكالمة الجارية). -->
         <activity
             android:name=".call.CallActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:launchMode="singleTask"
+            android:screenOrientation="portrait"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
             android:taskAffinity=""
@@ -114,6 +117,13 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- رسائل FCM التي يرسمها النظام (التطبيق في الخلفيّة) لا تمرّ بكود
+             الإشعار عندنا، فبلا هذا السطر تسقط على أيقونة المشغّل الملوّنة
+             وتظهر مربّعاً أبيض — نفس علّة setSmallIcon. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_notification" />
 
         <!-- فتح مرفقات الدردشة المنزَّلة بتطبيق النظام (نمط واتساب). -->
         <provider

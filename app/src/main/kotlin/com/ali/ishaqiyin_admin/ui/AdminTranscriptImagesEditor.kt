@@ -40,6 +40,8 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
@@ -58,6 +60,16 @@ import com.canhub.cropper.CropImageContractOptions
 import com.canhub.cropper.CropImageOptions
 import kotlinx.coroutines.launch
 
+/** الصور المنتظرة للقصّ تعبر إعادة إنشاء النشاط — وإلّا ضاعت بلا أثر. */
+private val pendingCropUrisSaver = listSaver<SnapshotStateList<Uri>, String>(
+    save = { list -> list.map { it.toString() } },
+    restore = { saved ->
+        mutableStateListOf<Uri>().apply {
+            saved.filter { it.isNotEmpty() }.forEach { add(Uri.parse(it)) }
+        }
+    },
+)
+
 /**
  * 🖼️ محرّر صور صفحات الكتاب — يُستعمل في كل نماذج «ساهم بالنص»:
  * إضافة (حتى 4)، قصّ كل صورة، ترتيب صريح بالأسهم (أيّها أولاً)، ودمج
@@ -71,11 +83,15 @@ fun AdminTranscriptImagesEditor(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var cropIndex by remember { mutableIntStateOf(-1) }
+    // محفوظان: شاشة القصّ تُعيد إنشاء النشاط، وبضياعهما كانت نتيجة القصّ
+    // تُضاف صورةً جديدة إلى جانب أصلها بدل أن تستبدله.
+    var cropIndex by rememberSaveable { mutableIntStateOf(-1) }
     var merging by remember { mutableStateOf(false) }
     // «القصّ أثناء المعاينة»: كل صورة تُختار تمرّ بشاشة القصّ **قبل** إدراجها
     // — لا اختيار ثم قصّ لاحق. الإلغاء داخل شاشة القصّ يعني «أدرِجها كما هي».
-    val pendingNew = remember { mutableStateListOf<Uri>() }
+    val pendingNew = rememberSaveable(saver = pendingCropUrisSaver) {
+        mutableStateListOf<Uri>()
+    }
     var cropActive by remember { mutableStateOf(false) }
 
     fun cropOptions(uri: Uri) = CropImageContractOptions(
@@ -102,9 +118,14 @@ fun AdminTranscriptImagesEditor(
             return@rememberLauncherForActivityResult
         }
         // قصّ صورة جديدة قبل الإدراج: الناتج المقصوص أو الأصل عند الإلغاء.
+        // نتيجة بلا صورة منتظِرة نتيجةٌ لا صاحب لها — تُهمَل بدل إدراجها.
         val source = pendingNew.removeFirstOrNull()
+        if (source == null) {
+            cropActive = false
+            return@rememberLauncherForActivityResult
+        }
         val final = if (result.isSuccessful) (result.uriContent ?: source) else source
-        if (final != null && images.size < TranscriptsRepository.MAX_IMAGES) {
+        if (images.size < TranscriptsRepository.MAX_IMAGES) {
             images.add(final)
         }
         cropActive = false

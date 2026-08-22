@@ -32,7 +32,7 @@ fun parseDateMs(v: Any?): Long = when (v) {
     else -> 0L
 }
 
-private val isoFormats = listOf(
+private val isoPatterns = listOf(
     "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
     "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
     "yyyy-MM-dd'T'HH:mm:ssXXX",
@@ -41,17 +41,28 @@ private val isoFormats = listOf(
     "yyyy-MM-dd",
 )
 
+/**
+ * مُنسِّقات جاهزة بدل إنشاء واحد **لكل نمط في كل نداء**: تحويل مئات الوثائق
+ * كان يبني آلاف الكائنات (وتحليل النمط معها) في كل جلب.
+ * `SimpleDateFormat` غير آمن للخيوط، فلكل خيط نسخته عبر [ThreadLocal].
+ */
+private val isoFormats = object : ThreadLocal<List<SimpleDateFormat>>() {
+    // `ThreadLocal.withInitial` تلزمها API 26 وminSdk هنا 23 — والتوريث
+    // يعطي المعنى نفسه بلا شرط إصدار.
+    override fun initialValue(): List<SimpleDateFormat> = isoPatterns.map { pattern ->
+        SimpleDateFormat(pattern, Locale.US).apply {
+            if (pattern.endsWith("'Z'")) timeZone = java.util.TimeZone.getTimeZone("UTC")
+        }
+    }
+}
+
 /** تحليل ISO-8601 المتساهل — نفس تساهل `DateTime.tryParse` في Dart. */
 fun parseIsoMs(value: String): Long {
     val s = value.trim()
     if (s.isEmpty()) return 0L
     s.toLongOrNull()?.let { return it }
-    for (pattern in isoFormats) {
-        runCatching {
-            val fmt = SimpleDateFormat(pattern, Locale.US)
-            if (pattern.endsWith("'Z'")) fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
-            return fmt.parse(s)!!.time
-        }
+    for (fmt in isoFormats.get()) {
+        runCatching { return fmt.parse(s)!!.time }
     }
     return 0L
 }
@@ -119,7 +130,7 @@ data class Lesson(
      */
     val featuredUntilMs: Long? = null,
     val addedBy: String = "",
-    val publishAtMs: Long? = null,
+    // ⛔ لا حقل `publishAt` هنا: «النشر المجدول» أُزيل من المنظومة كلّها.
 ) {
     companion object {
         private fun extractSubcategoryId(d: Map<String, Any?>): String {
@@ -153,7 +164,6 @@ data class Lesson(
                 featuredUntilMs = rawFeaturedUntil?.let { parseDateMs(it) }
                     ?.takeIf { it > 0L },
                 addedBy = str(d["addedBy"]),
-                publishAtMs = d["publishAt"]?.let { parseDateMs(it) },
             )
         }
     }

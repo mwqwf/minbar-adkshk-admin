@@ -1,4 +1,4 @@
-﻿package com.ali.ishaqiyin_admin.util
+package com.ali.ishaqiyin_admin.util
 
 import java.io.File
 import java.io.FileOutputStream

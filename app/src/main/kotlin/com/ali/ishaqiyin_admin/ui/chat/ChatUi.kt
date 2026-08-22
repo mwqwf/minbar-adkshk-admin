@@ -7,7 +7,6 @@ import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,7 +30,6 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -75,7 +73,11 @@ import com.ali.ishaqiyin_admin.util.openExternalUri
  * وتبدّلها يُعيد الرسم تلقائياً.
  */
 object ChatColors {
-    /** يضبطها [WhatsAppChatBackground] وحدها من `isSystemInDarkTheme()`. */
+    /**
+     * تضبطها `MinbarAdminTheme` وحدها من قيمة `darkTheme` نفسها. كانت تُضبط في
+     * [WhatsAppChatBackground] فقط، فأيّ شاشة تقرأ هذه الألوان بلا المرور بخلفيّة
+     * الدردشة (المحادثات، معلومات المجموعة) كانت تُرسم فاتحة داخل الوضع الداكن.
+     */
     var dark by mutableStateOf(false)
         internal set
 
@@ -194,10 +196,8 @@ fun WhatsAppChatBackground(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    // مصدر السمة الوحيد للدردشة كلّها: يُكتب بأثر جانبيّ لا أثناء التأليف،
-    // فلا يُبطل الإطار الجاري. كلّ شاشات الدردشة تمرّ من هنا.
-    val night = isSystemInDarkTheme()
-    SideEffect { ChatColors.dark = night }
+    // سمة الدردشة تُضبط في MinbarAdminTheme (سلف كلّ الشاشات) لا هنا: كانت
+    // الشاشات التي لا تمرّ بهذه الخلفيّة تبقى بألوان الوضع الفاتح.
     Box(modifier.background(ChatColors.bg)) {
         val box = this
         Canvas(Modifier.fillMaxSize()) {

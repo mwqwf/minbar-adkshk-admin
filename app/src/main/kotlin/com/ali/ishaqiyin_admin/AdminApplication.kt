@@ -1,5 +1,6 @@
 package com.ali.ishaqiyin_admin
 
+import android.app.Activity
 import android.app.Application
 import android.app.Notification
 import android.app.NotificationChannel
@@ -7,11 +8,14 @@ import android.app.NotificationManager
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
+import android.os.Bundle
+import android.util.Log
 import com.ali.ishaqiyin_admin.core.FirebaseConfig
 import com.ali.ishaqiyin_admin.data.AdminChannels
 import com.ali.ishaqiyin_admin.data.AppPrefs
 import com.ali.ishaqiyin_admin.data.LessonUploadWorker
 import com.ali.ishaqiyin_admin.data.UploadQueue
+import com.ali.ishaqiyin_admin.data.UploadWorkWatcher
 import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
@@ -26,13 +30,62 @@ class AdminApplication : Application() {
         super.onCreate()
         AppPrefs.init(this)
         NetworkMonitor.start(this)
+        // Firebase أوّلاً: لا google-services.json هنا، فالتطبيق الافتراضي لا
+        // يُنشأ إلا في initializeFirebase — وأي إيقاظ للعامل قبله يصل إلى
+        // Firestore/Storage غير مهيّأين وبإعدادات الشبكة الضعيفة غير مضبوطة.
+        initializeFirebase()
+        tuneForWeakNetworks()
+        createNotificationChannels()
         // طابور رفع الدروس: يُستأنف وحده إن بقيت فيه دروس من جلسة سابقة
         // (انقطاع اتصال أو إغلاق التطبيق أثناء الرفع).
         UploadQueue.init(this)
+        // مراقبة حالة WorkManager: هي مصدر نصوص الواجهة الصادقة، وبها يُعرف
+        // هل هناك عمل يجري فعلاً قبل أيّ إيقاظ.
+        UploadWorkWatcher.start(this)
+        // ⛔ `kick` لا `kickNow` هنا: حين يقرّر WorkManager تشغيل عامل الرفع
+        // والعمليّة ميتة (بعد إعادة الإقلاع أو الإيقاف القسريّ) يُنشئ النظام
+        // الـApplication **أوّلاً** ثمّ يشغّل العامل — فـ`kickNow` بـREPLACE
+        // كان يُلغي هنا العملَ الذي أيقظ العمليّة أصلاً. الغرض في `onCreate`
+        // «تأكّد أنّ هناك عملاً مجدولاً» لا «اقطع ما يجري».
         if (!UploadQueue.isEmpty()) LessonUploadWorker.kick(this)
-        createNotificationChannels()
-        initializeFirebase()
-        tuneForWeakNetworks()
+        watchForegroundReturns()
+    }
+
+    /**
+     * ⚡ إيقاظ الطابور عند كلّ عودة إلى المقدّمة لا عند البدء البارد وحده.
+     *
+     * ⚠️ كان `onCreate` هو المُوقظ الوحيد، فالعودة الدافئة من «التطبيقات
+     * الأخيرة» لا توقظ شيئاً — وعلى سامسونج تحديداً تضع «العناية بالجهاز»
+     * التطبيق في «النائمة» فلا يشغّل JobScheduler مهامّه حتى يُفتح يدوياً.
+     *
+     * ⛔ الشرط `!UploadWorkWatcher.isRunning()` ليس زينة: `kickNow` يستعمل
+     * REPLACE، فإيقاظه فوق رفع جارٍ يقطعه ويعيد بدءه بلا داعٍ.
+     */
+    private fun watchForegroundReturns() {
+        registerActivityLifecycleCallbacks(
+            object : ActivityLifecycleCallbacks {
+                private var visible = 0
+
+                override fun onActivityStarted(activity: Activity) {
+                    val enteringForeground = visible == 0
+                    visible += 1
+                    if (!enteringForeground) return
+                    if (UploadQueue.isEmpty() || UploadQueue.isPaused()) return
+                    if (UploadWorkWatcher.isRunning()) return
+                    LessonUploadWorker.kickNow(this@AdminApplication)
+                }
+
+                override fun onActivityStopped(activity: Activity) {
+                    if (visible > 0) visible -= 1
+                }
+
+                override fun onActivityCreated(activity: Activity, state: Bundle?) = Unit
+                override fun onActivityResumed(activity: Activity) = Unit
+                override fun onActivityPaused(activity: Activity) = Unit
+                override fun onActivitySaveInstanceState(activity: Activity, out: Bundle) = Unit
+                override fun onActivityDestroyed(activity: Activity) = Unit
+            },
+        )
     }
 
     /**
@@ -53,13 +106,23 @@ class AdminApplication : Application() {
                             .build(),
                     )
                     .build()
+        }.onFailure {
+            // فشل ضبط الكاش كان يضيع صامتاً فيبدو البطء لاحقاً بلا سبب ظاهر.
+            Log.w("AdminApplication", "تعذّر ضبط كاش Firestore", it)
         }
         runCatching {
             FirebaseStorage.getInstance().apply {
                 maxDownloadRetryTimeMillis = 10 * 60 * 1000L
-                maxUploadRetryTimeMillis = 10 * 60 * 1000L
+                // ⚠️ كانت 10 دقائق — وهي **القيمة الافتراضيّة نفسها** في
+                // Firebase Storage، فالسطر كان بلا أثر رغم أنّ التعليق فوقه
+                // يَعِد بتوسيع النوافذ. ونافذة العشر دقائق هي بالضبط ما كان
+                // يحوّل انقطاعاً عابراً إلى ERROR_RETRY_LIMIT_EXCEEDED فيخرج
+                // الأمر من Firebase إلى WorkManager ويبدأ تأخير طويل.
+                maxUploadRetryTimeMillis = 30 * 60 * 1000L
                 maxOperationRetryTimeMillis = 3 * 60 * 1000L
             }
+        }.onFailure {
+            Log.w("AdminApplication", "تعذّر ضبط نوافذ إعادة محاولة التخزين", it)
         }
     }
 
@@ -122,6 +185,20 @@ class AdminApplication : Application() {
                     enableVibration(true)
                     vibrationPattern = longArrayOf(0, 700, 700, 700, 700)
                     setBypassDnd(true)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                },
+                // 📞 المكالمة **الجارية**: إشعار حالة لا تنبيه — أهميّة منخفضة
+                // بلا صوت ولا اهتزاز ولا شارة. لو بقي على قناة الرنين لرنّ
+                // مجدّداً عند بدء المكالمة وتخطّى «عدم الإزعاج» معها.
+                NotificationChannel(
+                    AdminChannels.CALL_ONGOING,
+                    "مكالمة جارية",
+                    NotificationManager.IMPORTANCE_LOW,
+                ).apply {
+                    description = "إشعار المكالمة القائمة"
+                    setSound(null, null)
+                    enableVibration(false)
+                    setShowBadge(false)
                     lockscreenVisibility = Notification.VISIBILITY_PUBLIC
                 },
             ),

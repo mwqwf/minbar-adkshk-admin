@@ -8,9 +8,12 @@ import com.google.firebase.firestore.Source
 import com.google.firebase.functions.FirebaseFunctions
 import com.google.firebase.storage.FirebaseStorage
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 
 /** اقتراح «نص مشروح» من مستمع (نص المتن/صور صفحاته) بانتظار قرار المشرفين. */
 data class TranscriptSubmission(
@@ -62,6 +65,8 @@ data class BulkTranscriptResult(
     val done: Int,
     val failed: Int,
     val skippedDuplicates: Int = 0,
+    /** دروس اعتُمد لها نصّ فعلاً — وحدها تستحق تحذير «سيُستبدل». */
+    val approvedLessonIds: Set<String> = emptySet(),
 )
 
 /** صورة معتمدة ضمن النص المشروح (مسار التخزين + رابط العرض العام). */
@@ -144,6 +149,8 @@ object TranscriptsRepository {
         paths.forEach { urlCache.remove(it) }
     }
 
+    // Firestore يسلّم اللقطة على الخيط الرئيسي؛ التحليل والفرز يجريان هنا
+    // بعيداً عنه كي لا يتقطّع التمرير عند كل تحديث للمجموعة.
     fun watchAll(): Flow<List<TranscriptSubmission>> =
         db.collection(COLLECTION).querySnapshots().map { snap ->
             snap.documents
@@ -152,11 +159,12 @@ object TranscriptsRepository {
                     compareByDescending<TranscriptSubmission> { it.isPending }
                         .thenByDescending { it.createdAtMs },
                 )
-        }
+        }.flowOn(Dispatchers.Default)
 
     fun watchPendingCount(): Flow<Int> =
         db.collection(COLLECTION).whereEqualTo("status", "pending")
             .querySnapshots().map { it.size() }
+            .flowOn(Dispatchers.Default)
 
     /**
      * النص المعتمد الحالي لدرس — للمقارنة أثناء المراجعة وللمحرر المباشر.
@@ -275,17 +283,21 @@ object TranscriptsRepository {
         var failed = 0
         var skipped = 0
         val handledLessons = mutableSetOf<String>()
+        val approved = mutableSetOf<String>()
         targets.forEachIndexed { index, s ->
             if (!handledLessons.add(s.lessonId)) {
                 skipped++
             } else {
                 runCatching { approve(s) }
-                    .onSuccess { done++ }
+                    .onSuccess {
+                        done++
+                        approved += s.lessonId
+                    }
                     .onFailure { failed++ }
             }
             onProgress(index + 1, targets.size)
         }
-        return BulkTranscriptResult(done, failed, skipped)
+        return BulkTranscriptResult(done, failed, skipped, approved)
     }
 
     /** رفض جماعي بسبب واحد يصل كل المساهمين المعنيّين. */
@@ -309,10 +321,22 @@ object TranscriptsRepository {
     /**
      * رفع صورة صفحة كتاب من الجهاز إلى مجلد النص المعتمد للدرس (يرجع
      * مسار التخزين). تُستدعى قبل [upsert] الذي يتحقق ويولّد الروابط.
+     * القراءة والرفع خارج الخيط الرئيسي: صورة صفحة كاملة كانت تُقرأ في
+     * الذاكرة والواجهة مجمَّدة، فيصل التجميد حدّ ANR على الصور الكبيرة.
      */
-    suspend fun uploadTranscriptImage(context: Context, lessonId: String, uri: Uri): String {
+    suspend fun uploadTranscriptImage(
+        context: Context,
+        lessonId: String,
+        uri: Uri,
+    ): String = withContext(Dispatchers.IO) {
         val name = "${System.currentTimeMillis()}_page.jpg"
         val path = "$TRANSCRIPTS/$lessonId/$name"
+        // الحجم من واصف الملف قبل القراءة: رفض الصورة الضخمة برسالتها بدل
+        // انهيار الذاكرة أثناء تحميلها كاملةً لمجرّد قياسها.
+        val declared = runCatching {
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
+        }.getOrNull() ?: -1L
+        require(declared < 0 || declared <= 10L * 1024 * 1024) { "حجم الصورة يتجاوز 10MB." }
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw IllegalStateException("تعذّرت قراءة الصورة.")
         require(bytes.size <= 10 * 1024 * 1024) { "حجم الصورة يتجاوز 10MB." }
@@ -320,7 +344,7 @@ object TranscriptsRepository {
             .setContentType(context.contentResolver.getType(uri) ?: "image/jpeg")
             .build()
         storage.reference.child(path).putBytes(bytes, metadata).await()
-        return path
+        path
     }
 
     /** حفظ النص المشروح مباشرة (إضافة أو تعديلاً) — يكتب عبر الخادم. */

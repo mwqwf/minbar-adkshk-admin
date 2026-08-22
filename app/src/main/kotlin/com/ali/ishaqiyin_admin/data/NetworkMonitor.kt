@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -23,9 +24,13 @@ object NetworkMonitor {
     private var started = false
     private val activeNetworks = mutableSetOf<Network>()
 
+    /** سياق التطبيق — يلزم لإيقاظ عامل الرفع فور عودة الشبكة. */
+    private var appContext: Context? = null
+
     fun start(context: Context) {
         if (started) return
         started = true
+        appContext = context.applicationContext
         val manager = context.applicationContext
             .getSystemService(ConnectivityManager::class.java) ?: return
         val request = NetworkRequest.Builder()
@@ -44,7 +49,9 @@ object NetworkMonitor {
                 object : ConnectivityManager.NetworkCallback() {
                     override fun onAvailable(network: Network) {
                         synchronized(activeNetworks) { activeNetworks.add(network) }
+                        val wasOffline = !_online.value
                         _online.value = true
+                        if (wasOffline) wakeUploads()
                     }
 
                     override fun onLost(network: Network) {
@@ -57,5 +64,25 @@ object NetworkMonitor {
                 },
             )
         }
+    }
+
+    /**
+     * ⚡ عودة الشبكة توقظ الرفع فوراً.
+     *
+     * ⚠️ كان `onAvailable` يضبط الراية في الذاكرة **ولا شيء غيرها**: لا يمسّ
+     * الطابور ولا يوقظ العامل. فيبقى العامل نائماً في backoff (كان يبلغ سقف
+     * WorkManager: خمس ساعات) بينما تعرض الواجهة «بانتظار الإنترنت — سيُستأنف
+     * تلقائياً» فوق إشارة واي‑فاي ممتلئة. ⛔ لا يجوز أن يعود وعدٌ بالاستئناف
+     * التلقائيّ بلا هذا الإيقاظ: `kickNow` بـREPLACE هو وحده ما يصفّر
+     * `runAttemptCount` ويكسر أيّ تأخير عالق.
+     */
+    private fun wakeUploads() {
+        val context = appContext ?: return
+        if (UploadQueue.isEmpty() || UploadQueue.isPaused()) return
+        // الوسم «NetworkMonitor» لا «LessonUpload»: به يُفصل مصدر الإيقاظ عن
+        // سطور العامل في `adb logcat -s NetworkMonitor:V`.
+        Log.i("NetworkMonitor", "onAvailable ⇒ kickNow(REPLACE)")
+        UploadQueue.clearNetworkWait()
+        runCatching { LessonUploadWorker.kickNow(context) }
     }
 }

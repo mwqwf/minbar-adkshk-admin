@@ -18,7 +18,6 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
@@ -42,7 +41,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,12 +63,10 @@ private sealed interface PendingAction {
     data class DeleteCategory(val item: Category) : PendingAction
     data class DeleteSubcategory(val item: Subcategory) : PendingAction
     data class DeleteLesson(val item: Lesson) : PendingAction
-    data class PublishNow(val item: Lesson) : PendingAction
 }
 
 @Composable
 fun ManageAllScreen(onBack: () -> Unit) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
     // اختيار مدّة التمييز — التمييز لم يعد دائماً بالضرورة.
@@ -86,6 +82,9 @@ fun ManageAllScreen(onBack: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var query by remember { mutableStateOf("") }
     var reload by remember { mutableIntStateOf(0) }
+    // مفتاح تحديث منفصل للدروس: تعديل درس لا يمسّ شجرة الأقسام، فإعادة تنزيل
+    // المجموعتين معه قراءات مدفوعة بلا فائدة.
+    var reloadLessons by remember { mutableIntStateOf(0) }
     var pending by remember { mutableStateOf<PendingAction?>(null) }
 
     LaunchedEffect(reload) {
@@ -94,7 +93,15 @@ fun ManageAllScreen(onBack: () -> Unit) {
             categories = AdminRepository.fetchCategories()
             subcategories = AdminRepository.fetchSubcategories()
             lessons = AdminRepository.fetchLessons()
-        }
+        }.onFailure { snack("تعذّر تحميل المحتوى: ${it.arabicReason()}") }
+        loading = false
+    }
+
+    LaunchedEffect(reloadLessons) {
+        // الصفر هو التركيب الأوّل — الجلب الكامل أعلاه كفيل به.
+        if (reloadLessons == 0) return@LaunchedEffect
+        runCatching { lessons = AdminRepository.fetchLessons() }
+            .onFailure { snack("تعذّر تحديث الدروس: ${it.arabicReason()}") }
         loading = false
     }
 
@@ -107,8 +114,13 @@ fun ManageAllScreen(onBack: () -> Unit) {
         }.sortedBy { it.second }.map { it.first }
     }
 
-    fun subName(id: String): String = subcategories.firstOrNull { it.id == id }?.name.orEmpty()
-    fun catName(id: String): String = categories.firstOrNull { it.id == id }?.name.orEmpty()
+    // خريطتان مثبّتتان: مرشِّح البحث ينادي الاسمين لكلّ درس ولكلّ رمز، والبحث
+    // الخطّي فيهما كان يتكرّر مع كل ضغطة مفتاح.
+    val catNames = remember(categories) { categories.associate { it.id to it.name } }
+    val subNames = remember(subcategories) { subcategories.associate { it.id to it.name } }
+
+    fun subName(id: String): String = subNames[id].orEmpty()
+    fun catName(id: String): String = catNames[id].orEmpty()
 
     // فلتر الأقسام: أغلب عناوين الدروس أرقام متشابهة، والقسم هو ما يميّزها —
     // اختر القسم (الرئيسي/الفرعي) لتحصر البحث فيه، أو اتركه لكل الأقسام.
@@ -209,7 +221,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                 if (title.isNotEmpty() && title != action.item.title) {
                     scope.launch {
                         runCatching { AdminRepository.updateLessonTitle(action.item.id, title) }
-                            .onSuccess { snack("تم التعديل."); reload++ }
+                            .onSuccess { snack("تم التعديل."); reloadLessons++ }
                             .onFailure { snack("تعذّر التعديل: ${it.arabicReason()}") }
                     }
                 }
@@ -277,30 +289,12 @@ fun ManageAllScreen(onBack: () -> Unit) {
             onDismiss = { pending = null },
             onConfirm = {
                 pending = null
+                loading = true
                 scope.launch {
                     runCatching { AdminRepository.deleteLesson(action.item) }
                         .onSuccess { snack("تم حذف الدرس والملف الصوتي.") }
                         .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
-                    reload++
-                }
-            },
-        )
-
-        is PendingAction.PublishNow -> ConfirmDialog(
-            title = "النشر مجدول",
-            body = "هذا الدرس مجدول للظهور في:\n" +
-                (action.item.publishAtMs?.let { java.util.Date(it).toString() } ?: ""),
-            confirmLabel = "نشر الآن",
-            onDismiss = { pending = null },
-            onConfirm = {
-                pending = null
-                scope.launch {
-                    // النشر عبر الخادم يرسل إشعار «درس جديد» أيضاً — حذف الجدولة
-                    // وحده كان ينشر بصمت بلا إشعار.
-                    runCatching { AdminRepository.publishScheduledNow(action.item.id) }
-                        .onSuccess { snack("نُشر الدرس فوراً وأُرسل إشعار «درس جديد».") }
-                        .onFailure { snack("تعذّر النشر الفوري: ${it.arabicReason()}") }
-                    reload++
+                    reloadLessons++
                 }
             },
         )
@@ -337,7 +331,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                         AdminRepository.setLessonFeatured(lesson.id, true, duration.untilMs())
                     }.onSuccess {
                         snack("مُيّز في مختارات المنبر — ${duration.label}")
-                        reload++
+                        reloadLessons++
                     }.onFailure { snack("تعذّر التمييز: ${it.arabicReason()}") }
                 }
             },
@@ -512,38 +506,20 @@ fun ManageAllScreen(onBack: () -> Unit) {
                             subcategoryName = subName(l.subcategoryId),
                             onToggleFeatured = {
                                 if (l.featured) {
+                                    loading = true
                                     scope.launch {
                                         runCatching {
                                             AdminRepository.setLessonFeatured(l.id, false)
                                         }.onSuccess {
                                             snack("أُزيل من مختارات المنبر.")
-                                            reload++
+                                            reloadLessons++
                                         }.onFailure {
                                             snack("تعذّر التعديل: ${it.arabicReason()}")
+                                            loading = false
                                         }
                                     }
                                 } else {
                                     featureFor = l
-                                }
-                            },
-                            onSchedule = {
-                                val now = System.currentTimeMillis()
-                                val scheduled = (l.publishAtMs ?: 0) > now
-                                if (scheduled) {
-                                    pending = PendingAction.PublishNow(l)
-                                } else {
-                                    pickDateTime(context, now + 3600_000) { whenMs ->
-                                        scope.launch {
-                                            runCatching {
-                                                AdminRepository.setLessonPublishAt(l.id, whenMs)
-                                            }
-                                                .onSuccess { snack("جُدول النشر.") }
-                                                .onFailure {
-                                                    snack("تعذّرت الجدولة: ${it.arabicReason()}")
-                                                }
-                                            reload++
-                                        }
-                                    }
                                 }
                             },
                             onEdit = { pending = PendingAction.EditLesson(l) },
@@ -587,19 +563,17 @@ private fun SimpleRow(title: String, onEdit: () -> Unit, onDelete: () -> Unit) {
     }
 }
 
+// ⛔ لا «نشر مجدول» هنا: الجدولة أُزيلت من اللوحة والتطبيق والدوال السحابيّة
+// بقرار صاحب المشروع — لا شارة ولا زرّ «نشر الآن» ولا حقل `publishAt`.
 @Composable
 private fun LessonRow(
     lesson: Lesson,
     subcategoryName: String,
     onToggleFeatured: () -> Unit,
-    onSchedule: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onTranscript: () -> Unit,
 ) {
-    val scheduled = (lesson.publishAtMs ?: 0) > System.currentTimeMillis()
-    // برتقالي الجدولة: نظيره الفاتح في الوضع الداكن.
-    val scheduleColor = adminOrange
     Card(
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -620,24 +594,19 @@ private fun LessonRow(
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (lesson.views > 0) {
-                    Text(
-                        "${lesson.views} استماع",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
+                // الجزء المعلوماتي في صفّ ذي وزن: مع أربعة أزرار (48dp لكلٍّ) لم
+                // يكن يبقى للنصوص عرض، فكان آخر الأبناء يُقصّ خارج البطاقة.
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    if (lesson.views > 0) {
+                        Text(
+                            "${lesson.views} استماع",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                if (scheduled) {
-                    Spacer(Modifier.size(8.dp))
-                    Icon(
-                        Icons.Filled.Schedule,
-                        contentDescription = null,
-                        tint = scheduleColor,
-                        modifier = Modifier.size(14.dp),
-                    )
-                    Text(" مجدول", fontSize = 12.sp, color = scheduleColor)
-                }
-                Spacer(Modifier.weight(1f))
                 IconButton(onClick = onToggleFeatured) {
                     Icon(
                         if (lesson.featured) Icons.Filled.Star else Icons.Filled.StarBorder,
@@ -647,14 +616,6 @@ private fun LessonRow(
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
-                    )
-                }
-                // الجدولة أُزيلت؛ يبقى «نشر الآن» لأيّ درس بقي مجدولاً سابقاً.
-                if (scheduled) IconButton(onClick = onSchedule) {
-                    Icon(
-                        Icons.Filled.Schedule,
-                        contentDescription = "نشر الآن",
-                        tint = scheduleColor,
                     )
                 }
                 IconButton(onClick = onTranscript) {

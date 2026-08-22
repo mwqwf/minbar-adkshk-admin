@@ -4,9 +4,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -57,6 +60,10 @@ fun UpdateConfigScreen(onBack: () -> Unit) {
 
     var loading by remember { mutableStateOf(true) }
     var saving by remember { mutableStateOf(false) }
+    // فشل التحميل يفرّغ الحقول فتبدو الوثيقة خاليةً وهي ليست كذلك، والحفظ
+    // عندها يكتب أصفاراً فوق أرقام صحيحة — فيُمنع الحفظ حتى ينجح تحميل واحد.
+    var loadError by remember { mutableStateOf(false) }
+    var reload by remember { mutableStateOf(0) }
     var latest by remember { mutableStateOf("") }
     var minSupported by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
@@ -66,9 +73,11 @@ fun UpdateConfigScreen(onBack: () -> Unit) {
     var announce by remember { mutableStateOf(true) }
 
     // تبديل الهدف يعيد التحميل: لكلّ تطبيق وثيقته وأرقامه.
-    LaunchedEffect(target) {
+    LaunchedEffect(target, reload) {
         loading = true
-        val current = runCatching { UpdateConfigRepository.load(target) }.getOrNull()
+        val result = runCatching { UpdateConfigRepository.load(target) }
+        loadError = result.isFailure
+        val current = result.getOrNull()
         latest = current?.latestVersionCode?.takeIf { it > 0 }?.toString().orEmpty()
         minSupported = current?.minSupportedVersionCode?.takeIf { it > 0 }?.toString().orEmpty()
         message = current?.message.orEmpty()
@@ -96,8 +105,36 @@ fun UpdateConfigScreen(onBack: () -> Unit) {
             }
 
             if (loading) {
-                Box(Modifier.fillMaxSize()) { FullScreenLoader() }
+                // ارتفاع محدَّد: داخل حاوية متمرّرة رأسياً يكون الارتفاع الأقصى
+                // غير محدود فينهار fillMaxSize ويلتصق الدوّار بالأعلى.
+                Box(
+                    Modifier.fillMaxWidth().height(220.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                }
                 return@Column
+            }
+
+            if (loadError) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                    ),
+                ) {
+                    Column(
+                        Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            "تعذّر جلب الإعداد الحالي — تحقّق من الاتصال. " +
+                                "الحفظ معطَّل حتى لا تُكتب أصفار فوق الأرقام المضبوطة.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        Button(onClick = { reload++ }) { Text("إعادة المحاولة") }
+                    }
+                }
             }
 
             Card(
@@ -210,8 +247,11 @@ fun UpdateConfigScreen(onBack: () -> Unit) {
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
+                            // ⚠️ دفعة الإشعار تحترم كتم المجموعة (respectChatMute)،
+                            // فوعدُ «كلّ المشرفين» كان أوسع من السلوك الفعلي.
                             "تُرسَل رسالة «صدر إصدار جديد من اللوحة» مع رابط " +
-                                "التحديث، فيصل إشعارها لكلّ المشرفين.",
+                                "التحديث، ويصل إشعارها لكلّ من لم يكتم مجموعة " +
+                                "الإدارة (وتبقى الرسالة في المجموعة للجميع).",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -221,7 +261,7 @@ fun UpdateConfigScreen(onBack: () -> Unit) {
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
-                    enabled = !saving && latest.isNotBlank(),
+                    enabled = !saving && !loadError && latest.isNotBlank(),
                     onClick = {
                         val latestCode = latest.toIntOrNull() ?: 0
                         val minCode = minSupported.toIntOrNull() ?: 0
@@ -278,10 +318,8 @@ fun UpdateConfigScreen(onBack: () -> Unit) {
                     },
                 ) {
                     if (saving) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.padding(end = 8.dp),
-                            strokeWidth = 2.dp,
-                        )
+                        Spin(size = 18)
+                        Spacer(Modifier.size(8.dp))
                     }
                     Text("حفظ")
                 }

@@ -133,6 +133,7 @@ class CallActivity : ComponentActivity() {
                         calleePhoto = peerPhoto,
                     )
                 }
+                consumeIntent()
             }
 
             // شاشة الرنين (نيّة كامل الشاشة)، أو قبول مباشر من زرّ الإشعار.
@@ -157,12 +158,23 @@ class CallActivity : ComponentActivity() {
                         AdminCallNotifications.cancelIncoming(this)
                         CallEngine.acceptIncoming(this, callId)
                     }
+                    consumeIntent()
                 }
             }
 
             // MODE_ONGOING: عرض الحالة القائمة فقط.
             else -> if (!CallEngine.state.value.busy) finish()
         }
+    }
+
+    /**
+     * ⚠️ نيّة «ابدأ/ردّ» تُستهلك مرّة واحدة: النشاط بلا `configChanges`، فأيّ
+     * تدوير أو تغيير إعداد كان يُعيد `onCreate` بالنيّة الأصليّة فيُعاد
+     * تنفيذها على مكالمة قائمة. بعدها تكفي «مكالمة جارية» لعرض الحالة.
+     */
+    private fun consumeIntent() {
+        // ما دام حوار الميكروفون معروضاً فالمكالمة لم تبدأ: تبقى النيّة الأصليّة.
+        if (!awaitingPermission) setIntent(ongoingIntent(this))
     }
 
     /** إذن الميكروفون شرط لبدء أو قبول أيّ مكالمة (نفس نمط التسجيل). */

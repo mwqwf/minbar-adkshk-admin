@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    أيقونة الإشعارات الصغيرة: منبر بدرجاته الصاعدة إلى اليمين (اتجاه القراءة
+    العربي)، مصمتة بيضاء على خلفيّة شفّافة.
+    ⚠️ لماذا ليست @mipmap/ic_launcher: أندرويد ٥+ يرسم الأيقونة الصغيرة بقناع
+    ألفا فقط ويتجاهل ألوانها، فالأيقونة الملوّنة المصمتة كانت تظهر مربّعاً
+    أبيض في كلّ إشعار.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M21,20.5 L21,17 L16.5,17 L16.5,13.5 L12,13.5 L12,10 L7.5,10 L7.5,4.5 L3,4.5 L3,20.5 Z" />
+</vector>

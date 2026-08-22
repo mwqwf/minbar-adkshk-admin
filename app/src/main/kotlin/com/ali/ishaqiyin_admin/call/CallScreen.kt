@@ -107,12 +107,7 @@ fun CallScreen(
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(10.dp))
-            Text(
-                statusLine(state),
-                color = Color.White.copy(alpha = 0.82f),
-                fontSize = 15.sp,
-                textAlign = TextAlign.Center,
-            )
+            CallStatusText(state)
             Spacer(Modifier.height(14.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -148,31 +143,43 @@ fun CallScreen(
 
 /**
  * سطر الحالة: مدّة متزايدة أثناء الاتّصال، وإلّا ملاحظة المرحلة.
- * ⚠️ بلا خروج مبكّر قبل `remember`: عدد خانات التركيب يجب أن يبقى ثابتاً.
+ *
+ * ⚠️ مركّب يرسم نصّه بنفسه لا دالّة تُرجع `String`: الدالّة لا يولّد لها
+ * المصرّف نطاق إعادة تشغيل، فكانت نبضة العدّاد تُبطل جسم [CallScreen] كلّه.
+ * ⚠️ ولا خروج مبكّر قبل `remember`: عدد خانات التركيب يجب أن يبقى ثابتاً.
  */
 @Composable
-private fun statusLine(state: CallUiState): String {
+private fun CallStatusText(state: CallUiState) {
     val counting = state.phase == CallPhase.Active && state.connectedAtMs > 0L
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(counting, state.connectedAtMs) {
         while (counting) {
             now = System.currentTimeMillis()
-            delay(500)
+            // النبض على حدّ الثانية التالية: دقّة النصّ ثانية، فنصف الثانية
+            // كانت ضِعف العمل بلا مقابل.
+            delay(1000L - (now - state.connectedAtMs) % 1000L)
         }
     }
-    if (counting) {
+    val line = if (counting) {
         val elapsed = ((now - state.connectedAtMs) / 1000L).coerceAtLeast(0L).toInt()
-        return formatCallDuration(elapsed)
-    }
-    return state.note.ifEmpty {
-        when (state.phase) {
-            CallPhase.Dialing -> "جارٍ الاتصال…"
-            CallPhase.Ringing -> "مكالمة صوتيّة واردة"
-            CallPhase.Connecting -> "جارٍ التوصيل…"
-            CallPhase.Ended -> "انتهت المكالمة"
-            else -> ""
+        formatCallDuration(elapsed)
+    } else {
+        state.note.ifEmpty {
+            when (state.phase) {
+                CallPhase.Dialing -> "جارٍ الاتصال…"
+                CallPhase.Ringing -> "مكالمة صوتيّة واردة"
+                CallPhase.Connecting -> "جارٍ التوصيل…"
+                CallPhase.Ended -> "انتهت المكالمة"
+                else -> ""
+            }
         }
     }
+    Text(
+        line,
+        color = Color.White.copy(alpha = 0.82f),
+        fontSize = 15.sp,
+        textAlign = TextAlign.Center,
+    )
 }
 
 @Composable

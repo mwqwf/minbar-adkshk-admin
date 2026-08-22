@@ -5,10 +5,11 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.functions.FirebaseFunctions
-import com.google.firebase.functions.FirebaseFunctionsException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.security.MessageDigest
 
@@ -31,23 +32,31 @@ object AdminRepository {
     private const val SECTION_WRITE_TIMEOUT_MS = 12_000L
 
     // ---------------- جلب ----------------
+    // فكّ الترميز والفرز خارج الخيط الرئيسي: `await()` يستأنف على سياق
+    // المستدعي (Main في LaunchedEffect)، فكانت مئات الوثائق تُحوَّل هناك.
     suspend fun fetchCategories(): List<Category> {
         val snap = db.collection("categories").get().await()
-        return snap.documents
-            .map { Category.fromDoc(it.id, it.dataMap()) }
-            .sortedBy { it.name }
+        return withContext(Dispatchers.Default) {
+            snap.documents
+                .map { Category.fromDoc(it.id, it.dataMap()) }
+                .sortedBy { it.name }
+        }
     }
 
     suspend fun fetchSubcategories(): List<Subcategory> {
         val snap = db.collection("subcategories").get().await()
-        return snap.documents.map { Subcategory.fromDoc(it.id, it.dataMap()) }
+        return withContext(Dispatchers.Default) {
+            snap.documents.map { Subcategory.fromDoc(it.id, it.dataMap()) }
+        }
     }
 
     suspend fun fetchLessons(): List<Lesson> {
         val snap = db.collection("lessons").get().await()
-        return snap.documents
-            .map { Lesson.fromDoc(it.id, it.dataMap()) }
-            .sortedByDescending { it.createdAtMs }
+        return withContext(Dispatchers.Default) {
+            snap.documents
+                .map { Lesson.fromDoc(it.id, it.dataMap()) }
+                .sortedByDescending { it.createdAtMs }
+        }
     }
 
     /**
@@ -377,39 +386,9 @@ object AdminRepository {
                     )
             }
 
-    /**
-     * إلغاء جدولة درس قديم (النشر المجدول أُزيل من الواجهة؛ تبقى هذه
-     * لتحرير أيّ درس بقي مجدولاً في القاعدة من قبل).
-     */
-    suspend fun setLessonPublishAt(id: String, whenMs: Long?) =
-        updateCompat(
-            "lessons",
-            id,
-            mapOf("publishAt" to (if (whenMs == null) FieldValue.delete() else isoOf(whenMs))),
-        )
-
-    /**
-     * «نشر الآن» لدرس مجدول: عبر الدالة الخادمية التي تنشر **وترسل إشعار
-     * «درس جديد»** (حذف publishAt وحده كان ينشر بصمت بلا أيّ إشعار).
-     * إن تعذّر الوصول للدالة نعود للسلوك القديم كي لا يعلق المشرف.
-     */
-    suspend fun publishScheduledNow(lessonId: String) {
-        try {
-            functions.getHttpsCallable("publishScheduledLesson")
-                .call(mapOf("lessonId" to lessonId)).await()
-        } catch (e: FirebaseFunctionsException) {
-            val code = e.code
-            if (code == FirebaseFunctionsException.Code.UNIMPLEMENTED ||
-                code == FirebaseFunctionsException.Code.UNAVAILABLE ||
-                code == FirebaseFunctionsException.Code.INTERNAL ||
-                code == FirebaseFunctionsException.Code.NOT_FOUND
-            ) {
-                setLessonPublishAt(lessonId, null)
-                return
-            }
-            throw e
-        }
-    }
+    // ⛔ «النشر المجدول» أُزيل من المنظومة كلّها (الدوال السحابيّة والتطبيق
+    // العام واللوحة) بقرار صاحب المشروع، والقاعدة خالية من أيّ درس بموعد
+    // مستقبليّ. فلا جدولة ولا «نشر الآن» ولا حقل `publishAt` — لا تُعَد.
 
     // ---------------- تعديل ----------------
     suspend fun updateCategory(id: String, name: String) =
@@ -486,43 +465,17 @@ object AdminRepository {
     }
 
     // ---------------- تنبيهات المشرف (إنجازات/تقرير أسبوعي) ----------------
+    /** آخر مرّة نُظِّفت فيها التنبيهات المحسومة — حارس ضدّ استدعاء لكل رجوع. */
+    private var lastAlertCleanupMs = 0L
+
     /** يزيل خادمياً تنبيهات المساهمات التي حُسمت قبل الإصلاح الحالي. */
     suspend fun cleanupResolvedAdminAlerts() {
+        // اللوحة تستدعيها عند كل رجوع إليها؛ التنظيف عمل صيانة لا يستحقّ
+        // استدعاء دالة سحابيّة أكثر من مرّة في الساعة.
+        val now = System.currentTimeMillis()
+        if (now - lastAlertCleanupMs < 60 * 60 * 1000L) return
+        lastAlertCleanupMs = now
         // لا نحجب اللوحة إذا كانت الدالة لم تُنشر بعد أو كان الاتصال ضعيفاً.
         runCatching { functions.getHttpsCallable("cleanupResolvedAdminAlerts").call().await() }
-    }
-
-    /** المالك يرى كل التنبيهات؛ المشرف يرى تنبيهاته والعامة (email == ''). */
-    suspend fun fetchAdminAlerts(email: String, isOwner: Boolean): List<Map<String, Any?>> {
-        val e = email.trim().lowercase()
-        val docs = LinkedHashMap<String, Map<String, Any?>>()
-        if (isOwner) {
-            db.collection("admin_alerts").get().await().documents.forEach {
-                docs[it.id] = buildMap { put("id", it.id); putAll(it.dataMap()) }
-            }
-        } else {
-            if (e.isEmpty()) return emptyList()
-            // تطابق قواعد القراءة: لا نجلب كل التنبيهات ثم نرشّحها محلياً.
-            val personal = db.collection("admin_alerts").whereEqualTo("email", e).get().await()
-            val general = db.collection("admin_alerts").whereEqualTo("email", "").get().await()
-            (personal.documents + general.documents).forEach {
-                docs[it.id] = buildMap { put("id", it.id); putAll(it.dataMap()) }
-            }
-        }
-        // نفس قاعدة الموجز: 24 ساعة فقط، وما اطّلعت عليه يختفي عنّي.
-        val cutoff = System.currentTimeMillis() - AdminAlertsFeed.TTL_MS
-        return docs.values
-            .filter { alert ->
-                val at = (alert["createdAtMs"] as? Number)?.toLong() ?: 0L
-                val readBy = (alert["readBy"] as? List<*>)?.map { it.toString().lowercase() }
-                    ?: emptyList()
-                // موجَّه ليُخفى عنّي (تنبيه عام يقابل تنبيهي الشخصي) — وإلا ظهر مرّتين.
-                val exclude = str(
-                    alert["excludeEmail"] ?: (alert["data"] as? Map<*, *>)?.get("excludeEmail"),
-                ).lowercase()
-                (at <= 0L || at >= cutoff) && !readBy.contains(e) &&
-                    (exclude.isEmpty() || exclude != e)
-            }
-            .sortedByDescending { (it["createdAtMs"] as? Number)?.toLong() ?: 0L }
     }
 }

@@ -80,6 +80,7 @@ import com.ali.ishaqiyin_admin.data.TranscriptsRepository
 import com.ali.ishaqiyin_admin.data.TrashRepository
 import com.ali.ishaqiyin_admin.data.SubmissionsRepository
 import com.ali.ishaqiyin_admin.data.UploadQueue
+import com.ali.ishaqiyin_admin.data.needsAttention
 import com.ali.ishaqiyin_admin.ui.chat.ProfileDialog
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.AggregateSource
@@ -106,8 +107,11 @@ import kotlinx.coroutines.tasks.await
  * تقرآن الرقم نفسه فلا يختلفان أبداً.
  *
  * ⚠️ تبديل الحساب يُسقط المخزون كلّه — وإلّا بقي مستمع يقرأ ببريد سابق.
+ *
+ * مرئيّ للوحدة كلّها لا للملفّ وحده: شاشة المساهمات تقرأ العدد نفسه
+ * من هذا المخزون بدل ربط مستمعَي Firestore من جديد.
  */
-private object DashboardBadges {
+internal object DashboardBadges {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val started = SharingStarted.WhileSubscribed(30_000)
     private val cache = HashMap<String, StateFlow<*>>()
@@ -376,7 +380,12 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
     }
 
     val now = System.currentTimeMillis()
-    val parked = queue.count { it.parked }
+    // ⚠️ كان العدّ على `parked` وحدها، والدرس الذي انقطع رفعه أو فشل دون بلوغ
+    // سقف المحاولات لا يُركن — فلا تنبيه في أيّ مكان بينما هو عالق فعلاً.
+    // («بانتظار الإنترنت» و«انقطع أثناء الرفع» مستثنيان في `needsAttention`:
+    // كلاهما يمضي وحده ولا يحتاج قراراً، وعدّهما هنا كان يجعل كلّ إقلاع
+    // للجهاز يُظهر «مهمّة عاجلة» لدرس سليم في طريقه.)
+    val parked = queue.count { it.needsAttention }
     // تمييز يوشك على الانتهاء خلال 24 ساعة (الدائم بلا مهلة لا يُحتسب).
     val expiring = featured.mapNotNull { it.featuredUntilMs }
         .filter { it > now && it - now <= 24L * 3_600_000 }
@@ -391,10 +400,10 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
                     icon = Icons.Filled.LibraryMusic,
                     text = arabicCount(
                         parked,
-                        "درس تعذّر رفعه — يحتاج قرارك",
-                        "درسان تعذّر رفعهما — يحتاجان قرارك",
-                        "دروس تعذّر رفعها — تحتاج قرارك",
-                        "درساً تعذّر رفعها — تحتاج قرارك",
+                        "درس متعثّر في الرفع — يحتاج قرارك",
+                        "درسان متعثّران في الرفع — يحتاجان قرارك",
+                        "دروس متعثّرة في الرفع — تحتاج قرارك",
+                        "درساً متعثّراً في الرفع — تحتاج قرارك",
                     ),
                     onClick = { nav.navigate(Routes.ADD_LESSON) },
                 ),

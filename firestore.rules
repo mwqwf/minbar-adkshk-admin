@@ -565,6 +565,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // فهرس البحث في «النص المشروح»: كلمات مطبَّعة لكل درس، يكتبه الخادم
+    // وحده مع كل اعتماد/تعديل، ويقرؤه بحثُ التطبيق. بلا هذه القاعدة يبتلعه
+    // مانع {document=**} فيعود البحث صامتاً بلا نتائج أبداً.
+    match /transcript_index/{lessonId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     // اقتراحات المستمعين للنص المشروح: نفس دورة lesson_submissions تماماً —
     // تُنشأ وتُحسم عبر callables، وصاحبها يحدّث رمز جهازه فقط ما دامت معلقة.
     match /transcript_submissions/{submissionId} {

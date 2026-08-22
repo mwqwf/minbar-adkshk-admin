@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
@@ -211,8 +212,10 @@ object CallEngine {
             AdminCallNotifications.cancelIncoming(context)
             return false
         }
-        // نفس المكالمة وقد تجاوزت الرنين (قُبِلت أصلاً): لا نُرجعها إلى الرنين.
-        if (current.callId == callId && current.phase != CallPhase.Ringing && current.busy) {
+        // نفس المكالمة قائمة أصلاً (ترنّ أو قُبِلت): لا نُعيد بناءها. إعادة
+        // إنشاء الشاشة أثناء الرنين كانت تصفّر مهلة الـ٤٥ ثانية وتفتح مستمع
+        // لقطات جديداً على الوثيقة نفسها، وبعد القبول كانت تُرجعها إلى الرنين.
+        if (current.callId == callId && current.busy) {
             return true
         }
         outcomeLogged = false
@@ -231,6 +234,12 @@ object CallEngine {
 
     /** قبول مكالمة واردة. تُستدعى بعد التأكّد من إذن الميكروفون. */
     fun acceptIncoming(context: Context, callId: String) {
+        // ⚠️ القبول من طور الرنين وحده: إعادة إنشاء الشاشة بنيّة «ردّ» (تدوير
+        // مثلاً) كانت تُعيد مكالمة متّصلة إلى `Connecting`، و`runAccept` يرجع
+        // بحارس `peer != null` فلا شيء يُعيدها إلى `Active` — «جارٍ الاتصال…»
+        // تبقى محلّ العدّاد إلى نهاية المكالمة.
+        val cur = _state.value
+        if (cur.callId == callId && cur.busy && cur.phase != CallPhase.Ringing) return
         // مهلة الرنين ومراقبته انتهى دورهما — `watchCall` يتولّى الوثيقة الآن.
         timeoutJob?.cancel()
         timeoutJob = null
@@ -565,8 +574,16 @@ object CallEngine {
     /**
      * تهيئة المصنع والاتّصال والمسار الصوتي المحلّي.
      * `PeerConnectionFactory.initialize` مرّة واحدة لعمر العمليّة.
+     *
+     * ⚠️ خارج الخيط الرئيسي: `scope` على `Dispatchers.Main.immediate`، وتحميل
+     * المكتبة الأصليّة وفحوص AEC/NS العتاديّة وبناء المصنع كانت تجمّد الواجهة
+     * لحظة بدء كلّ مكالمة أو قبولها.
      */
-    private fun buildPeer(context: Context, callId: String, fromCaller: Boolean): Boolean =
+    private suspend fun buildPeer(
+        context: Context,
+        callId: String,
+        fromCaller: Boolean,
+    ): Boolean = withContext(Dispatchers.Default) {
         runCatching {
             if (!factoryReady) {
                 PeerConnectionFactory.initialize(
@@ -615,6 +632,7 @@ object CallEngine {
 
             true
         }.getOrDefault(false)
+    }
 
     private fun observerFor(callId: String, fromCaller: Boolean) = object : PeerConnection.Observer {
         override fun onIceCandidate(candidate: IceCandidate?) {
@@ -649,8 +667,19 @@ object CallEngine {
                     if (snapshot.callId.isNotEmpty()) {
                         writeFinalStatus(snapshot.callId, decline = false)
                     }
+                    // الإنهاء محليّاً أوّلاً ثمّ التسجيل بمهلة (نمط `hangUp`).
+                    // ⚠️ «فائتة» ثابتةً كانت تُسجَّل حتى لمكالمة توصّلت ثمّ
+                    // انهار مسارها مباشرةً (بلا مرور بـ`DISCONNECTED`): المدّة
+                    // وحدها تحدّد النتيجة كما في `hangUp` و`armReconnectGrace`.
                     finish("تعذّر توصيل الصوت — جرّب شبكة أخرى.")
-                    scope.launch { logOutcome(snapshot, CallOutcome.Missed) }
+                    logOutcomeBounded(
+                        snapshot,
+                        if (snapshot.connectedAtMs > 0L) {
+                            CallOutcome.Answered
+                        } else {
+                            CallOutcome.Missed
+                        },
+                    )
                 }
 
                 else -> Unit

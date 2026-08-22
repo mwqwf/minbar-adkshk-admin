@@ -1,4 +1,4 @@
-﻿package com.ali.ishaqiyin_admin.util
+package com.ali.ishaqiyin_admin.util
 
 import java.net.URLDecoder
 

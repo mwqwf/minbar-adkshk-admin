@@ -64,12 +64,15 @@ import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.Lesson
 import kotlinx.coroutines.launch
 
+// مُصرَّف مرّة واحدة: الترتيب الآلي كان يُعيد تصريفه لكلّ عنوان في كلّ مقارنة.
+private val TITLE_NUMBER = Regex("\\d+")
+
 /** أول رقم في العنوان (يفهم الأرقام العربية-الهندية ٠-٩) أو null. */
 private fun titleNumber(title: String): Long? {
-    val normalized = title.map { ch ->
-        if (ch in '٠'..'٩') ('0' + (ch - '٠')) else ch
-    }.joinToString("")
-    return Regex("\\d+").find(normalized)?.value?.toLongOrNull()
+    val normalized = buildString(title.length) {
+        title.forEach { ch -> append(if (ch in '٠'..'٩') ('0' + (ch - '٠')) else ch) }
+    }
+    return TITLE_NUMBER.find(normalized)?.value?.toLongOrNull()
 }
 
 /**
@@ -98,6 +101,8 @@ fun ReorderLessonsDialog(
     val onBarColor = if (dark) scheme.onSurface else scheme.onPrimary
 
     var loading by remember { mutableStateOf(true) }
+    // فشل الجلب يترك القائمة فارغة، وبلا هذا العلم تُعرض بوصفها «أقل من درسين».
+    var loadFailed by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var dirty by remember { mutableStateOf(false) }
     var moveTarget by remember { mutableIntStateOf(-1) }
@@ -109,11 +114,15 @@ fun ReorderLessonsDialog(
         // ترشيحها على الجهاز. الفرز يبقى محليّاً فلا يلزم فهرس مركّب.
         runCatching { AdminRepository.fetchSubcategoryLessons(subcategoryId) }
             .onSuccess { found ->
+                loadFailed = false
                 items.clear()
                 // ترتيب العرض = ترتيب التطبيق الافتراضي (الأقدم أولاً).
                 items.addAll(found.sortedBy { it.createdAtMs })
             }
-            .onFailure { snack("تعذّر جلب دروس القسم.") }
+            .onFailure {
+                loadFailed = true
+                snack("تعذّر جلب دروس القسم.")
+            }
         loading = false
     }
 
@@ -123,7 +132,13 @@ fun ReorderLessonsDialog(
         val item = items.removeAt(from)
         items.add(bounded, item)
         dirty = true
-        scope.launch { listState.animateScrollToItem(bounded.coerceAtLeast(0)) }
+        // المتابعة تقتصر على خروج الهدف عن المدى المرئي: التمرير بلا شرط كان
+        // يُرسي القائمة من جديد فيقفز الصفّ وأزراره من تحت الإصبع.
+        scope.launch {
+            if (listState.layoutInfo.visibleItemsInfo.none { it.index == bounded }) {
+                listState.animateScrollToItem(bounded)
+            }
+        }
     }
 
     if (moveTarget >= 0) {
@@ -219,13 +234,18 @@ fun ReorderLessonsDialog(
                     ) { CircularProgressIndicator(color = scheme.primary) }
                     return@Column
                 }
-                if (items.size < 2) {
+                if (loadFailed || items.size < 2) {
                     Box(
                         Modifier.fillMaxSize().padding(32.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            "هذا القسم فيه أقل من درسين — لا شيء يُرتَّب.",
+                            if (loadFailed) {
+                                "تعذّر جلب دروس القسم — أعد فتح الشاشة بعد " +
+                                    "التحقّق من الاتصال."
+                            } else {
+                                "هذا القسم فيه أقل من درسين — لا شيء يُرتَّب."
+                            },
                             textAlign = TextAlign.Center,
                             color = scheme.onSurfaceVariant,
                         )
@@ -244,13 +264,15 @@ fun ReorderLessonsDialog(
                     onClick = {
                         // فرز مستقر: أصحاب الأرقام تصاعدياً، ومن بلا رقم يبقى
                         // في ذيل القائمة محافظاً على ترتيبه النسبي.
-                        val sorted = items.withIndex().sortedWith(
+                        // المفتاح يُحسب مرّة لكل درس لا مرّة لكل مقارنة.
+                        val keyed = items.map { it to titleNumber(it.title) }
+                        val sorted = keyed.withIndex().sortedWith(
                             compareBy(
-                                { (_, lesson) -> titleNumber(lesson.title) == null },
-                                { (_, lesson) -> titleNumber(lesson.title) ?: Long.MAX_VALUE },
-                                { (index, _) -> index },
+                                { it.value.second == null },
+                                { it.value.second ?: Long.MAX_VALUE },
+                                { it.index },
                             ),
-                        ).map { it.value }
+                        ).map { it.value.first }
                         if (sorted.map { it.id } == items.map { it.id }) {
                             snack("الترتيب الرقمي سليم أصلاً — لا تغيير.")
                         } else {

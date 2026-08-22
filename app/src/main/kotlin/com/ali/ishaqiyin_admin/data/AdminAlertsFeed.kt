@@ -3,6 +3,7 @@ package com.ali.ishaqiyin_admin.data
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
@@ -58,6 +59,9 @@ object AdminAlertsFeed {
      */
     const val TTL_MS = 24L * 60 * 60 * 1000
 
+    /** سقف ما يُنزَّل من المجموعة — أكثر من هذا لا يُعرض بحكم [TTL_MS]. */
+    private const val ALERTS_LIMIT = 200L
+
     val myEmail: String
         get() = AuthService.currentUser?.email.orEmpty().trim().lowercase()
 
@@ -87,24 +91,28 @@ object AdminAlertsFeed {
                 .sortedByDescending { it.createdAtMs }
         }
 
+        // سقف خادميّ: المجموعة تتراكم (التنظيف الخادمي لا يمسّ milestone/digest)
+        // فبلا حدٍّ تُنزَّل كاملةً في المزامنة الأولى ويُعاد ترشيحها محليّاً مع
+        // كل كتابة readBy. و‏TTL الـ24 ساعة يجعل ما وراء أحدث 200 غير مرئيّ أصلاً.
         if (isOwner) {
-            return db.collection("admin_alerts").querySnapshots().map { visible(it.documents) }
+            return db.collection("admin_alerts")
+                .orderBy("createdAtMs", Query.Direction.DESCENDING)
+                .limit(ALERTS_LIMIT)
+                .querySnapshots()
+                .map { visible(it.documents) }
         }
         if (me.isEmpty()) return flowOf(emptyList())
 
-        val personal = db.collection("admin_alerts").whereEqualTo("email", me).querySnapshots()
-        val general = db.collection("admin_alerts").whereEqualTo("email", "").querySnapshots()
+        val personal = db.collection("admin_alerts")
+            .whereEqualTo("email", me).limit(ALERTS_LIMIT).querySnapshots()
+        val general = db.collection("admin_alerts")
+            .whereEqualTo("email", "").limit(ALERTS_LIMIT).querySnapshots()
         return personal.combine(general) { a, b ->
             val merged = LinkedHashMap<String, DocumentSnapshot>()
             (a.documents + b.documents).forEach { merged[it.id] = it }
             visible(merged.values)
         }
     }
-
-    /**
-     * عدد التنبيهات الظاهرة (كلّها غير مقروءة بحكم الترشيح أعلاه).
-     */
-    fun unreadCount(isOwner: Boolean): Flow<Int> = stream(isOwner).map { it.size }
 
     /** تمييز تنبيه مقروءاً (إضافة بريدي إلى readBy — تسمح به القواعد). */
     fun markRead(alert: AdminAlert) {

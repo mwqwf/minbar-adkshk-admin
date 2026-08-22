@@ -107,6 +107,9 @@ fun FeaturedScreen(onBack: () -> Unit) {
     var durationFor by remember { mutableStateOf<Lesson?>(null) }
     var busyId by remember { mutableStateOf("") }
     var confirmClean by remember { mutableStateOf(false) }
+    // التنظيف تسلسليّ وقد يطول: بلا هذا العلم يبقى الزرّ مفعّلاً فيُطلَق مرّتين
+    // وتظهر رسالتان متناقضتان.
+    var cleaning by remember { mutableStateOf(false) }
 
     val expired = lessons.filter { it.featuredUntilMs != null && it.featuredUntilMs <= now }
     val active = lessons.filterNot { it.featuredUntilMs != null && it.featuredUntilMs <= now }
@@ -138,7 +141,7 @@ fun FeaturedScreen(onBack: () -> Unit) {
         )
     }
 
-    if (confirmClean && expired.isNotEmpty()) {
+    if (confirmClean && !cleaning && expired.isNotEmpty()) {
         // العدد المشمول مذكور صراحةً: التنظيف يمسّ دروساً عدّة دفعة واحدة.
         val batch = expired
         ConfirmDialog(
@@ -149,6 +152,7 @@ fun FeaturedScreen(onBack: () -> Unit) {
             confirmColor = adminOrange,
             onConfirm = {
                 confirmClean = false
+                cleaning = true
                 scope.launch {
                     var failed = 0
                     batch.forEach { lesson ->
@@ -164,6 +168,7 @@ fun FeaturedScreen(onBack: () -> Unit) {
                             "نُظّفت ${batch.size - failed}، وتعذّر $failed — أعد المحاولة."
                         },
                     )
+                    cleaning = false
                 }
             },
             onDismiss = { confirmClean = false },
@@ -175,7 +180,7 @@ fun FeaturedScreen(onBack: () -> Unit) {
         onBack = onBack,
         actions = {
             if (expired.isNotEmpty()) {
-                IconButton(onClick = { confirmClean = true }) {
+                IconButton(onClick = { confirmClean = true }, enabled = !cleaning) {
                     Icon(Icons.Filled.CleaningServices, contentDescription = "تنظيف المنتهية")
                 }
             }

@@ -78,7 +78,6 @@ import com.ali.ishaqiyin_admin.data.ChatUploadTarget
 import com.ali.ishaqiyin_admin.data.ChatUploader
 import com.ali.ishaqiyin_admin.data.DmRepository
 import com.ali.ishaqiyin_admin.data.chatTypeForMime
-import com.ali.ishaqiyin_admin.ui.chat.ChatColors
 import com.ali.ishaqiyin_admin.ui.chat.ChatScreen
 import com.ali.ishaqiyin_admin.ui.chat.ChatsHomeScreen
 import com.ali.ishaqiyin_admin.ui.chat.DmScreen
@@ -89,6 +88,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.launch
@@ -210,6 +210,26 @@ object NotificationRoute {
             keys.firstNotNullOfOrNull { key -> get(key)?.trim()?.takeIf { it.isNotEmpty() } }
                 .orEmpty()
 
+        // 🎯 الوجهة الصريحة أوّلاً: [KEY_ROUTE] معلَن في الحمولة ويرسله
+        // الخادم فعلاً، وبلا قراءته هنا كانت تُهمَل صامتةً كلّ وجهة لا
+        // يكفي `type` وحده لتحديدها. ما لا تعرفه اللوحة (وجهات التطبيق
+        // العام مثل `lesson`) يسقط على اشتقاق النوع كما كان.
+        when (value(KEY_ROUTE)) {
+            "submissions" -> {
+                SubmissionsTarget.set(0, value(KEY_REF, KEY_SUBMISSION))
+                return Routes.SUBMISSIONS
+            }
+
+            "transcripts" -> {
+                SubmissionsTarget.set(1, value(KEY_REF, KEY_SUBMISSION))
+                return Routes.SUBMISSIONS
+            }
+
+            "analytics" -> return Routes.ANALYTICS
+            "featured" -> return Routes.FEATURED
+            "chat" -> return Routes.CHAT
+        }
+
         return when (value(KEY_TYPE)) {
             "submission" -> {
                 SubmissionsTarget.set(0, value(KEY_REF, KEY_SUBMISSION))
@@ -278,8 +298,11 @@ fun AdminApp() {
         if (error != null && !loading) resolveTrigger++
     }
 
+    // ‏drop(1): مستمع FirebaseAuth يبعث الحالة الحاليّة فور تسجيله، فيلغي
+    // تحقّق الإقلاع الجاري ويعيده من الصفر — قراءة مهدورة وتأخير بلا فائدة.
+    // ما يهمّنا هو التغيّر اللاحق (دخول/خروج) وهو انبعاث تالٍ.
     LaunchedEffect(Unit) {
-        AuthService.authState().collect { resolveTrigger++ }
+        AuthService.authState().drop(1).collect { resolveTrigger++ }
     }
 
     LaunchedEffect(resolveTrigger) {
@@ -543,7 +566,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
             // الصرف ممنوع أثناء التجهيز كي لا تختفي الورقة وسط نسخ الملفّ.
             onDismissRequest = { if (!preparing) ShareIntake.clearIncoming() },
             sheetState = sheetState,
-            containerColor = ChatColors.surface,
+            containerColor = MaterialTheme.colorScheme.surface,
         ) {
             Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
                 Text(
@@ -556,7 +579,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                 Text(
                     label,
                     fontSize = 12.sp,
-                    color = ChatColors.textMuted,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center,
@@ -570,7 +593,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                     ) {
                         Spin(color = MaterialTheme.colorScheme.primary, size = 16)
                         Spacer(Modifier.size(10.dp))
-                        Text("جارٍ التجهيز…", fontSize = 13.sp, color = ChatColors.textMuted)
+                        Text("جارٍ التجهيز…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 HorizontalDivider()
@@ -664,7 +687,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
     ModalBottomSheet(
         onDismissRequest = { if (!preparing) pickAdmin = false },
         sheetState = sheetState,
-        containerColor = ChatColors.surface,
+        containerColor = MaterialTheme.colorScheme.surface,
     ) {
         Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
             Text(
@@ -681,14 +704,14 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                 ) {
                     Spin(color = MaterialTheme.colorScheme.primary, size = 16)
                     Spacer(Modifier.size(10.dp))
-                    Text("جارٍ التجهيز…", fontSize = 13.sp, color = ChatColors.textMuted)
+                    Text("جارٍ التجهيز…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             HorizontalDivider()
             if (others.isEmpty()) {
                 Text(
                     "لا يوجد مشرفون آخرون بعد.",
-                    color = ChatColors.textMuted,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth().padding(20.dp),
                     textAlign = TextAlign.Center,
                 )
@@ -744,9 +767,9 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 color = if (member.isOnline) {
-                                    ChatColors.online
+                                    MaterialTheme.colorScheme.primary
                                 } else {
-                                    ChatColors.textMuted
+                                    MaterialTheme.colorScheme.onSurfaceVariant
                                 },
                             )
                         }
@@ -795,7 +818,7 @@ private fun ShareOptionRow(
             Text(
                 subtitle,
                 fontSize = 12.sp,
-                color = ChatColors.textMuted,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )

@@ -1,5 +1,6 @@
 package com.ali.ishaqiyin_admin.ui
 
+import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +26,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +38,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.Lesson
+
+/**
+ * الحمولة الملتقَطة تعبر إعادة إنشاء النشاط: مصدرها يُفرَغ فور التقاطها،
+ * فبلا حفظها كان أوّل دوران للشاشة يُضيّع النص والصور بلا سبيل إلى استرجاع.
+ * السطر الأوّل النص وما بعده مسارات الصور.
+ */
+private val intakePayloadSaver = listSaver<TranscriptIntake.Payload, String>(
+    save = { listOf(it.text) + it.images.map(Uri::toString) },
+    restore = { saved ->
+        TranscriptIntake.Payload(
+            text = saved.firstOrNull().orEmpty(),
+            images = saved.drop(1).filter { it.isNotEmpty() }.map(Uri::parse),
+        )
+    },
+)
 
 /**
  * 📖 «النص المشروح» من مشاركة خارجية: المشرف شارك صورة صفحة كتاب أو نصاً
@@ -51,9 +69,13 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
     }
     var loading by remember { mutableStateOf(true) }
     var query by remember { mutableStateOf("") }
-    var target by remember { mutableStateOf<Lesson?>(null) }
-    // الحمولة تُلتقط مرة واحدة وتبقى حتى إغلاق الشاشة.
-    val payload = remember { TranscriptIntake.consume() ?: TranscriptIntake.Payload() }
+    // الدرس المختار بمعرّفه: دوران الشاشة كان يغلق المحرر المفتوح عليه.
+    var targetId by rememberSaveable { mutableStateOf("") }
+    // الحمولة تُلتقط مرة واحدة وتبقى حتى إغلاق الشاشة — ومحفوظة كي تبقى
+    // بعد إعادة إنشاء النشاط أيضاً (مصدرها فرغ بالتقاطها فلا تُطلب ثانية).
+    val payload = rememberSaveable(saver = intakePayloadSaver) {
+        TranscriptIntake.consume() ?: TranscriptIntake.Payload()
+    }
 
     LaunchedEffect(Unit) {
         runCatching {
@@ -69,14 +91,14 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
             ?.takeIf(String::isNotBlank),
     ).joinToString(" ← ")
 
-    target?.let { lesson ->
+    lessons.firstOrNull { it.id == targetId }?.let { lesson ->
         TranscriptEditorDialog(
             lessonId = lesson.id,
             lessonTitle = lesson.title,
             initialText = payload.text,
             initialImages = payload.images,
             onDismiss = {
-                target = null
+                targetId = ""
                 onBack()
             },
         )
@@ -156,7 +178,7 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 3.dp)
-                                .clickable { target = lesson },
+                                .clickable { targetId = lesson.id },
                         ) {
                             Row(
                                 Modifier.padding(horizontal = 12.dp, vertical = 12.dp),

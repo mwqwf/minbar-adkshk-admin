@@ -18,11 +18,9 @@ import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.FiberNew
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.HourglassBottom
 import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
@@ -147,6 +145,9 @@ fun AnalyticsScreen(
                         textAlign = TextAlign.Center,
                     )
                 }
+                // أربع بطاقات في صفَّين متوازنين بعد إزالة «إجمالي الاستماع»
+                // و«مجدولة للنشر» (الأولى بلا فائدة إداريّة، والثانية سقطت مع
+                // إزالة النشر المجدول من المنظومة كلّها).
                 Row(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(
@@ -154,19 +155,8 @@ fun AnalyticsScreen(
                         Alignment.CenterHorizontally,
                     ),
                 ) {
-                    StatBox("إجمالي الاستماع", s.totalViews, Icons.Filled.Headphones)
                     StatBox("عدد الدروس", s.lessonsCount, Icons.Filled.Audiotrack)
-                }
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(
-                        10.dp,
-                        Alignment.CenterHorizontally,
-                    ),
-                ) {
                     StatBox("جديد هذا الأسبوع", s.newThisWeek, Icons.Filled.FiberNew)
-                    StatBox("مجدولة للنشر", s.scheduled, Icons.Filled.Schedule)
                 }
                 Spacer(Modifier.height(10.dp))
                 // تغطية «النص المشروح»: كم درساً وُثّق نصّه وكم بقي ناقصاً.
@@ -363,7 +353,6 @@ private fun RankTile(title: String, trailing: String, icon: ImageVector) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.height(8.dp))
             Text(
                 title,
                 modifier = Modifier.weight(1f).padding(horizontal = 10.dp),

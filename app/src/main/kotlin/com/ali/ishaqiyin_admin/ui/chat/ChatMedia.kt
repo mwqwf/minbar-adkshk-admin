@@ -82,7 +82,10 @@ import com.ali.ishaqiyin_admin.data.MediaState
 import com.ali.ishaqiyin_admin.data.MediaStatus
 import com.ali.ishaqiyin_admin.data.formatBytes
 import com.ali.ishaqiyin_admin.util.openLocalFile
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -108,6 +111,12 @@ object SharedAudioPlayer {
     private const val TAG = "SharedAudioPlayer"
     private const val MAX_SAVED_POSITIONS = 50
     private var player: ExoPlayer? = null
+
+    /**
+     * نطاق المشغّل نفسه — تتابع «نزّل ثمّ شغّل» لا يموت بموت الفقاعة، ويبقى
+     * على الخيط الرئيسيّ لأنّ ExoPlayer يُقاد من خيط إنشائه.
+     */
+    private val ownScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private val _activeKey = MutableStateFlow<String?>(null)
     val activeKey: StateFlow<String?> = _activeKey
@@ -315,6 +324,30 @@ object SharedAudioPlayer {
         runCatching { player?.stop() }
     }
 
+    /**
+     * تحرير كامل عند مغادرة آخر شاشة دردشة: [stop] وحدها تُبقي مثيل ExoPlayer
+     * وخيط تشغيله حيّين طوال عمر العمليّة. الترتيب مقصود — [stop] أوّلاً كي
+     * يُحفظ موضع المقطع المغادَر قبل التحرير، و[ensure] تعيد الإنشاء لاحقاً.
+     */
+    fun release() {
+        stop()
+        runCatching { player?.release() }
+        player = null
+    }
+
+    /**
+     * «نزّل ثمّ شغّل» في نطاق المشغّل لا نطاق الفقاعة: خروج الفقاعة من الشاشة
+     * أثناء التنزيل كان يلغي الكوروتين فيكتمل الملفّ ولا يبدأ التشغيل أبداً.
+     */
+    fun downloadThenPlay(context: Context, att: ChatAttachment): Job = ownScope.launch {
+        ChatMediaStore.download(att)?.let { playFile(context, ChatMediaStore.keyOf(att), it) }
+    }
+
+    /** نظيرها بعد فشل سابق (زرّ إعادة المحاولة). */
+    fun retryThenPlay(context: Context, att: ChatAttachment): Job = ownScope.launch {
+        ChatMediaStore.retry(att)?.let { playFile(context, ChatMediaStore.keyOf(att), it) }
+    }
+
     /** تحديث الموضع دوريّاً أثناء التشغيل (يستدعيه شريط الفقاعة). */
     fun syncPosition() {
         val p = player ?: return
@@ -401,7 +434,6 @@ fun AudioBubblePlayer(
     onListened: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val key = remember(attachment) { ChatMediaStore.keyOf(attachment) }
     val status by ChatMediaStore.statusOf(attachment).collectAsState()
     val activeKey by SharedAudioPlayer.activeKey.collectAsState()
@@ -461,23 +493,20 @@ fun AudioBubblePlayer(
 
     val controlClick: () -> Unit = {
         SharedAudioPlayer.clearError()
-        downloadJob = scope.launch {
-            when {
-                status.state == MediaState.Downloading -> Unit
-                status.state == MediaState.Failed -> {
-                    ChatMediaStore.retry(attachment)?.let { file ->
-                        SharedAudioPlayer.playFile(context, key, file)
-                    }
-                }
-                !status.isReady -> {
-                    ChatMediaStore.download(attachment)?.let { file ->
-                        SharedAudioPlayer.playFile(context, key, file)
-                    }
-                }
-                active && playing -> SharedAudioPlayer.pause()
-                else -> status.file?.let { file ->
-                    SharedAudioPlayer.playFile(context, key, file)
-                }
+        when {
+            status.state == MediaState.Downloading -> Unit
+            // ⚠️ تتابع «نزّل ثمّ شغّل» في نطاق المشغّل لا نطاق الفقاعة: خروجها
+            // من الشاشة أثناء التنزيل كان يلغي الكوروتين، فيكتمل الملفّ ولا
+            // يبدأ التشغيل أبداً. و`downloadJob` يبقى ليُلغيه زرّ ✕.
+            status.state == MediaState.Failed -> {
+                downloadJob = SharedAudioPlayer.retryThenPlay(context, attachment)
+            }
+            !status.isReady -> {
+                downloadJob = SharedAudioPlayer.downloadThenPlay(context, attachment)
+            }
+            active && playing -> SharedAudioPlayer.pause()
+            else -> {
+                status.file?.let { file -> SharedAudioPlayer.playFile(context, key, file) }
             }
         }
     }

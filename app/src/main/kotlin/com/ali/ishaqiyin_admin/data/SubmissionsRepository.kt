@@ -26,8 +26,24 @@ data class LessonSubmission(
     val status: String, // pending | approved | approved_edited | rejected
     val rejectReason: String,
     val createdAtMs: Long,
+    // ⚠️ نصّ مشروح مرفق بالمساهمة: الدالّة السحابيّة تنشره في
+    // `lesson_transcripts` فور الاعتماد، فلا بدّ أن يراه المشرف **قبل**
+    // ضغط «موافقة» — التطبيق يَعِد المساهم صراحةً بعرضه على المشرفين.
+    val transcriptText: String = "",
+    val transcriptBookTitle: String = "",
+    val transcriptSourceRef: String = "",
+    val transcriptImagePaths: List<String> = emptyList(),
+    // ما أقرّ به المرسِل فعلاً — الإقرار اختياري في التطبيق، فتمييز
+    // المُقِرّ من غيره هو كلّ فائدته.
+    val rightsConfirmed: Boolean = false,
+    val termsAccepted: Boolean = false,
+    val contentPolicyVersion: String = "",
 ) {
     val isPending: Boolean get() = status == "pending"
+
+    /** هل تحمل المساهمة نصّاً مشروحاً سيُنشر تلقائياً عند الاعتماد؟ */
+    val hasTranscript: Boolean
+        get() = transcriptText.isNotEmpty() || transcriptImagePaths.isNotEmpty()
 
     companion object {
         fun fromDoc(doc: DocumentSnapshot): LessonSubmission {
@@ -50,6 +66,14 @@ data class LessonSubmission(
                 status = str(d["status"]).ifEmpty { "pending" },
                 rejectReason = str(d["rejectReason"]),
                 createdAtMs = parseDateMs(d["createdAt"]),
+                transcriptText = str(d["transcriptText"]),
+                transcriptBookTitle = str(d["transcriptBookTitle"]),
+                transcriptSourceRef = str(d["transcriptSourceRef"]),
+                transcriptImagePaths = (d["transcriptImagePaths"] as? List<*>)
+                    .orEmpty().map { str(it) }.filter { it.isNotEmpty() },
+                rightsConfirmed = d["rightsConfirmed"] == true,
+                termsAccepted = d["termsAccepted"] == true,
+                contentPolicyVersion = str(d["contentPolicyVersion"]),
             )
         }
     }

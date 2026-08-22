@@ -43,7 +43,6 @@ data class AnalyticsSnapshot(
     val booksCount: Int,
     val transcriptsCount: Int,
     val newThisWeek: Int,
-    val scheduled: Int,
     val topLessons: List<Pair<String, Int>>,
     val topSections: List<Pair<String, Int>>,
     val admins: List<AdminScore>,
@@ -99,7 +98,6 @@ object AnalyticsRepository {
             booksCount = o.optInt("booksCount"),
             transcriptsCount = o.optInt("transcriptsCount"),
             newThisWeek = o.optInt("newThisWeek"),
-            scheduled = o.optInt("scheduled"),
             topLessons = o.optJSONArray("topLessons").toPairs(),
             topSections = o.optJSONArray("topSections").toPairs(),
             admins = o.optJSONArray("admins").toAdminScores(),
@@ -115,7 +113,6 @@ object AnalyticsRepository {
             .put("booksCount", s.booksCount)
             .put("transcriptsCount", s.transcriptsCount)
             .put("newThisWeek", s.newThisWeek)
-            .put("scheduled", s.scheduled)
             .put("topLessons", s.topLessons.toJson())
             .put("topSections", s.topSections.toJson())
             .put(
@@ -214,7 +211,6 @@ object AnalyticsRepository {
             booksCount = c.books,
             transcriptsCount = c.transcripts,
             newThisWeek = lessons.count { now - it.createdAtMs < weekMs },
-            scheduled = lessons.count { (it.publishAtMs ?: 0) > now },
             topLessons = lessons.filter { it.views > 0 }
                 .sortedByDescending { it.views }
                 .take(10)

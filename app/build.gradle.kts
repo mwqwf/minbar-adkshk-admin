@@ -45,8 +45,15 @@ android {
         // نسخة Flutter المثبَّتة على جهاز المشرف تحمل versionCode=2001 (بادئة
         // ABI التي يضيفها Flutter)، والتثبيت فوقها يتطلّب رقماً أعلى — وإلا
         // فُقدت جلسة الدخول بإلغاء التثبيت. الاسم يبقى كما هو.
-        versionCode = 2011
-        versionName = "1.1.8"
+        // ٢٠١٢ / ١.١.٩: **استئنافٌ حقيقيّ للرفع** — كان `cancel()` يحذف
+        // جلسة الرفع من خادم Firebase عند كلّ إيقاف، فيبدأ الرفع من الصفر
+        // ويبقى عالقاً بلا نهاية بينما الواجهة تقول «جارٍ». والواجهة صارت
+        // تقرأ حالة WorkManager الحقيقيّة فلا تدّعي ما لا يجري.
+        // ومعها: النصّ المشروح المرفق بمساهمة صار يُعرض على المشرف قبل
+        // اعتماده (كان يُنشر بلا مراجعة)، وحُذفت جدولة النشر نهائياً،
+        // وأيقونة الإشعارات لم تعد مربّعاً أبيض، ودفعةُ تدقيقٍ من ٩٩ عيباً.
+        versionCode = 2012
+        versionName = "1.1.9"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -157,7 +164,6 @@ dependencies {
     val media3Version = "1.10.1"
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
-    implementation("androidx.media3:media3-common-ktx:$media3Version")
 
     // صور الأعضاء وصورة المجموعة (بديل cached_network_image).
     implementation("io.coil-kt.coil3:coil-compose:3.2.0")

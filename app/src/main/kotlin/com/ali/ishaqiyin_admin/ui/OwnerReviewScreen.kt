@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.ManageSearch
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
@@ -36,6 +37,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -68,8 +70,12 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
     // الاعتماد الجماعي: تأكيد ثم تقدّم حيّ ثم رسالة حصيلة.
     var confirmBulk by remember { mutableStateOf(false) }
     var bulkBusy by remember { mutableStateOf(false) }
-    var bulkDone by remember { mutableStateOf(0) }
-    var bulkTotal by remember { mutableStateOf(0) }
+    var bulkDone by remember { mutableIntStateOf(0) }
+    var bulkTotal by remember { mutableIntStateOf(0) }
+    // فهرسة المتون للبحث: تقدّم حيّ (فُحص/فُهرس) ثم رسالة حصيلة.
+    var indexing by remember { mutableStateOf(false) }
+    var indexScanned by remember { mutableIntStateOf(0) }
+    var indexIndexed by remember { mutableIntStateOf(0) }
 
     val isOwner = AuthService.isOwnerEmail(AuthService.currentUser?.email)
     if (!isOwner) {
@@ -192,198 +198,305 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
             }
         },
     ) { padding ->
-        // أثناء الاعتماد الجماعي تفرغ القائمة تدريجياً من البثّ الحيّ؛ نُبقي
-        // الشاشة على وضع القائمة كي لا يختفي شريط التقدّم قبل انتهاء العملية.
-        if (items.isEmpty() && !bulkBusy) {
-            Box(
-                Modifier.padding(padding).fillMaxSize().padding(28.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Filled.VerifiedUser,
-                        contentDescription = null,
-                        tint = adminGreen,
-                        modifier = Modifier.size(58.dp),
-                    )
-                    Spacer(Modifier.size(12.dp))
-                    Text(
-                        "لا توجد دروس مشبوهة معلّقة الآن.",
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                    )
-                    Spacer(Modifier.size(6.dp))
-                    Text("يمكنك تشغيل فحص شامل من الزر أعلى الشاشة.", textAlign = TextAlign.Center)
-                }
-            }
-            return@AdminScaffold
-        }
-        LazyColumn(
-            modifier = Modifier.padding(padding).fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            item {
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    modifier = Modifier.fillMaxWidth(),
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            // 🏗️ بطاقة فهرسة المتون فوق الفرعين كليهما: عمليّة مالكٍ تكفي
+            // مرّة واحدة بعد نشر الفهرس، فلا تستحق شاشةً ومدخلاً مستقلّين.
+            TranscriptIndexCard(
+                indexing = indexing,
+                scanned = indexScanned,
+                indexed = indexIndexed,
+                onStart = {
+                    indexing = true
+                    indexScanned = 0
+                    indexIndexed = 0
+                    scope.launch {
+                        try {
+                            val result = OwnerReviewRepository.backfillTranscriptIndex { scanned, indexed ->
+                                indexScanned = scanned
+                                indexIndexed = indexed
+                            }
+                            snack(
+                                if (result.indexed > 0) {
+                                    "اكتملت الفهرسة: فُهرس ${result.indexed} من ${result.scanned} متناً."
+                                } else {
+                                    "اكتملت الفهرسة: المتون كلّها (${result.scanned}) مفهرسة أصلاً."
+                                },
+                            )
+                        } catch (e: Exception) {
+                            snack("تعذّرت الفهرسة: ${e.arabicReason()}")
+                        }
+                        indexing = false
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 16.dp),
+            )
+            // أثناء الاعتماد الجماعي تفرغ القائمة تدريجياً من البثّ الحيّ؛ نُبقي
+            // الشاشة على وضع القائمة كي لا يختفي شريط التقدّم قبل انتهاء العملية.
+            if (items.isEmpty() && !bulkBusy) {
+                Box(
+                    Modifier.weight(1f).fillMaxWidth().padding(28.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Column(Modifier.padding(14.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            Icons.Filled.VerifiedUser,
+                            contentDescription = null,
+                            tint = adminGreen,
+                            modifier = Modifier.size(58.dp),
+                        )
+                        Spacer(Modifier.size(12.dp))
+                        Text(
+                            "لا توجد دروس مشبوهة معلّقة الآن.",
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                        )
+                        Spacer(Modifier.size(6.dp))
+                        Text("يمكنك تشغيل فحص شامل من الزر أعلى الشاشة.", textAlign = TextAlign.Center)
+                    }
+                }
+                return@Column
+            }
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                item {
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(14.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    // أثناء الاعتماد الجماعي تفرغ القائمة تدريجياً،
+                                    // فالعدّ الحيّ كان ينهار إلى صفر ويناقض شريط
+                                    // التقدّم تحته — نعرض إجمالي الدفعة بدله.
+                                    Text(
+                                        if (bulkBusy) {
+                                            "$bulkTotal درساً قيد الاعتماد"
+                                        } else {
+                                            "${items.size} درساً بانتظار قرارك"
+                                        },
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                    Spacer(Modifier.size(2.dp))
+                                    Text(
+                                        "راجعتَها ولا شبهة فيها؟ اعتمدها كلّها دفعة واحدة.",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Spacer(Modifier.size(8.dp))
+                                Button(
+                                    onClick = { confirmBulk = true },
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    enabled = !bulkBusy && busyId.isEmpty() && items.isNotEmpty(),
+                                ) {
+                                    Icon(
+                                        Icons.Filled.DoneAll,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Spacer(Modifier.size(4.dp))
+                                    Text("اعتماد الكل")
+                                }
+                            }
+                            if (bulkBusy) {
+                                Spacer(Modifier.size(10.dp))
+                                LinearProgressIndicator(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.size(6.dp))
                                 Text(
-                                    "${items.size} درساً بانتظار قرارك",
-                                    fontWeight = FontWeight.Bold,
-                                )
-                                Spacer(Modifier.size(2.dp))
-                                Text(
-                                    "راجعتَها ولا شبهة فيها؟ اعتمدها كلّها دفعة واحدة.",
+                                    "جارٍ الاعتماد… $bulkDone من $bulkTotal",
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            Spacer(Modifier.size(8.dp))
-                            Button(
-                                onClick = { confirmBulk = true },
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                enabled = !bulkBusy && busyId.isEmpty() && items.isNotEmpty(),
-                            ) {
-                                Icon(
-                                    Icons.Filled.DoneAll,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                                Spacer(Modifier.size(4.dp))
-                                Text("اعتماد الكل")
-                            }
                         }
-                        if (bulkBusy) {
-                            Spacer(Modifier.size(10.dp))
-                            LinearProgressIndicator(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
-                            Spacer(Modifier.size(6.dp))
+                    }
+                }
+                items(items.size) { index ->
+                    val review = items[index]
+                    val busy = busyId == review.id
+                    val playing = player.playingId == review.id && player.playing
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(14.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    Modifier.size(44.dp).background(MaterialTheme.colorScheme.surfaceContainer, CircleShape),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    IconButton(
+                                        onClick = { player.toggle(review.id, review.audioUrl) },
+                                        enabled = review.audioUrl.isNotEmpty(),
+                                    ) {
+                                        Icon(
+                                            if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                            contentDescription = if (playing) "إيقاف مؤقت" else "معاينة",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.size(8.dp))
+                                Text(
+                                    review.title.ifEmpty { "(درس بلا عنوان)" },
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Box(
+                                    Modifier
+                                        .background(
+                                            MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
+                                            RoundedCornerShape(99.dp),
+                                        )
+                                        .padding(horizontal = 9.dp, vertical = 4.dp),
+                                ) {
+                                    Text(
+                                        "خطورة ${review.riskScore}",
+                                        color = MaterialTheme.colorScheme.error,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                }
+                            }
+                            // شريط التحكّم للمقطع الجاري: تقدّم وقفز ±٣٠ث وسرعة —
+                            // الحكم على درس طويل لا يحتمل سماعه كاملاً ولا الحكم بلا سماع.
+                            PreviewPlayerBar(
+                                state = player,
+                                id = review.id,
+                                modifier = Modifier.padding(top = 8.dp),
+                            )
+                            if (review.reasons.isNotEmpty()) {
+                                Spacer(Modifier.size(10.dp))
+                                Text("أسباب الاشتباه:", fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.size(4.dp))
+                                review.reasons.forEach {
+                                    Text("• $it", modifier = Modifier.padding(vertical = 2.dp))
+                                }
+                            }
+                            Spacer(Modifier.size(8.dp))
                             Text(
-                                "جارٍ الاعتماد… $bulkDone من $bulkTotal",
+                                "معرّف الدرس: ${review.lessonId}" +
+                                    if (review.addedBy.isEmpty()) {
+                                        ""
+                                    } else {
+                                        "\nأضيف بواسطة: ${review.addedBy}"
+                                    },
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            Spacer(Modifier.size(12.dp))
+                            if (busy) {
+                                LinearProgressIndicator(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
+                            } else {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = { pending = review to "verified" },
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                        enabled = !bulkBusy,
+                                        modifier = Modifier.weight(1f),
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.Verified,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                        Spacer(Modifier.size(4.dp))
+                                        Text("تم التحقق")
+                                    }
+                                    OutlinedButton(
+                                        onClick = { pending = review to "delete" },
+                                        enabled = !bulkBusy,
+                                        modifier = Modifier.weight(1f),
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.DeleteForever,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                        Spacer(Modifier.size(4.dp))
+                                        Text("حذف نهائي", color = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
-            items(items.size) { index ->
-                val review = items[index]
-                val busy = busyId == review.id
-                val playing = player.playingId == review.id && player.playing
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.padding(14.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                Modifier.size(44.dp).background(MaterialTheme.colorScheme.surfaceContainer, CircleShape),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                IconButton(
-                                    onClick = { player.toggle(review.id, review.audioUrl) },
-                                    enabled = review.audioUrl.isNotEmpty(),
-                                ) {
-                                    Icon(
-                                        if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                        contentDescription = if (playing) "إيقاف مؤقت" else "معاينة",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.size(8.dp))
-                            Text(
-                                review.title.ifEmpty { "(درس بلا عنوان)" },
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Box(
-                                Modifier
-                                    .background(
-                                        MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
-                                        RoundedCornerShape(99.dp),
-                                    )
-                                    .padding(horizontal = 9.dp, vertical = 4.dp),
-                            ) {
-                                Text(
-                                    "خطورة ${review.riskScore}",
-                                    color = MaterialTheme.colorScheme.error,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                )
-                            }
-                        }
-                        // شريط التحكّم للمقطع الجاري: تقدّم وقفز ±٣٠ث وسرعة —
-                        // الحكم على درس طويل لا يحتمل سماعه كاملاً ولا الحكم بلا سماع.
-                        PreviewPlayerBar(
-                            state = player,
-                            id = review.id,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
-                        if (review.reasons.isNotEmpty()) {
-                            Spacer(Modifier.size(10.dp))
-                            Text("أسباب الاشتباه:", fontWeight = FontWeight.SemiBold)
-                            Spacer(Modifier.size(4.dp))
-                            review.reasons.forEach {
-                                Text("• $it", modifier = Modifier.padding(vertical = 2.dp))
-                            }
-                        }
-                        Spacer(Modifier.size(8.dp))
-                        Text(
-                            "معرّف الدرس: ${review.lessonId}" +
-                                if (review.addedBy.isEmpty()) {
-                                    ""
-                                } else {
-                                    "\nأضيف بواسطة: ${review.addedBy}"
-                                },
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.size(12.dp))
-                        if (busy) {
-                            LinearProgressIndicator(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
-                        } else {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = { pending = review to "verified" },
-                                    shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                    enabled = !bulkBusy,
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Icon(
-                                        Icons.Filled.Verified,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                    Spacer(Modifier.size(4.dp))
-                                    Text("تم التحقق")
-                                }
-                                OutlinedButton(
-                                    onClick = { pending = review to "delete" },
-                                    enabled = !bulkBusy,
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Icon(
-                                        Icons.Filled.DeleteForever,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                    Spacer(Modifier.size(4.dp))
-                                    Text("حذف نهائي", color = MaterialTheme.colorScheme.error)
-                                }
-                            }
-                        }
-                    }
+        }
+    }
+}
+
+/**
+ * 🏗️ بطاقة «فهرسة النصوص للبحث» — بنمط بطاقة الاعتماد الجماعي نفسه: عنوان
+ * وشرح وزرّ، وعند التشغيل شريطُ تقدّم وسطرُ عدّ حيّ. النداء يتكرّر تلقائياً
+ * في المستودع حتى يكتمل، فالمالك يضغط مرّة ويرى الحصيلة.
+ */
+@Composable
+private fun TranscriptIndexCard(
+    indexing: Boolean,
+    scanned: Int,
+    indexed: Int,
+    onStart: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = modifier,
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("فهرسة النصوص للبحث", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.size(2.dp))
+                    Text(
+                        "تُدرج المتون المعتمدة قبل تفعيل البحث في فهرسه. " +
+                            "تكفي مرّة واحدة، وإعادتها لا تضرّ.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
+                Spacer(Modifier.size(8.dp))
+                Button(
+                    onClick = onStart,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                    ),
+                    enabled = !indexing,
+                ) {
+                    Icon(
+                        Icons.Filled.ManageSearch,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.size(4.dp))
+                    Text("فهرسة")
+                }
+            }
+            if (indexing) {
+                Spacer(Modifier.size(10.dp))
+                LinearProgressIndicator(
+                    Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.size(6.dp))
+                Text(
+                    "جارٍ الفهرسة… فُحص $scanned وفُهرس $indexed",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

@@ -27,6 +27,9 @@ const ADMINS_COLLECTION = "dashboard_admins";
 const CODE_TTL_MS = 10 * 60 * 1000;
 const CODE_REQUEST_INTERVAL_MS = 60 * 1000;
 const MAX_CODE_ATTEMPTS = 5;
+// حدّ محاولات مهام تنظيف التخزين: بعده تُوقَف المهمّة ويُنبَّه المالك،
+// بدل إعادة محاولة يوميّة أبديّة على ملفٍّ يعصى الحذف بلا علم أحد.
+const MAX_CLEANUP_ATTEMPTS = 5;
 const MAX_SUBMISSION_BYTES = 100 * 1024 * 1024;
 const VIEW_MILESTONES = [100, 500, 1000, 5000, 10000];
 
@@ -409,8 +412,7 @@ exports.onLessonCreated = functions.firestore
     const d = unwrapLegacy(snap.data());
     // ♻️ الاستعادة من السلة تُعيد كتابة وثيقة الدرس كما كانت فيُطلق هذا
     // المُشغِّل ثانيةً. الوثيقة المستعادة تحمل publishNotified=true إن سبق
-    // إشعار نشرها، فلا يُعاد الإشعار — تماماً كما يفحصها
-    // dispatchScheduledLesson قبل الإرسال. بلا هذا الفحص كان درس قديم
+    // إشعار نشرها، فلا يُعاد الإشعار. بلا هذا الفحص كان درس قديم
     // يصل لكل المستمعين بوصفه «درساً جديداً» بمجرّد التراجع عن حذفه.
     if (d.publishNotified === true) return null;
     // ♻️ ووسم الاستعادة نفسه حارسٌ ثانٍ لا غنى عنه: الحارس أعلاه يعتمد على
@@ -425,10 +427,6 @@ exports.onLessonCreated = functions.firestore
       await snap.ref.set({ publishNotified: true }, { merge: true })
         .catch((error) => console.error("mark restored publishNotified failed", error));
       return null;
-    }
-    if (d.publishAt) {
-      const at = Date.parse(d.publishAt);
-      if (!Number.isNaN(at) && at > Date.now()) return null;
     }
     const title = cleanString(d.title || d.name, 180);
     const subId = cleanString(d.subcategoryId, 160);
@@ -452,8 +450,7 @@ exports.onLessonCreated = functions.firestore
         { type: "lesson", id: snap.id, lessonId: snap.id },
       );
     }
-    // يمنع ازدواج الإشعار مع publishScheduledLessons عندما يكون publishAt
-    // وقتاً ماضياً لحظة الإنشاء (رفع طويل تجاوز موعد الجدولة).
+    // وسمٌ يمنع تكرار الإشعار إن أُعيدت كتابة الوثيقة (استعادة من السلة).
     await snap.ref.set({ publishNotified: true }, { merge: true })
       .catch((error) => console.error("mark publishNotified failed", error));
     return null;
@@ -647,16 +644,9 @@ exports.onCategoryCreated = functions.firestore
     );
   });
 
-exports.onBookCreated = functions.firestore
-  .document("books/{id}")
-  .onCreate((snap) => {
-    const d = unwrapLegacy(snap.data());
-    return pushToTopic(
-      "كتاب جديد",
-      cleanString(d.name, 180) || "أُضيف كتاب جديد",
-      { type: "book", id: snap.id, bookId: snap.id },
-    );
-  });
+// ⚠️ لا مُشغِّل لمجموعة books: الكتب أُزيلت من التطبيق (التوجيه يردّ
+// «الكتب لم تعد ضمن التطبيق»)، فبثّ «كتاب جديد» كان إشعاراً بلا وجهة
+// لو كُتبت وثيقة كتاب بأي طريق.
 
 exports.onLessonMilestone = functions.firestore
   .document("lessons/{id}")
@@ -702,121 +692,6 @@ exports.onLessonMilestone = functions.firestore
     await Promise.all(tasks);
     return null;
   });
-
-async function dispatchScheduledLesson(doc, origin) {
-  const dispatchRef = db.collection("notification_dispatches")
-    .doc(`scheduled_lesson_${doc.id}`);
-  const now = Date.now();
-  const claimed = await db.runTransaction(async (tx) => {
-    const [dispatchSnap, lessonSnap] = await Promise.all([
-      tx.get(dispatchRef),
-      tx.get(doc.ref),
-    ]);
-    if (!lessonSnap.exists) return false;
-    const lesson = unwrapLegacy(lessonSnap.data());
-    const dispatch = dispatchSnap.data() || {};
-    if (lesson.publishNotified === true || dispatch.status === "sent") return false;
-    if (dispatch.status === "claimed" && Number(dispatch.leaseUntil || 0) > now) {
-      return false;
-    }
-    tx.set(dispatchRef, {
-      lessonId: doc.id,
-      status: "claimed",
-      origin,
-      claimedAt: admin.firestore.FieldValue.serverTimestamp(),
-      leaseUntil: now + 5 * 60 * 1000,
-      attempts: Number(dispatch.attempts || 0) + 1,
-    }, { merge: true });
-    return true;
-  });
-  if (!claimed) return false;
-  const fresh = await doc.ref.get();
-  if (!fresh.exists) return false;
-  const value = unwrapLegacy(fresh.data());
-  const title = cleanString(value.title || value.name, 180);
-  const subId = cleanString(value.subcategoryId, 160);
-  try {
-    if (subId) {
-      await pushToCondition(
-        "درس جديد",
-        title || "أُضيف درس صوتي جديد",
-        {
-          type: "lesson",
-          id: doc.id,
-          lessonId: doc.id,
-          subId,
-          subcategoryId: subId,
-        },
-        `'${TOPIC}' in topics || 'sec_${subId}' in topics`,
-      );
-    } else {
-      await pushToTopic(
-        "درس جديد",
-        title || "أُضيف درس صوتي جديد",
-        { type: "lesson", id: doc.id, lessonId: doc.id },
-      );
-    }
-    const batch = db.batch();
-    batch.set(dispatchRef, {
-      status: "sent",
-      sentAt: admin.firestore.FieldValue.serverTimestamp(),
-      leaseUntil: 0,
-    }, { merge: true });
-    batch.update(doc.ref, {
-      publishNotified: true,
-      publishedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    await batch.commit();
-    return true;
-  } catch (error) {
-    await dispatchRef.set({
-      status: "failed",
-      leaseUntil: 0,
-      lastError: cleanString(error && error.message, 500),
-      failedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true }).catch(() => {});
-    throw error;
-  }
-}
-
-exports.publishScheduledLessons = functions.pubsub
-  .schedule("*/15 * * * *")
-  .timeZone("Asia/Riyadh")
-  .onRun(async () => {
-    const nowIso = new Date().toISOString();
-    const snap = await db.collection("lessons")
-      .where("publishAt", "<=", nowIso)
-      .get();
-    // ⚠️ `publishAt` لا يُمسح بعد النشر إطلاقاً، فهذا الاستعلام يعيد **كل**
-    // درس سبقت جدولته منذ بدء المشروع. بلا هذا الترشيح كانت الدالة تفتح
-    // معاملةً (بقراءتين) لكل واحد منها كل ربع ساعة لتخلص إلى «مُشعَر أصلاً»
-    // — نموّ بلا سقف في القراءات، وطريقٌ مؤكَّد إلى نفاد مهلة المُجدوِل حين
-    // تكبر المكتبة. الترشيح محليّ فلا يحتاج فهرساً ولا يغيّر أي سلوك.
-    const due = snap.docs.filter(
-      (doc) => unwrapLegacy(doc.data()).publishNotified !== true,
-    );
-    await Promise.all(due.map(
-      (doc) => dispatchScheduledLesson(doc, "scheduler")
-        .catch((error) => console.error("scheduled publish failed", doc.id, error)),
-    ));
-    return null;
-  });
-
-exports.publishScheduledLesson = functions.https.onCall(async (data, context) => {
-  const actor = await assertAuthorized(context);
-  const lessonId = requireString(data && data.lessonId, "lessonId", 1, 180);
-  const ref = db.collection("lessons").doc(lessonId);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    throw new functions.https.HttpsError("not-found", "الدرس غير موجود.");
-  }
-  if (unwrapLegacy(snap.data()).publishNotified !== true) {
-    await ref.update({ publishAt: new Date().toISOString() });
-  }
-  const sent = await dispatchScheduledLesson(await ref.get(), `manual:${actor.email}`);
-  await auditOwnerAction(actor.email, "publish_scheduled_lesson", lessonId, { sent });
-  return { ok: true, id: lessonId, sent };
-});
 
 exports.weeklyDigest = functions.pubsub
   .schedule("0 9 * * 1")
@@ -1095,10 +970,6 @@ exports.createLesson = functions.https.onCall(async (data, context) => {
   } catch (_) {
     throw new functions.https.HttpsError("invalid-argument", "رابط الصوت غير صالح.");
   }
-  const publishAt = cleanString(input.publishAt, 80);
-  if (publishAt && Number.isNaN(Date.parse(publishAt))) {
-    throw new functions.https.HttpsError("invalid-argument", "موعد النشر غير صالح.");
-  }
   const storagePath = cleanString(
     input.storagePath || input.audioStoragePath,
     700,
@@ -1132,7 +1003,11 @@ exports.createLesson = functions.https.onCall(async (data, context) => {
     subcategoryId: cleanString(input.subcategoryId, 180),
     subcategoryName: cleanString(input.subcategoryName, 180),
     description: cleanString(input.description, 3000),
+    // اسم المتحدّث بمفتاحين: التطبيق يقرأ speaker/sheikh/reader ولا يعرف
+    // sheikhName، فيُكتب المرآة حتى يظهر سطر «المتحدّث» في التطبيق كما
+    // يظهر في الويب، ويطابقه بحث التطبيق.
     sheikhName: cleanString(input.sheikhName, 180),
+    speaker: cleanString(input.sheikhName, 180),
     // مدّة التمييز: بانقضائها يسقط الدرس من «مختارات المنبر». غياب المدّة
     // مع featured=true = تمييز دائم.
     // ⚠️ درس بقي في طابور الرفع حتى انقضت مدّة تمييزه يجب أن يصل **غير
@@ -1162,7 +1037,6 @@ exports.createLesson = functions.https.onCall(async (data, context) => {
     lessonData.storagePath = storagePath;
     lessonData.audioStoragePath = storagePath;
   }
-  if (publishAt) lessonData.publishAt = new Date(publishAt).toISOString();
   if (Number.isFinite(Number(input.duration))) {
     lessonData.duration = Number(input.duration);
   }
@@ -1200,10 +1074,7 @@ exports.createLesson = functions.https.onCall(async (data, context) => {
     if (existing.exists) return { ok: true, id: lessonRef.id, duplicate: true };
   }
   await lessonRef.set(lessonData);
-  await auditOwnerAction(actor.email, "create_lesson", lessonRef.id, {
-    title,
-    scheduled: Boolean(publishAt),
-  });
+  await auditOwnerAction(actor.email, "create_lesson", lessonRef.id, { title });
   return { ok: true, id: lessonRef.id };
 });
 
@@ -1295,12 +1166,17 @@ exports.deleteMyData = functions.runWith({ timeoutSeconds: 120, memory: "512MB" 
     const rates = await deleteQuery(
       db.collection("private_rate_limits").where("uid", "==", uid),
     );
+    // صندوق إشعارات المستخدم يحمل عناوين مساهماته؛ والقواعد تسمح بحذفه
+    // لصاحب الـuid وحده، فبعد زوال حسابه لا يبقى من يحذفه — يُمسح هنا.
+    const notificationsDoc = db.collection("user_notifications").doc(uid);
+    const notifications = await deleteQuery(notificationsDoc.collection("items"));
+    await notificationsDoc.delete().catch(() => {});
     await admin.auth().deleteUser(uid).catch((error) => {
       if (error.code !== "auth/user-not-found") throw error;
     });
     return {
       ok: true,
-      deleted: { submissions, transcriptSubmissions, feedback, rates },
+      deleted: { submissions, transcriptSubmissions, feedback, rates, notifications },
       anonymizedLessons,
       anonymizedTranscripts: transcriptsSnap.size,
     };
@@ -1504,6 +1380,7 @@ exports.approveSubmission = functions.runWith({ timeoutSeconds: 120, memory: "51
           updatedAtMs: Date.now(),
           createdAt: new Date().toISOString(),
         });
+        await syncTranscriptIndex(lessonRef.id, transcriptText);
         for (const path of transcriptImages) {
           await deleteFileIfExists(path).catch(() => {});
         }
@@ -1638,6 +1515,91 @@ const MAX_TRANSCRIPT_CHARS = 20000;
 const MAX_TRANSCRIPT_IMAGES = 4;
 const MAX_TRANSCRIPT_IMAGE_BYTES = 10 * 1024 * 1024;
 const MIN_TRANSCRIPT_TEXT_CHARS = 10;
+
+// ─── فهرس البحث داخل المتون ────────────────────────────────────────
+// وثيقة خفيفة لكل درس (transcript_index/{lessonId}) لا تحمل إلا كلماته.
+// فُصلت عن lesson_transcripts عمداً: استعلام array-contains يُنزّل الوثيقة
+// المطابقة **كاملةً**، ووثيقة المتن تبلغ 20 ألف حرف — فبحثٌ واحد كان
+// سيكلّف المستمع مئات الكيلوبايتات. وثيقة الفهرس بضعة كيلوبايتات لا غير.
+//
+// ⚠️ قواعد التطبيع أدناه نسخة حرفية من `normalizeArabic` في
+// app/util/TextUtils.kt، واختلاف حرفٍ واحد يُبطل التطابق بين الطرفين.
+const TRANSCRIPT_INDEX_COLLECTION = "transcript_index";
+const MAX_INDEX_KEYWORDS = 400;
+const MIN_KEYWORD_CHARS = 3;
+// كل ما ليس حرفاً عربياً أو لاتينياً أو رقماً فاصلٌ بين الكلمات:
+// المدى الأول همزة→غين والثاني فاء→ياء (وبينهما التطويل، وقد حُذف).
+const KEYWORD_SEPARATORS = /[^ء-غف-يa-z0-9]+/;
+// أدوات التعريف الملتصقة: يُفهرس الجذع وحده كي يجد من كتب «تيمم» درساً
+// وردت فيه «بالتيمم»، ومن كتب «التيمم» درساً ورد فيه «تيمم» — والعربية
+// تلصق الأداة بالكلمة فالمطابقة الحرفية وحدها كانت ستُخفي أكثر النتائج.
+const KEYWORD_PREFIXES = ["وال", "فال", "بال", "كال", "لل", "ال"];
+
+function normalizeArabicText(value) {
+  return String(value || "").trim().toLowerCase().normalize("NFKC")
+    .replace(/[ً-ٰٟۖ-ۭ]/g, "")
+    .replace(/ـ/g, "")
+    .replace(/[أإآٱ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/ة/g, "ه")
+    .replace(/ؤ/g, "و")
+    .replace(/ئ/g, "ي");
+}
+
+/** جذع الكلمة: تُقشَّر الأداة ما دام الباقي كلمةً معتبرة (فـ«الله» تبقى). */
+function keywordStem(word) {
+  for (const prefix of KEYWORD_PREFIXES) {
+    if (word.startsWith(prefix)
+        && word.length - prefix.length >= MIN_KEYWORD_CHARS) {
+      return word.slice(prefix.length);
+    }
+  }
+  return word;
+}
+
+/**
+ * كلمات فهرس المتن: فريدة، الأشيع أوّلاً، وبحدّ 400 كلمة.
+ * الحدّ مقصود لأن الوثيقة تُنزَّل كاملة مع كل نتيجة بحث. والقصّ بالتواتر
+ * لا بالترتيب: أشيع كلمة في متنٍ هي موضوعه (من يبحث عن «التيمم» يريد
+ * درساً تكرّرت فيه)، فيُحفظ ما يُبحث عنه ويسقط ما ورد عرَضاً مرّة.
+ */
+function transcriptIndexKeywords(text) {
+  const counts = new Map();
+  for (const raw of normalizeArabicText(text).split(KEYWORD_SEPARATORS)) {
+    if (raw.length < MIN_KEYWORD_CHARS) continue;
+    const stem = keywordStem(raw);
+    counts.set(stem, (counts.get(stem) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, MAX_INDEX_KEYWORDS)
+    .map((entry) => entry[0]);
+}
+
+/**
+ * مزامنة فهرس درس بعد كتابة متنه.
+ * لا ترمي أبداً: الفهرس تحسينٌ للبحث لا شرطٌ لاعتماد النص، وفشل كتابته
+ * يجب ألّا يُسقط اعتماداً أنجزه المشرف ولا نشر درسٍ مرفقٍ به.
+ */
+async function syncTranscriptIndex(lessonId, text) {
+  try {
+    const ref = db.collection(TRANSCRIPT_INDEX_COLLECTION).doc(lessonId);
+    const keywords = transcriptIndexKeywords(text);
+    // متنٌ بلا كلمات (صور صفحات فقط مثلاً) لا يُفهرس، ووثيقته السابقة
+    // تُمسح كي لا يبقى فهرسٌ يشير إلى نصٍّ لم يعد موجوداً.
+    if (!keywords.length) {
+      await ref.delete();
+      return;
+    }
+    await ref.set({
+      lessonId,
+      keywords,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (error) {
+    console.error("transcript index sync failed", lessonId, error);
+  }
+}
 
 async function validateTranscriptImages(paths, requiredPrefix) {
   const list = Array.isArray(paths) ? paths.slice(0, MAX_TRANSCRIPT_IMAGES) : [];
@@ -1896,6 +1858,9 @@ exports.approveTranscriptSubmission = functions
       }
       throw error;
     }
+    // بعد نجاح المعاملة لا داخلها: كتابة الفهرس ليست جزءاً من ذرّية اعتماد
+    // النص، وفشلها لا يصحّ أن يُعيد المساهمة إلى «معلّقة» بعد حسمها.
+    await syncTranscriptIndex(lessonId, text);
     const originalImages = Array.isArray(original.imagePaths)
       ? original.imagePaths
       : [];
@@ -2011,6 +1976,9 @@ exports.upsertLessonTranscript = functions
     const requiredPrefix = `lesson_transcripts/${lessonId}/`;
     if (data && data.remove === true) {
       await transcriptRef.delete();
+      // الفهرس يتبع المتن: بقاؤه بعد حذفه يعني نتيجة بحثٍ تفتح درساً بلا نص.
+      await db.collection(TRANSCRIPT_INDEX_COLLECTION).doc(lessonId)
+        .delete().catch(() => {});
       await bucket.deleteFiles({ prefix: requiredPrefix }).catch(() => {});
       await auditOwnerAction(actor.email, "delete_transcript", lessonId, {});
       return { ok: true, removed: true };
@@ -2062,10 +2030,98 @@ exports.upsertLessonTranscript = functions
       updatedAtMs: Date.now(),
       createdAt: prevSnap.exists ? (previous.createdAt || nowIso) : nowIso,
     });
+    await syncTranscriptIndex(lessonId, text);
     await auditOwnerAction(actor.email, "upsert_transcript", lessonId, {
       images: images.length,
     });
     return { ok: true, lessonId, images };
+  });
+
+/**
+ * 🏗️ بناء فهرس البحث لما هو موجود من متون (backfill) — للمالك وحده.
+ *
+ * تُنادى مرّة بعد نشر هذه النسخة، فالمتون المعتمدة قبلها لا مُشغِّل يمرّ
+ * عليها. ⛔ وعمداً لا كرون دوريّ ولا مُشغِّل على lessons: الكلفة تُحسب،
+ * والمزامنة بعد ذلك تتم في مسارات الكتابة نفسها لا غير.
+ *
+ * تمشي على دفعات بمؤشّر معرّف الوثيقة، وتتوقّف قبل نفاد المهلة معيدةً
+ * `nextStartAfter` كي تُستأنف بنداءٍ ثانٍ إن كانت المتون كثيرة جداً.
+ * `force: true` تُعيد بناء ما هو مفهرس أصلاً (بعد تغيير قواعد التقطيع).
+ */
+exports.backfillTranscriptIndex = functions
+  .runWith({ timeoutSeconds: 540, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    const owner = await assertOwner(context);
+    const force = !!(data && data.force === true);
+    const pageSize = 120;
+    // هامش دون المهلة (540ث) يكفي لإنهاء الدفعة الجارية وإرجاع المؤشّر.
+    const deadline = Date.now() + 470 * 1000;
+    let cursor = cleanString(data && data.startAfter, 180);
+    let scanned = 0;
+    let indexed = 0;
+    let cleared = 0;
+    let done = false;
+    for (;;) {
+      let query = db.collection(TRANSCRIPTS_COLLECTION)
+        .orderBy(admin.firestore.FieldPath.documentId())
+        .limit(pageSize);
+      if (cursor) query = query.startAfter(cursor);
+      const snap = await query.get();
+      if (snap.empty) {
+        done = true;
+        break;
+      }
+      const indexRefs = snap.docs.map(
+        (doc) => db.collection(TRANSCRIPT_INDEX_COLLECTION).doc(doc.id),
+      );
+      // قراءة واحدة لكل الدفعة: إعادة النداء بعد اكتمالها لا تكلّف كتابات.
+      const existing = force ? [] : await db.getAll(...indexRefs);
+      const alreadyIndexed = new Set(
+        existing.filter((snapshot) => snapshot.exists).map((snapshot) => snapshot.id),
+      );
+      const batch = db.batch();
+      let writes = 0;
+      snap.docs.forEach((doc, position) => {
+        scanned += 1;
+        if (alreadyIndexed.has(doc.id)) return;
+        const keywords = transcriptIndexKeywords((doc.data() || {}).text);
+        if (!keywords.length) {
+          // متنٌ بلا كلمات (صور صفحات فقط). في المسار العادي لا وثيقة فهرس
+          // له أصلاً — تخطّيه أرخص من حذفٍ لا يحذف شيئاً.
+          if (!force) return;
+          cleared += 1;
+          batch.delete(indexRefs[position]);
+        } else {
+          indexed += 1;
+          batch.set(indexRefs[position], {
+            lessonId: doc.id,
+            keywords,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+        writes += 1;
+      });
+      if (writes) await batch.commit();
+      cursor = snap.docs[snap.docs.length - 1].id;
+      if (snap.size < pageSize) {
+        done = true;
+        break;
+      }
+      if (Date.now() > deadline) break;
+    }
+    await auditOwnerAction(owner, "backfill_transcript_index", "", {
+      scanned,
+      indexed,
+      done,
+    });
+    return {
+      ok: true,
+      scanned,
+      indexed,
+      cleared,
+      done,
+      nextStartAfter: done ? "" : cursor,
+    };
   });
 
 // استخراج النص من صورة صفحة الكتاب (OCR عربي) — للمشرفين فقط، عبر Cloud
@@ -2292,6 +2348,8 @@ async function deleteLessonHandler(data, context) {
   });
   batch.delete(lessonRef);
   batch.delete(transcriptRef);
+  // فهرس البحث لا يُحفظ في السلة: يُعاد بناؤه من نصّ الدرس عند الاستعادة.
+  batch.delete(db.collection(TRANSCRIPT_INDEX_COLLECTION).doc(lessonId));
   if (reviewSnap.exists) {
     batch.update(reviewRef, {
       status: "deleted",
@@ -2331,6 +2389,15 @@ exports.restoreDeletedLesson = functions.https.onCall(async (data, context) => {
   }));
   if (value.transcript && typeof value.transcript === "object") {
     batch.set(db.collection("lesson_transcripts").doc(lessonId), value.transcript);
+    // ويعود معه فهرس بحثه، وإلّا رجع الدرس ونصّه بلا أن يجده أحد بكلمة منه.
+    const keywords = transcriptIndexKeywords(value.transcript.text);
+    if (keywords.length) {
+      batch.set(db.collection(TRANSCRIPT_INDEX_COLLECTION).doc(lessonId), {
+        lessonId,
+        keywords,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
   }
   batch.delete(trashRef);
   await batch.commit();
@@ -2523,9 +2590,11 @@ async function trashLessonDocs(lessonDocs, actorEmail) {
   );
   const transcriptById = new Map(transcriptSnaps.map((s) => [s.id, s]));
   const now = Date.now();
-  for (let offset = 0; offset < lessonDocs.length; offset += 150) {
+  // ⚠️ 120 لا 150: صار لكل درس أربع عمليات (سلة + درس + متن + فهرس بحثه)،
+  // و150×4 = 600 تتجاوز سقف الدفعة الواحدة في Firestore (500).
+  for (let offset = 0; offset < lessonDocs.length; offset += 120) {
     const batch = db.batch();
-    lessonDocs.slice(offset, offset + 150).forEach((doc) => {
+    lessonDocs.slice(offset, offset + 120).forEach((doc) => {
       const transcriptSnap = transcriptById.get(doc.id);
       batch.set(db.collection(TRASH_COLLECTION).doc(doc.id), {
         lesson: doc.data(),
@@ -2539,6 +2608,7 @@ async function trashLessonDocs(lessonDocs, actorEmail) {
       });
       batch.delete(doc.ref);
       batch.delete(db.collection("lesson_transcripts").doc(doc.id));
+      batch.delete(db.collection(TRANSCRIPT_INDEX_COLLECTION).doc(doc.id));
     });
     await batch.commit();
   }
@@ -3030,7 +3100,6 @@ function lessonModerationFields(raw) {
     storagePath: cleanString(d.storagePath || d.audioStoragePath, 700),
     categoryId: cleanString(d.categoryId, 180),
     subcategoryId: cleanString(d.subcategoryId, 180),
-    publishAt: cleanString(d.publishAt, 100),
     publishNotified: d.publishNotified === true,
     addedBy: cleanString(d.addedBy, 180),
     createdByEmail: normalizeEmail(d.createdByEmail || d.addedBy),
@@ -3117,23 +3186,6 @@ function inspectLesson(raw) {
       }
     } catch (_) {
       addHygieneSignal(result, "رابط الصوت ليس رابطاً صالحاً أصلاً", 3);
-    }
-  }
-  if (fields.publishAt) {
-    const parsedPublishAt = Date.parse(fields.publishAt);
-    if (Number.isNaN(parsedPublishAt)) {
-      addHygieneSignal(
-        result,
-        `تاريخ النشر المجدول غير مفهوم: «${fields.publishAt}»`,
-        2,
-      );
-    } else if (!fields.publishNotified
-        && parsedPublishAt < Date.now() - 24 * 60 * 60 * 1000) {
-      addHygieneSignal(
-        result,
-        "درس مجدول تجاوز موعد نشره بأكثر من يوم دون أن يُنشر",
-        2,
-      );
     }
   }
   return result;
@@ -3778,6 +3830,7 @@ exports.cleanupOrphanSubmissionUploads = functions.runWith({
     .limit(100)
     .get();
   let completedJobs = 0;
+  let exhaustedJobs = 0;
   for (const job of jobsSnap.docs) {
     const value = job.data() || {};
     const failed = [];
@@ -3795,11 +3848,26 @@ exports.cleanupOrphanSubmissionUploads = functions.runWith({
       });
       completedJobs += 1;
     } else {
+      // العدّاد يُقرأ لا يُكتب وحده: بلوغ الحدّ يُوقف المهمّة (فلا تلتقطها
+      // الدورة القادمة) ويرفع تنبيهاً للمالك ليحذف الملفات يدوياً.
+      const attempts = Number(value.attempts || 0) + 1;
+      const exhausted = attempts >= MAX_CLEANUP_ATTEMPTS;
       await job.ref.update({
         paths: failed,
-        attempts: Number(value.attempts || 0) + 1,
+        attempts,
+        status: exhausted ? "failed" : "pending",
         lastAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
       });
+      if (exhausted) {
+        exhaustedJobs += 1;
+        await writeAdminAlert(
+          OWNER_EMAIL,
+          "تعذّر حذف ملفات من التخزين",
+          `${failed.length} ملفاً لم يُحذف بعد ${attempts} محاولات`
+            + ` (${cleanString(value.reason, 60) || "تنظيف"}) — يلزم حذف يدوي.`,
+          { type: "storage_cleanup_failed", refId: job.id, jobId: job.id },
+        );
+      }
     }
   }
   await auditOwnerAction("system", "cleanup_orphan_submission_uploads", "", {
@@ -3808,6 +3876,7 @@ exports.cleanupOrphanSubmissionUploads = functions.runWith({
     failedOrphans,
     cleanupJobsScanned: jobsSnap.size,
     completedJobs,
+    exhaustedJobs,
   });
   return null;
 });

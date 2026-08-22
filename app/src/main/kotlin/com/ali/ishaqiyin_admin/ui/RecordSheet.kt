@@ -40,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,7 +53,10 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.ali.ishaqiyin_admin.data.isArabicText
 import com.ali.ishaqiyin_admin.util.AudioRecorderController
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -81,12 +85,15 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
     val context = LocalContext.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val recorder = remember { AudioRecorderController() }
+    val scope = rememberCoroutineScope()
 
     var recording by remember { mutableStateOf(false) }
     var paused by remember { mutableStateOf(false) }
     var seconds by remember { mutableIntStateOf(0) }
     var file by remember { mutableStateOf<File?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    /** إنهاء جارٍ — يعطّل الزرّ فلا يُنادى مرّتين وهو يعمل في الخلفية. */
+    var stopping by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -124,21 +131,31 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
     }
 
     fun stop() {
-        try {
-            // إرجاع null يعني أنّ الملفّ حُذف لفساد التسجيل — العودة إلى
-            // المرجع القديم كانت تسلّم ملفّاً غير موجود للرفع.
-            val result = recorder.stop()
-            recording = false
-            paused = false
-            if (result == null) {
-                file = null
-                seconds = 0
-                error = "تعذّر حفظ التسجيل — أعد المحاولة."
-            } else {
-                file = result
+        if (stopping) return
+        stopping = true
+        scope.launch {
+            try {
+                // ⏳ خارج خيط الواجهة: `stop()` يكتب حاوية MP4 ثمّ يفحص
+                // الناتج بـMediaMetadataRetriever من القرص — إدخال/إخراج حاجز
+                // كان يُلعثم الإطارات على تسجيل طويل.
+                //
+                // إرجاع null يعني أنّ الملفّ حُذف لفساد التسجيل — العودة إلى
+                // المرجع القديم كانت تسلّم ملفّاً غير موجود للرفع.
+                val result = withContext(Dispatchers.IO) { recorder.stop() }
+                recording = false
+                paused = false
+                if (result == null) {
+                    file = null
+                    seconds = 0
+                    error = "تعذّر حفظ التسجيل — أعد المحاولة."
+                } else {
+                    file = result
+                }
+            } catch (e: Exception) {
+                error = "تعذّر إيقاف التسجيل: ${recorderReason(e)}"
+            } finally {
+                stopping = false
             }
-        } catch (e: Exception) {
-            error = "تعذّر إيقاف التسجيل: ${recorderReason(e)}"
         }
     }
 
@@ -147,7 +164,10 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
 
     ModalBottomSheet(
         onDismissRequest = {
-            if (recording) recorder.cancel()
+            // بلا شرط: بعد «إنهاء» يصير recording=false وrelease() لا يحذف،
+            // فكان التسجيل الذي أغلق المشرف ورقته يبقى في cacheDir بلا كانس.
+            // «استخدام هذا التسجيل» يزيل الورقة برمجيّاً فلا يمرّ من هنا.
+            recorder.cancel()
             onDismiss()
         },
         sheetState = sheetState,
@@ -246,6 +266,7 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
                         }
                         Button(
                             onClick = { stop() },
+                            enabled = !stopping,
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                         ) {
                             Icon(Icons.Filled.Stop, contentDescription = null)

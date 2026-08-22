@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Copyright
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.GppMaybe
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Report
 import androidx.compose.material.icons.filled.ThumbUp
@@ -202,6 +204,11 @@ private fun kindOf(type: String): FeedbackKind = when (type) {
     "benefited" -> FeedbackKind("استفاد", Icons.Filled.ThumbUp, FeedbackTone.Positive)
     "audio_issue" ->
         FeedbackKind("مشكلة صوت", Icons.AutoMirrored.Filled.VolumeOff, FeedbackTone.Problem)
+    // ⚠️ النوعان يصلان من التطبيق متمايزين ويصوغ لهما الخادم عنوانين
+    // خاصّين، فإسقاطهما على «بلاغ» واحد كان يمحو التمييز بعد أن يسقط
+    // التنبيه — وبلاغ حقوق النشر بلاغ قانونيّ عاجل لا ملاحظة عابرة.
+    "copyright" -> FeedbackKind("حقوق نشر", Icons.Filled.Copyright, FeedbackTone.Report)
+    "abuse" -> FeedbackKind("إساءة", Icons.Filled.GppMaybe, FeedbackTone.Report)
     else -> FeedbackKind("بلاغ", Icons.Filled.Report, FeedbackTone.Report)
 }
 

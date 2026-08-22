@@ -1,6 +1,7 @@
 package com.ali.ishaqiyin_admin.data
 
 import android.Manifest
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -35,6 +36,13 @@ object AdminChannels {
 
     /** قناة المكالمات الصوتيّة: أهميّة قصوى + نغمة رنين واهتزاز. */
     const val CALLS = "admin_calls"
+
+    /**
+     * قناة إشعار المكالمة **الجارية** — منفصلة عن [CALLS] عمداً: على أندرويد ٨+
+     * تحكم القناةُ الصوتَ والاهتزاز وتخطّي «عدم الإزعاج» لا إعدادات الإشعار،
+     * فإشعار مكالمة قائمة على قناة الرنين كان يرنّ ويهتزّ ويخترق وضع الصمت.
+     */
+    const val CALL_ONGOING = "admin_call_ongoing"
 }
 
 /** إشعار المكالمة الواردة — معرّف ثابت ليُلغى من أيّ مكان. */
@@ -77,6 +85,9 @@ class AdminMessagingService : FirebaseMessagingService() {
         const val REQUEST_ANSWER = 9011
         const val REQUEST_DECLINE = 9012
         const val REQUEST_RINGING = 9013
+
+        /** ذهب الهويّة (Gold300) — لون تمييز الأيقونة الصغيرة في الدرج. */
+        val ACCENT = 0xFFF4BB44.toInt()
     }
 
     override fun onNewToken(token: String) {
@@ -219,8 +230,22 @@ class AdminMessagingService : FirebaseMessagingService() {
             )
         }
         val caller = Person.Builder().setName(callerName).setImportant(true).build()
+        // 🔒 أندرويد ١٤+: `USE_FULL_SCREEN_INTENT` لم يعد يُمنح تلقائياً إلّا
+        // لتطبيقات الاتصال المسجَّلة بـConnectionService — واللوحة ليست منها.
+        // فبلا هذا الفحص نمرّر نيّة ملء شاشة يسقطها النظام صامتاً؛ ومع الفحص
+        // يهبط الإشعار إلى لافتة CallStyle عاديّة (بأهميّة القناة ورنّتها).
+        val fullScreenAllowed =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                runCatching {
+                    getSystemService(NotificationManager::class.java)
+                        ?.canUseFullScreenIntent() == true
+                }.getOrDefault(false)
+            } else {
+                true
+            }
         val notification = NotificationCompat.Builder(this, AdminChannels.CALLS)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ACCENT)
             .setContentTitle(callerName)
             .setContentText("مكالمة صوتيّة واردة")
             .setStyle(
@@ -235,8 +260,12 @@ class AdminMessagingService : FirebaseMessagingService() {
             .setOngoing(true)
             .setAutoCancel(false)
             .setContentIntent(ringingIntent)
-            // يفتح شاشة الرنين فوق القفل مباشرة (نمط واتساب).
-            .setFullScreenIntent(ringingIntent, true)
+            // يفتح شاشة الرنين فوق القفل مباشرة (نمط واتساب) — متى سمح النظام.
+            .apply { if (fullScreenAllowed) setFullScreenIntent(ringingIntent, true) }
+            // ⏱️ شبكة أمان: `cancelIncoming` إلغاء **محلّي** لا يعمل إن قُتلت
+            // العمليّة أو ضاعت دفعة الإلغاء، فيبقى إشعار رنين دائم لمكالمة
+            // ميّتة. المهلة تُسقطه وحدها بانتهاء زمن الرنين.
+            .setTimeoutAfter(AppConfig.CALL_RING_TIMEOUT_MS)
             .build()
         runCatching { manager.notify(AdminCallNotifications.INCOMING_ID, notification) }
     }
@@ -270,8 +299,12 @@ class AdminMessagingService : FirebaseMessagingService() {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(this, AdminChannels.URGENT)
-            .setSmallIcon(R.mipmap.ic_launcher)
+        // ⚠️ قناة واحدة للتنبيه الواحد: الخادم يثبّت `admin_alerts` لكلّ دفعاته،
+        // فبناء المقدّمة على `admin_urgent_alerts` كان يجعل إسكات «تنبيهات
+        // الإدارة» من إعدادات النظام لا يُسكت التنبيه نفسه واللوحة مفتوحة.
+        val notification = NotificationCompat.Builder(this, AdminChannels.ALERTS)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ACCENT)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))

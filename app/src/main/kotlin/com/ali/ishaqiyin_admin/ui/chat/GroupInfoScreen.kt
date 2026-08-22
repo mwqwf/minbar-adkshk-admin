@@ -41,6 +41,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -493,7 +494,9 @@ fun GroupInfoScreen(isOwner: Boolean, nav: NavHostController, onBack: () -> Unit
 private fun SectionCard(content: @Composable () -> Unit) {
     Card(
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        // ⚠️ لون السمة لا أبيض ثابت: عناوين الصفوف ترث لون المحتوى، فكان
+        // النصّ الفاتح يقع على بطاقة بيضاء في الوضع الداكن.
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
     ) {
         Column { content() }

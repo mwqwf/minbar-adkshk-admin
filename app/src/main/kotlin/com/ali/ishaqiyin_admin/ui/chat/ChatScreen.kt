@@ -279,7 +279,7 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
         ChatNotifications.isChatOpen = true
         onDispose {
             ChatNotifications.isChatOpen = false
-            SharedAudioPlayer.stop()
+            SharedAudioPlayer.release()
         }
     }
 
@@ -322,7 +322,7 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
 
     // انتهت رسالة صوتيّة؟ شغّل التالية تلقائياً (نمط واتساب).
     DisposableEffect(allMessages) {
-        SharedAudioPlayer.onCompleted = { finishedKey ->
+        val handler: (String) -> Unit = { finishedKey ->
             val index = allMessages.indexOfFirst {
                 it.attachment?.let(ChatMediaStore::keyOf) == finishedKey
             }
@@ -339,7 +339,12 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                 }
             }
         }
-        onDispose { SharedAudioPlayer.onCompleted = null }
+        SharedAudioPlayer.onCompleted = handler
+        // ⚠️ بشرط الهويّة: الوجهة الجديدة تسجّل مُعالجها قبل إتلاف السابقة،
+        // فمسحٌ غير مشروط كان يمحو معالج الشاشة التي تفتح للتوّ.
+        onDispose {
+            if (SharedAudioPlayer.onCompleted === handler) SharedAudioPlayer.onCompleted = null
+        }
     }
 
     val picker = rememberLauncherForActivityResult(
@@ -945,7 +950,7 @@ private fun SwipeToReply(
     }
 }
 
-private suspend fun snapshotFlowOfLastVisible(
+internal suspend fun snapshotFlowOfLastVisible(
     listState: androidx.compose.foundation.lazy.LazyListState,
     onChange: (lastIndex: Int, total: Int) -> Unit,
 ) {

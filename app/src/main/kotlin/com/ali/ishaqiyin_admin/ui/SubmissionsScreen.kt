@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
@@ -41,7 +42,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
@@ -67,9 +67,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil3.compose.AsyncImage
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.Category
@@ -78,7 +80,9 @@ import com.ali.ishaqiyin_admin.data.Subcategory
 import com.ali.ishaqiyin_admin.data.SubmissionsRepository
 import com.ali.ishaqiyin_admin.data.TranscriptSubmission
 import com.ali.ishaqiyin_admin.data.TranscriptsRepository
+import com.ali.ishaqiyin_admin.data.arabicReason
 import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
@@ -96,10 +100,14 @@ fun SubmissionsScreen(onBack: () -> Unit) {
     // إشعار «نصّ مشروح» يجب أن يفتح تبويبه لا تبويب الصوتيات. الهدف يُستهلك
     // مرّة واحدة فلا يعود إلى تبويبه عند كل إعادة تركيب.
     var tab by rememberSaveable { mutableStateOf(SubmissionsTarget.consumeTab()) }
-    val audioPending by remember { SubmissionsRepository.watchPendingCount() }
-        .collectAsState(initial = 0)
-    val textPending by remember { TranscriptsRepository.watchPendingCount() }
-        .collectAsState(initial = 0)
+    // ومعه معرّف المساهمة المعنيّة: يُستهلَك مرّة واحدة كذلك، ولا يُمرَّر
+    // إلّا لتبويبه هو، فلا يُمرَّر بحثاً عن معرّف في التبويب الآخر.
+    val targetTab = rememberSaveable { tab }
+    val targetId = rememberSaveable { SubmissionsTarget.consumeRefId() }
+    // العددان من مخزون شارات اللوحة نفسه: لا مستمعَي Firestore إضافيَّين عند
+    // كل فتح، ولا رقم يخالف ما تعرضه اللوحة.
+    val audioPending by DashboardBadges.pendingAudio().collectAsState()
+    val textPending by DashboardBadges.pendingTranscripts().collectAsState()
 
     AdminScaffold(title = "المساهمات", onBack = onBack) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
@@ -119,7 +127,15 @@ fun SubmissionsScreen(onBack: () -> Unit) {
                     text = { TabLabel("نصوص مشروحة", textPending) },
                 )
             }
-            if (tab == 0) AudioSubmissionsContent() else TranscriptSubmissionsContent()
+            if (tab == 0) {
+                AudioSubmissionsContent(
+                    targetId = if (targetTab == 0) targetId else "",
+                )
+            } else {
+                TranscriptSubmissionsContent(
+                    targetId = if (targetTab == 1) targetId else "",
+                )
+            }
         }
     }
 }
@@ -130,19 +146,18 @@ private fun TabLabel(label: String, pending: Int) {
         Text(label, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         if (pending > 0) {
             Spacer(Modifier.size(6.dp))
-            // في الفاتح يبقى لون المحتوى كما كان (لون التبويب) فلا يتغيّر
-            // المظهر، وفي الداكن يصير البرتقالي فاتحاً فيحتاج حبراً داكناً.
+            // حبر الشارة يُشتقّ من لون خلفيتها لا من لون التبويب: حبر
+            // التبويب الفاتح على البرتقالي الغامق تباينه 1.2:1 — رقم لا يُقرأ.
             Badge(
                 containerColor = adminOrange,
-                contentColor = if (isAdminDarkTheme()) {
-                    contentColorOn(adminOrange)
-                } else {
-                    LocalContentColor.current
-                },
+                contentColor = contentColorOn(adminOrange),
             ) { Text("$pending") }
         }
     }
 }
+
+/** مدّة تمييز المساهمة القادمة من الإشعار قبل أن يخبو لونها. */
+private const val HIGHLIGHT_MS = 4_000L
 
 // ─── الفلترة والحسم الجماعي (مشتركان بين التبويبين) ──────────────────
 
@@ -312,7 +327,7 @@ private fun BulkDecisionBar(
 // ─── تبويب الدروس الصوتية (سلوك «طلبات النشر» السابق كما هو) ─────────
 
 @Composable
-private fun AudioSubmissionsContent() {
+private fun AudioSubmissionsContent(targetId: String = "") {
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
     val player = rememberPreviewPlayer()
@@ -320,9 +335,16 @@ private fun AudioSubmissionsContent() {
     var categories by remember { mutableStateOf<List<Category>>(emptyList()) }
     var subcategories by remember { mutableStateOf<List<Subcategory>>(emptyList()) }
     var busy by remember { mutableStateOf(false) }
-    var approving by remember { mutableStateOf<LessonSubmission?>(null) }
-    var editing by remember { mutableStateOf<LessonSubmission?>(null) }
-    var rejecting by remember { mutableStateOf<LessonSubmission?>(null) }
+    // الحوارات تُحفظ بمعرّف المساهمة لا بكائنها: تدوير الشاشة كان يغلق
+    // «تعديل ثم نشر» ويمحو ما كُتب فيه، والمعرّف وحده يعبر إعادة الإنشاء.
+    var approvingId by rememberSaveable { mutableStateOf("") }
+    var editingId by rememberSaveable { mutableStateOf("") }
+    var rejectingId by rememberSaveable { mutableStateOf("") }
+    var removingId by rememberSaveable { mutableStateOf("") }
+    // صور صفحات النصّ المرفق بالمساهمة: تُعرض للمشرف قبل الموافقة لأنّها
+    // تُنشر تحت الدرس فور اعتمادها.
+    var viewingImage by remember { mutableStateOf("") }
+    val imageUrls = remember { mutableStateMapOf<String, String>() }
     // الفلترة والحسم الجماعي.
     var filter by remember { mutableStateOf(SubFilter.PENDING) }
     var selectMode by remember { mutableStateOf(false) }
@@ -354,6 +376,26 @@ private fun AudioSubmissionsContent() {
     }
     val pendingVisible = shown.count { it.isPending }
     val chosen = shown.filter { it.isPending && selected.contains(it.id) }
+    // 🎯 المساهمة التي جاء الإشعار من أجلها: تمرير إليها وتمييز يخبو.
+    // بلا هذا كانت الشاشة تُفتح على رأس القائمة فيبحث المشرف يدوياً عنها
+    // بين العشرات — ويضيع الغرض من حمل معرّفها في حمولة الإشعار.
+    val listState = rememberLazyListState()
+    var highlighted by remember { mutableStateOf("") }
+    var seeked by remember { mutableStateOf(false) }
+    LaunchedEffect(targetId, shown.size) {
+        if (targetId.isEmpty() || seeked) return@LaunchedEffect
+        val index = shown.indexOfFirst { it.id == targetId }
+        if (index < 0) return@LaunchedEffect
+        seeked = true
+        listState.animateScrollToItem(index)
+        highlighted = targetId
+        delay(HIGHLIGHT_MS)
+        highlighted = ""
+    }
+    val approving = items.firstOrNull { it.id == approvingId }
+    val editing = items.firstOrNull { it.id == editingId }
+    val rejecting = items.firstOrNull { it.id == rejectingId }
+    val removing = items.firstOrNull { it.id == removingId }
 
     fun run(doneMsg: String, action: suspend () -> Unit) {
         busy = true
@@ -361,8 +403,8 @@ private fun AudioSubmissionsContent() {
             try {
                 action()
                 if (doneMsg.isNotEmpty()) snack(doneMsg)
-            } catch (_: Exception) {
-                snack("تعذّر تنفيذ العملية. حاول مجدداً.")
+            } catch (e: Exception) {
+                snack(e.arabicReason())
             }
             busy = false
         }
@@ -385,11 +427,14 @@ private fun AudioSubmissionsContent() {
         ConfirmDialog(
             title = "نشر المساهمة كما هي؟",
             body = "«${s.title}»\n${s.categoryName} ← ${s.subcategoryName}\n\n" +
-                "سيُنشر الدرس فوراً ويصل المساهم إشعار شكر.",
+                "سيُنشر الدرس فوراً ويصل المساهم إشعار شكر." +
+                // النصّ المرفق يُنشر تحت الدرس في اللحظة نفسها، فتذكيره هنا
+                // آخر فرصة لمراجعته قبل ظهوره لكل المستمعين.
+                if (s.hasTranscript) "\n\n📄 ومعه النصّ المشروح المرفق يُنشر تحت الدرس." else "",
             confirmLabel = "نشر",
-            onDismiss = { approving = null },
+            onDismiss = { approvingId = "" },
             onConfirm = {
-                approving = null
+                approvingId = ""
                 run("نُشرت المساهمة وأُخطر المساهم. ✅") {
                     SubmissionsRepository.approveAndPublish(s)
                 }
@@ -402,9 +447,9 @@ private fun AudioSubmissionsContent() {
             submission = s,
             categories = categories,
             subcategories = subcategories,
-            onDismiss = { editing = null },
+            onDismiss = { editingId = "" },
             onPublish = { title, cat, sub ->
-                editing = null
+                editingId = ""
                 run("نُشرت المساهمة بعد التعديل وأُخطر المساهم. ✅") {
                     SubmissionsRepository.approveAndPublish(
                         s,
@@ -422,14 +467,35 @@ private fun AudioSubmissionsContent() {
     rejecting?.let { s ->
         RejectDialog(
             presets = audioRejectPresets,
-            onDismiss = { rejecting = null },
+            onDismiss = { rejectingId = "" },
             onReject = { reason ->
-                rejecting = null
+                rejectingId = ""
                 run("رُفضت المساهمة وأُبلغ المساهم بالسبب.") {
                     SubmissionsRepository.reject(s, reason)
                 }
             },
         )
+    }
+
+    // الإزالة حذف نهائي للسجلّ (وللملف الصوتي في المرفوضة) — لا تمرّ بنقرة
+    // واحدة كبقيّة الحذف في اللوحة.
+    removing?.let { s ->
+        ConfirmDialog(
+            title = "إزالة من السجل؟",
+            body = "سيُحذف سجلّ «${s.title}» نهائياً" +
+                if (s.status == "rejected") "، ومعه ملفه الصوتي المرفوض." else ".",
+            confirmLabel = "إزالة",
+            confirmColor = MaterialTheme.colorScheme.error,
+            onDismiss = { removingId = "" },
+            onConfirm = {
+                removingId = ""
+                run("أُزيلت من السجل.") { SubmissionsRepository.deleteDecided(s) }
+            },
+        )
+    }
+
+    if (viewingImage.isNotEmpty()) {
+        FullscreenImageDialog(url = viewingImage, onDismiss = { viewingImage = "" })
     }
 
     if (confirmBulkPublish) {
@@ -456,7 +522,7 @@ private fun AudioSubmissionsContent() {
                         .onSuccess { finishBulk("نُشرت", it.done, it.failed) }
                         .onFailure {
                             bulkBusy = false
-                            snack("تعذّر النشر الجماعي. حاول مجدداً.")
+                            snack("تعذّر النشر الجماعي: ${it.arabicReason()}")
                         }
                 }
             },
@@ -484,7 +550,7 @@ private fun AudioSubmissionsContent() {
                         .onSuccess { finishBulk("رُفضت", it.done, it.failed) }
                         .onFailure {
                             bulkBusy = false
-                            snack("تعذّر الرفض الجماعي. حاول مجدداً.")
+                            snack("تعذّر الرفض الجماعي: ${it.arabicReason()}")
                         }
                 }
             },
@@ -547,6 +613,7 @@ private fun AudioSubmissionsContent() {
             return@Column
         }
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -557,7 +624,11 @@ private fun AudioSubmissionsContent() {
                 Card(
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
+                        containerColor = if (highlighted == s.id) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        },
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
@@ -628,6 +699,36 @@ private fun AudioSubmissionsContent() {
                             Spacer(Modifier.size(4.dp))
                             Text("ملاحظة المساهم: ${s.note}", fontSize = 12.sp)
                         }
+                        // إقرارا المرسِل: الإقرار بالحقوق اختياري في
+                        // التطبيق، فتمييز من أقرّ ممن لم يُقِرّ هو كلّ فائدة
+                        // تخزينهما — ومن دون عرضهما لا يصلان المشرف أصلاً.
+                        Spacer(Modifier.size(4.dp))
+                        Text(
+                            "${if (s.rightsConfirmed) "✔" else "✖"} أقرّ بالحقوق  •  " +
+                                "${if (s.termsAccepted) "✔" else "✖"} قبل سياسة المحتوى" +
+                                if (s.contentPolicyVersion.isNotEmpty()) {
+                                    " (${s.contentPolicyVersion})"
+                                } else {
+                                    ""
+                                },
+                            fontSize = 12.sp,
+                            color = if (s.rightsConfirmed) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                adminOrange
+                            },
+                        )
+                        // النصّ المشروح المرفق يُنشر تحت الدرس فور الموافقة،
+                        // فعرضه هنا شرطُ صدق الوعد للمساهم: «تُعرض على
+                        // المشرفين قبل النشر».
+                        if (s.hasTranscript) {
+                            Spacer(Modifier.size(8.dp))
+                            SubmissionTranscriptPreview(
+                                submission = s,
+                                imageUrls = imageUrls,
+                                onOpenImage = { viewingImage = it },
+                            )
+                        }
                         if (!s.isPending && s.status == "rejected" &&
                             s.rejectReason.isNotEmpty()
                         ) {
@@ -646,7 +747,7 @@ private fun AudioSubmissionsContent() {
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Button(
-                                    onClick = { approving = s },
+                                    onClick = { approvingId = s.id },
                                     enabled = !busy && !bulkBusy,
                                     shape = RoundedCornerShape(8.dp),
                                     colors = ButtonDefaults.buttonColors(
@@ -663,7 +764,7 @@ private fun AudioSubmissionsContent() {
                                     Text("نشر كما هي")
                                 }
                                 OutlinedButton(
-                                    onClick = { editing = s },
+                                    onClick = { editingId = s.id },
                                     enabled = !busy && !bulkBusy,
                                     modifier = Modifier.weight(1f),
                                 ) {
@@ -676,7 +777,7 @@ private fun AudioSubmissionsContent() {
                                     Text("تعديل ثم نشر")
                                 }
                                 IconButton(
-                                    onClick = { rejecting = s },
+                                    onClick = { rejectingId = s.id },
                                     enabled = !busy && !bulkBusy,
                                 ) {
                                     Icon(
@@ -692,9 +793,7 @@ private fun AudioSubmissionsContent() {
                                 horizontalArrangement = Arrangement.End,
                             ) {
                                 TextButton(
-                                    onClick = {
-                                        run("") { SubmissionsRepository.deleteDecided(s) }
-                                    },
+                                    onClick = { removingId = s.id },
                                     enabled = !busy && !bulkBusy,
                                 ) {
                                     Icon(
@@ -731,15 +830,18 @@ private val audioRejectPresets = listOf(
 )
 
 @Composable
-private fun TranscriptSubmissionsContent() {
+private fun TranscriptSubmissionsContent(targetId: String = "") {
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
     val player = rememberPreviewPlayer()
 
     var busy by remember { mutableStateOf(false) }
-    var approving by remember { mutableStateOf<TranscriptSubmission?>(null) }
-    var editing by remember { mutableStateOf<TranscriptSubmission?>(null) }
-    var rejecting by remember { mutableStateOf<TranscriptSubmission?>(null) }
+    // بالمعرّف لا بالكائن: تدوير الشاشة كان يغلق «تعديل ثم اعتماد» ويمحو
+    // نصّ الـOCR المدقَّق قبل اعتماده.
+    var approvingId by rememberSaveable { mutableStateOf("") }
+    var editingId by rememberSaveable { mutableStateOf("") }
+    var rejectingId by rememberSaveable { mutableStateOf("") }
+    var removingId by rememberSaveable { mutableStateOf("") }
     var viewingImage by remember { mutableStateOf("") }
     // روابط صوتيات الدروس تُجلب كسولاً هنا؛ وروابط صور الاقتراحات صارت
     // مكشوفة من كاش المستودع فلا تُعاد كل زيارة.
@@ -770,6 +872,24 @@ private fun TranscriptSubmissionsContent() {
     }
     val pendingVisible = shown.count { it.isPending }
     val chosen = shown.filter { it.isPending && selected.contains(it.id) }
+    // 🎯 نظير تبويب الصوتيات: تمرير إلى الاقتراح الذي جاء الإشعار من أجله.
+    val listState = rememberLazyListState()
+    var highlighted by remember { mutableStateOf("") }
+    var seeked by remember { mutableStateOf(false) }
+    LaunchedEffect(targetId, shown.size) {
+        if (targetId.isEmpty() || seeked) return@LaunchedEffect
+        val index = shown.indexOfFirst { it.id == targetId }
+        if (index < 0) return@LaunchedEffect
+        seeked = true
+        listState.animateScrollToItem(index)
+        highlighted = targetId
+        delay(HIGHLIGHT_MS)
+        highlighted = ""
+    }
+    val approving = items.firstOrNull { it.id == approvingId }
+    val editing = items.firstOrNull { it.id == editingId }
+    val rejecting = items.firstOrNull { it.id == rejectingId }
+    val removing = items.firstOrNull { it.id == removingId }
 
     /**
      * بعد أيّ اعتماد يصير للدرس نصّ معتمد قطعاً — تثبيت ذلك فوراً هو ما
@@ -789,8 +909,8 @@ private fun TranscriptSubmissionsContent() {
                 action()
                 after()
                 if (doneMsg.isNotEmpty()) snack(doneMsg)
-            } catch (_: Exception) {
-                snack("تعذّر تنفيذ العملية. حاول مجدداً.")
+            } catch (e: Exception) {
+                snack(e.arabicReason())
             }
             busy = false
         }
@@ -807,10 +927,15 @@ private fun TranscriptSubmissionsContent() {
         snack("$label $done اقتراحاً$extra.")
     }
 
-    fun playLesson(lessonId: String) {
+    /**
+     * المشغّل يُفتاح بمعرّف الاقتراح لا بمعرّف الدرس: اقتراحان لدرس واحد
+     * كانا يعرضان شريطي تشغيل لصوتية واحدة. والكاش يبقى على معرّف الدرس
+     * فلا يتكرّر جلب الرابط نفسه.
+     */
+    fun playLesson(submissionId: String, lessonId: String) {
         val cached = audioUrls[lessonId]
         if (cached != null) {
-            player.toggle(lessonId, cached)
+            player.toggle(submissionId, cached)
             return
         }
         scope.launch {
@@ -825,10 +950,10 @@ private fun TranscriptSubmissionsContent() {
                     snack("لم يُعثر على صوتية هذا الدرس.")
                 } else {
                     audioUrls[lessonId] = url
-                    player.toggle(lessonId, url)
+                    player.toggle(submissionId, url)
                 }
-            } catch (_: Exception) {
-                snack("تعذّر جلب صوتية الدرس.")
+            } catch (e: Exception) {
+                snack("تعذّر جلب صوتية الدرس: ${e.arabicReason()}")
             }
         }
     }
@@ -844,9 +969,9 @@ private fun TranscriptSubmissionsContent() {
                     ""
                 },
             confirmLabel = "اعتماد",
-            onDismiss = { approving = null },
+            onDismiss = { approvingId = "" },
             onConfirm = {
-                approving = null
+                approvingId = ""
                 run(
                     "اعتُمد النص وأُخطر المساهم. ✅",
                     after = { markApproved(s.lessonId) },
@@ -862,9 +987,9 @@ private fun TranscriptSubmissionsContent() {
             submission = s,
             imageUrls = imageUrls,
             hasExistingApproved = hasApprovedText[s.lessonId] == true,
-            onDismiss = { editing = null },
+            onDismiss = { editingId = "" },
             onApprove = { text, bookTitle, sourceRef, keepImages ->
-                editing = null
+                editingId = ""
                 run(
                     "اعتُمد النص بعد التعديل وأُخطر المساهم. ✅",
                     after = { markApproved(s.lessonId) },
@@ -884,12 +1009,31 @@ private fun TranscriptSubmissionsContent() {
     rejecting?.let { s ->
         RejectDialog(
             presets = transcriptRejectPresets,
-            onDismiss = { rejecting = null },
+            onDismiss = { rejectingId = "" },
             onReject = { reason ->
-                rejecting = null
+                rejectingId = ""
                 run("رُفض الاقتراح وأُبلغ المساهم بالسبب.") {
                     TranscriptsRepository.reject(s, reason)
                 }
+            },
+        )
+    }
+
+    // الحذف خادميّاً نهائي وشامل لصور الاقتراح — فلا يقع بنقرة واحدة.
+    removing?.let { s ->
+        ConfirmDialog(
+            title = "إزالة من السجل؟",
+            body = buildString {
+                append("سيُحذف سجلّ هذا الاقتراح")
+                if (s.imagePaths.isNotEmpty()) append(" وصوره")
+                append(" نهائياً. لا يمكن التراجع.")
+            },
+            confirmLabel = "إزالة",
+            confirmColor = MaterialTheme.colorScheme.error,
+            onDismiss = { removingId = "" },
+            onConfirm = {
+                removingId = ""
+                run("أُزيل من السجل.") { TranscriptsRepository.deleteDecided(s) }
             },
         )
     }
@@ -928,8 +1072,16 @@ private fun TranscriptSubmissionsContent() {
                     }
                     result
                         .onSuccess { outcome ->
+                            // ما اعتُمد فعلاً وحده يُعلَّم «له نص معتمد»؛ ما
+                            // أخفق أو تُخطّي يُنسى كاشه كي يُسأل عنه من جديد
+                            // بدل تحذير استبدال كاذب.
+                            outcome.approvedLessonIds.forEach { markApproved(it) }
                             targets.map { it.lessonId }.distinct()
-                                .forEach { lessonId -> markApproved(lessonId) }
+                                .filterNot { it in outcome.approvedLessonIds }
+                                .forEach { lessonId ->
+                                    hasApprovedText.remove(lessonId)
+                                    TranscriptsRepository.invalidateTranscript(lessonId)
+                                }
                             finishBulk(
                                 "اعتُمد",
                                 outcome.done,
@@ -939,7 +1091,7 @@ private fun TranscriptSubmissionsContent() {
                         }
                         .onFailure {
                             bulkBusy = false
-                            snack("تعذّر الاعتماد الجماعي. حاول مجدداً.")
+                            snack("تعذّر الاعتماد الجماعي: ${it.arabicReason()}")
                         }
                 }
             },
@@ -967,7 +1119,7 @@ private fun TranscriptSubmissionsContent() {
                         .onSuccess { finishBulk("رُفض", it.done, it.failed, 0) }
                         .onFailure {
                             bulkBusy = false
-                            snack("تعذّر الرفض الجماعي. حاول مجدداً.")
+                            snack("تعذّر الرفض الجماعي: ${it.arabicReason()}")
                         }
                 }
             },
@@ -1034,6 +1186,7 @@ private fun TranscriptSubmissionsContent() {
             return@Column
         }
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -1051,11 +1204,15 @@ private fun TranscriptSubmissionsContent() {
                         }
                     }
                 }
-                val isPlaying = player.playingId == s.lessonId && player.playing
+                val isPlaying = player.playingId == s.id && player.playing
                 Card(
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
+                        containerColor = if (highlighted == s.id) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        },
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
@@ -1081,7 +1238,7 @@ private fun TranscriptSubmissionsContent() {
                                     .padding(2.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                IconButton(onClick = { playLesson(s.lessonId) }) {
+                                IconButton(onClick = { playLesson(s.id, s.lessonId) }) {
                                     Icon(
                                         if (isPlaying) {
                                             Icons.Filled.Pause
@@ -1127,7 +1284,7 @@ private fun TranscriptSubmissionsContent() {
                         // تحتاج قفزاً داخل الدرس لا سماعه من أوّله.
                         PreviewPlayerBar(
                             state = player,
-                            id = s.lessonId,
+                            id = s.id,
                             modifier = Modifier.padding(top = 6.dp),
                         )
                         if (s.sourceRef.isNotEmpty()) {
@@ -1141,6 +1298,9 @@ private fun TranscriptSubmissionsContent() {
                         if (s.text.isNotEmpty()) {
                             Spacer(Modifier.size(8.dp))
                             var expanded by remember(s.id) { mutableStateOf(false) }
+                            // «…» والزرّ يتبعان الفيض الحقيقي لا عدد الحروف:
+                            // نصّ من أربعة أسطر طويلة كان يُقصّ بلا أيّ إشارة.
+                            var overflowed by remember(s.id) { mutableStateOf(false) }
                             Box(
                                 Modifier
                                     .fillMaxWidth()
@@ -1153,9 +1313,11 @@ private fun TranscriptSubmissionsContent() {
                                     fontSize = 14.sp,
                                     lineHeight = 24.sp,
                                     maxLines = if (expanded) Int.MAX_VALUE else 4,
+                                    overflow = TextOverflow.Ellipsis,
+                                    onTextLayout = { overflowed = it.hasVisualOverflow },
                                 )
                             }
-                            if (s.text.length > 160) {
+                            if (expanded || overflowed) {
                                 TextButton(onClick = { expanded = !expanded }) {
                                     Text(
                                         if (expanded) "طيّ النص" else "عرض النص كاملاً",
@@ -1208,7 +1370,7 @@ private fun TranscriptSubmissionsContent() {
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Button(
-                                    onClick = { approving = s },
+                                    onClick = { approvingId = s.id },
                                     enabled = !busy && !bulkBusy,
                                     shape = RoundedCornerShape(8.dp),
                                     colors = ButtonDefaults.buttonColors(
@@ -1225,7 +1387,7 @@ private fun TranscriptSubmissionsContent() {
                                     Text("اعتماد كما هو")
                                 }
                                 OutlinedButton(
-                                    onClick = { editing = s },
+                                    onClick = { editingId = s.id },
                                     enabled = !busy && !bulkBusy,
                                     modifier = Modifier.weight(1f),
                                 ) {
@@ -1238,7 +1400,7 @@ private fun TranscriptSubmissionsContent() {
                                     Text("تعديل ثم اعتماد")
                                 }
                                 IconButton(
-                                    onClick = { rejecting = s },
+                                    onClick = { rejectingId = s.id },
                                     enabled = !busy && !bulkBusy,
                                 ) {
                                     Icon(
@@ -1254,9 +1416,7 @@ private fun TranscriptSubmissionsContent() {
                                 horizontalArrangement = Arrangement.End,
                             ) {
                                 TextButton(
-                                    onClick = {
-                                        run("") { TranscriptsRepository.deleteDecided(s) }
-                                    },
+                                    onClick = { removingId = s.id },
                                     enabled = !busy && !bulkBusy,
                                 ) {
                                     Icon(
@@ -1276,6 +1436,86 @@ private fun TranscriptSubmissionsContent() {
     }
 }
 
+/**
+ * 📄 معاينة النصّ المشروح المرفق بمساهمة صوتيّة — قبل زرّ الموافقة.
+ *
+ * الدالّة السحابيّة تنشره في `lesson_transcripts` لحظةَ الاعتماد، فبلا هذه
+ * المعاينة يوافق المشرف على نصٍّ وصورِ صفحاتٍ لم يرَها قطّ.
+ */
+@Composable
+private fun SubmissionTranscriptPreview(
+    submission: LessonSubmission,
+    imageUrls: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>,
+    onOpenImage: (String) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
+            .padding(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Filled.TextSnippet,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.size(6.dp))
+            Text(
+                "نصّ مشروح مرفق — يُنشر تحت الدرس عند الموافقة",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        val source = listOf(submission.transcriptBookTitle, submission.transcriptSourceRef)
+            .filter { it.isNotEmpty() }
+            .joinToString(" — ")
+        if (source.isNotEmpty()) {
+            Spacer(Modifier.size(4.dp))
+            Text(source, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (submission.transcriptText.isNotEmpty()) {
+            Spacer(Modifier.size(6.dp))
+            var expanded by remember(submission.id) { mutableStateOf(false) }
+            // «عرض كاملاً» يتبع الفيض الحقيقي لا عدد الحروف — كما في تبويب
+            // النصوص المشروحة تماماً.
+            var overflowed by remember(submission.id) { mutableStateOf(false) }
+            Text(
+                submission.transcriptText,
+                fontSize = 14.sp,
+                lineHeight = 24.sp,
+                maxLines = if (expanded) Int.MAX_VALUE else 4,
+                overflow = TextOverflow.Ellipsis,
+                onTextLayout = { overflowed = it.hasVisualOverflow },
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+            )
+            if (expanded || overflowed) {
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(
+                        if (expanded) "طيّ النص" else "عرض النص كاملاً",
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+        if (submission.transcriptImagePaths.isNotEmpty()) {
+            Spacer(Modifier.size(8.dp))
+            Text(
+                "صور الصفحات (${submission.transcriptImagePaths.size}) — انقرها للعرض الكامل",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.size(6.dp))
+            SubmissionImagesRow(
+                paths = submission.transcriptImagePaths,
+                imageUrls = imageUrls,
+                onOpen = onOpenImage,
+            )
+        }
+    }
+}
+
 /** صور صفحات الكتاب في الاقتراح: مصغّرات تفتح بالنقر عرضاً كاملاً. */
 @Composable
 private fun SubmissionImagesRow(
@@ -1283,17 +1523,16 @@ private fun SubmissionImagesRow(
     imageUrls: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>,
     onOpen: (String) -> Unit,
 ) {
-    val scope = rememberCoroutineScope()
     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         items(paths.size) { i ->
             val path = paths[i]
             val url = imageUrls[path]
+            // الجلب داخل الأثر نفسه: بإطلاقه في scope الشاشة كان ينجو من
+            // خروج العنصر من القائمة فلا يُلغى.
             LaunchedEffect(path) {
-                if (url == null) {
-                    scope.launch {
-                        runCatching {
-                            imageUrls[path] = TranscriptsRepository.submissionImageUrl(path)
-                        }
+                if (imageUrls[path] == null) {
+                    runCatching {
+                        imageUrls[path] = TranscriptsRepository.submissionImageUrl(path)
                     }
                 }
             }
@@ -1323,21 +1562,29 @@ private fun SubmissionImagesRow(
     }
 }
 
-/** عرض صورة الصفحة كاملةً للتدقيق. */
+/**
+ * عرض صورة الصفحة كاملةً للتدقيق — ملء الشاشة وبعرضها كاملاً مع تمرير
+ * رأسي: صفحة طويلة (وأشدّها الناتجة عن الدمج) كانت تُحشر داخل ارتفاع
+ * الحوار فتُرسم شريطاً رفيعاً لا يُقرأ.
+ */
 @Composable
 fun FullscreenImageDialog(url: String, onDismiss: () -> Unit) {
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
         Box(
             Modifier
-                .fillMaxWidth()
-                .background(Color.Black, RoundedCornerShape(12.dp))
+                .fillMaxSize()
+                .background(Color.Black)
+                .verticalScroll(rememberScrollState())
                 .clickable { onDismiss() },
             contentAlignment = Alignment.Center,
         ) {
             AsyncImage(
                 model = url,
                 contentDescription = "صورة الصفحة",
-                contentScale = ContentScale.Fit,
+                contentScale = ContentScale.FillWidth,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
@@ -1360,10 +1607,11 @@ private fun EditTranscriptDialog(
 ) {
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
-    var text by remember { mutableStateOf(submission.text) }
-    var bookTitle by remember { mutableStateOf(submission.bookTitle) }
-    var sourceRef by remember { mutableStateOf(submission.sourceRef) }
-    var keepImages by remember { mutableStateOf(true) }
+    // ما يكتبه المشرف هنا (ونصّ الـOCR المدقَّق) يعبر إعادة إنشاء النشاط.
+    var text by rememberSaveable(submission.id) { mutableStateOf(submission.text) }
+    var bookTitle by rememberSaveable(submission.id) { mutableStateOf(submission.bookTitle) }
+    var sourceRef by rememberSaveable(submission.id) { mutableStateOf(submission.sourceRef) }
+    var keepImages by rememberSaveable(submission.id) { mutableStateOf(true) }
     var extracting by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf("") }
 
@@ -1424,25 +1672,33 @@ private fun EditTranscriptDialog(
                         onClick = {
                             extracting = true
                             scope.launch {
-                                try {
-                                    val parts = submission.imagePaths.mapNotNull { path ->
-                                        runCatching {
-                                            TranscriptsRepository.extractText(path)
-                                        }.getOrNull()?.takeIf { it.isNotBlank() }
-                                    }
-                                    if (parts.isEmpty()) {
-                                        snack("لم يُستخرج نص من الصور.")
-                                    } else {
-                                        val joined = parts.joinToString("\n\n")
-                                        text = if (text.isBlank()) {
-                                            joined
+                                // سبب فشل الخادم (مثل «فعّل Cloud Vision API»)
+                                // كان يُبتلع فيُعرض الفشل كأن الصور بلا نص.
+                                var lastError: Throwable? = null
+                                val parts = submission.imagePaths.mapNotNull { path ->
+                                    runCatching {
+                                        TranscriptsRepository.extractText(path)
+                                    }.onFailure { lastError = it }
+                                        .getOrNull()?.takeIf { it.isNotBlank() }
+                                }
+                                if (parts.isEmpty()) {
+                                    snack(
+                                        lastError?.let { "تعذّر الاستخراج: ${it.arabicReason()}" }
+                                            ?: "لم يُستخرج نص من الصور.",
+                                    )
+                                } else {
+                                    val joined = parts.joinToString("\n\n")
+                                    val combined =
+                                        if (text.isBlank()) joined else "$text\n\n$joined"
+                                    val trimmed = combined.length > 20000
+                                    text = combined.take(20000)
+                                    snack(
+                                        if (trimmed) {
+                                            "أُلحق النص وقُصّ عند 20 ألف حرف — راجع آخره."
                                         } else {
-                                            "$text\n\n$joined"
-                                        }.take(20000)
-                                        snack("أُلحق النص المستخرج — دقّقه قبل الاعتماد.")
-                                    }
-                                } catch (e: Exception) {
-                                    snack(e.message ?: "تعذّر استخراج النص من الصورة.")
+                                            "أُلحق النص المستخرج — دقّقه قبل الاعتماد."
+                                        },
+                                    )
                                 }
                                 extracting = false
                             }
@@ -1482,10 +1738,16 @@ private fun EditTranscriptDialog(
         confirmButton = {
             Button(
                 onClick = {
+                    // النقص يُشرح بعينه — كما في محرّر النص المشروح — بدل زرّ
+                    // معطَّل بلا سبب ظاهر.
+                    if (text.trim().length < 10 &&
+                        !(keepImages && submission.imagePaths.isNotEmpty())
+                    ) {
+                        snack("أدخل نص المقطع (١٠ أحرف على الأقل) أو أبقِ الصور المرفقة.")
+                        return@Button
+                    }
                     onApprove(text.trim(), bookTitle.trim(), sourceRef.trim(), keepImages)
                 },
-                enabled = text.trim().length >= 10 ||
-                    (keepImages && submission.imagePaths.isNotEmpty()),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                 ),
@@ -1526,11 +1788,13 @@ private fun EditAndPublishDialog(
     onDismiss: () -> Unit,
     onPublish: (String, Category, Subcategory) -> Unit,
 ) {
-    var title by remember { mutableStateOf(submission.title) }
-    var category by remember {
+    // العنوان المكتوب يعبر إعادة إنشاء النشاط؛ والقسمان يُشتقّان من الطلب
+    // متى وصلت قوائمهما (بعد إعادة الإنشاء تُجلب من جديد).
+    var title by rememberSaveable(submission.id) { mutableStateOf(submission.title) }
+    var category by remember(submission.id, categories) {
         mutableStateOf(categories.firstOrNull { it.id == submission.categoryId })
     }
-    var subcategory by remember {
+    var subcategory by remember(submission.id, subcategories) {
         mutableStateOf(
             subcategories.firstOrNull {
                 it.id == submission.subcategoryId && it.categoryId == submission.categoryId

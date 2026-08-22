@@ -77,8 +77,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.ali.ishaqiyin_admin.util.AudioRecorderController
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.abs
 
@@ -142,6 +147,15 @@ class VoiceRecorderState internal constructor(
     private var previewWave: List<Int>? = null
     private var previewMs = 0L
 
+    /**
+     * نطاق الحالة نفسها: إنهاء التسجيل ينتظر فحصاً حاجباً على IO، ولا يصحّ
+     * أن يُلغى بمغادرة عابرة (تدوير الشاشة) فتضيع الرسالة الصوتيّة.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /** إنهاءٌ جارٍ على IO — يمنع نقرة ثانية أو بدء تسجيل فوق المسجّل نفسه. */
+    private var finishing = false
+
     /** مدّة المقطع المعايَن بالثواني. */
     var previewSeconds by mutableIntStateOf(0)
         private set
@@ -182,7 +196,8 @@ class VoiceRecorderState internal constructor(
      * جارٍ (`phase != Idle`).
      */
     internal fun beginHold(): Boolean {
-        if (phase != VoicePhase.Idle) return false
+        // `finishing`: المسجّل نفسه ما يزال يُنهي التسجيل السابق على IO.
+        if (phase != VoicePhase.Idle || finishing) return false
         val granted = ContextCompat.checkSelfPermission(
             appContext,
             Manifest.permission.RECORD_AUDIO,
@@ -258,29 +273,35 @@ class VoiceRecorderState internal constructor(
 
     /** إيقاف التسجيل في الوضع المقفول ⇒ معاينة قبل الإرسال (نمط واتساب). */
     fun stopForPreview() {
-        if (phase != VoicePhase.Locked) return
+        if (phase != VoicePhase.Locked || finishing) return
         // المدّة تُلتقط قبل الإيقاف من الساعة الأحاديّة (أدقّ من عدّاد الواجهة).
         val ms = elapsedMs
         val elapsed = (ms / 1000L).toInt()
-        val file = recorder.stop()
-        val wave = file?.let { runCatching { recorder.waveform() }.getOrNull() }
-        if (elapsed < 1) {
-            onNotice("التسجيل قصير جدّاً.")
-            runCatching { file?.delete() }
-            reset()
-            return
+        // ⚠️ `recorder.stop()` يفحص صلاحيّة الملفّ بـMediaMetadataRetriever وهو
+        // حاجب — على IO كي لا تُجنِك الواجهة، والترتيب والشروط كما هي.
+        finishing = true
+        scope.launch {
+            val file = withContext(Dispatchers.IO) { recorder.stop() }
+            val wave = file?.let { runCatching { recorder.waveform() }.getOrNull() }
+            finishing = false
+            if (elapsed < 1) {
+                onNotice("التسجيل قصير جدّاً.")
+                runCatching { file?.delete() }
+                reset()
+                return@launch
+            }
+            if (file == null) {
+                onNotice("تعذّر حفظ التسجيل على هذا الجهاز — أعد المحاولة.")
+                reset()
+                return@launch
+            }
+            previewFile = file
+            previewWave = wave
+            previewSeconds = elapsed
+            previewMs = ms
+            paused = false
+            phase = VoicePhase.Preview
         }
-        if (file == null) {
-            onNotice("تعذّر حفظ التسجيل على هذا الجهاز — أعد المحاولة.")
-            reset()
-            return
-        }
-        previewFile = file
-        previewWave = wave
-        previewSeconds = elapsed
-        previewMs = ms
-        paused = false
-        phase = VoicePhase.Preview
     }
 
     /** تشغيل/متابعة المقطع المعايَن عبر المشغّل المشترك. */
@@ -312,6 +333,8 @@ class VoiceRecorderState internal constructor(
 
     /** حذف التسجيل — جارياً كان أو معايَناً. */
     fun discard() {
+        // إنهاءٌ جارٍ على IO: الحذف الآن يسابق المسجّل نفسه.
+        if (finishing) return
         stopPreviewPlayback()
         recorder.cancel()
         runCatching { previewFile?.delete() }
@@ -322,23 +345,30 @@ class VoiceRecorderState internal constructor(
     }
 
     private fun stopAndSend() {
+        if (finishing) return
         val ms = elapsedMs
         val elapsed = (ms / 1000L).toInt()
+        // الطور يعود Idle فوراً (كما كان) فيرجع الشريط العاديّ بلا انتظار.
+        finishing = true
+        reset()
         // ⚠️ بلا سقوط إلى الملفّ الخام: المسجّل يعيد null للتسجيل التالف
         // عمداً، وإرساله يُنتج «رسالة صوتيّة لا تعمل عند أحد».
-        val file = recorder.stop()
-        val wave = file?.let { runCatching { recorder.waveform() }.getOrNull() }
-        reset()
-        if (elapsed < 1) {
-            onNotice("التسجيل قصير جدّاً.")
-            runCatching { file?.delete() }
-            return
+        // والإيقاف على IO لأنّه يفحص الملفّ بـMediaMetadataRetriever (حاجب).
+        scope.launch {
+            val file = withContext(Dispatchers.IO) { recorder.stop() }
+            val wave = file?.let { runCatching { recorder.waveform() }.getOrNull() }
+            finishing = false
+            if (elapsed < 1) {
+                onNotice("التسجيل قصير جدّاً.")
+                runCatching { file?.delete() }
+                return@launch
+            }
+            if (file == null) {
+                onNotice("تعذّر حفظ التسجيل على هذا الجهاز — أعد المحاولة.")
+                return@launch
+            }
+            onSendRecording(file, ms, wave)
         }
-        if (file == null) {
-            onNotice("تعذّر حفظ التسجيل على هذا الجهاز — أعد المحاولة.")
-            return
-        }
-        onSendRecording(file, ms, wave)
     }
 
     private fun stopPreviewPlayback() {

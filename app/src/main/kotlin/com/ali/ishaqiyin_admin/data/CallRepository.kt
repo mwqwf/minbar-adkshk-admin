@@ -114,14 +114,7 @@ data class CallDoc(
     val answerType: String?,
 ) {
     val isRinging: Boolean get() = status == CallStatus.RINGING
-    val isAccepted: Boolean get() = status == CallStatus.ACCEPTED
     val isTerminal: Boolean get() = status in CallStatus.TERMINAL
-
-    /** هل أنا الطرف المتّصل؟ */
-    val amCaller: Boolean
-        get() = callerId == FirebaseAuth.getInstance().currentUser?.uid
-
-    fun otherOf(myUid: String): String = members.firstOrNull { it != myUid }.orEmpty()
 
     companion object {
         fun fromDoc(doc: DocumentSnapshot): CallDoc {
@@ -219,10 +212,6 @@ object CallRepository {
         val snap = call(callId).get(Source.SERVER).await()
         if (snap.exists()) CallDoc.fromDoc(snap) else null
     }.getOrNull()
-
-    /** هل أنا مشغول بمكالمة الآن؟ (يمنع بدء/قبول مكالمة ثانية) */
-    suspend fun hasActiveCall(): Boolean =
-        runCatching { activeCallsOfMine().isNotEmpty() }.getOrDefault(false)
 
     /** يحجز معرّفاً محلياً قبل إنشاء الوثيقة كي يربطه المحرّك باتصال WebRTC. */
     fun newCallId(): String = calls().document().id

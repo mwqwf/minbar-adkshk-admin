@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.dp
+import com.ali.ishaqiyin_admin.ui.chat.ChatColors
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  هويّة لوحة الإدارة — مشتقّة من أيقونة اللوحة نفسها.
@@ -181,6 +182,13 @@ fun MinbarAdminTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
+    // مصدر سمة الدردشة صار هنا لا في WhatsAppChatBackground: شاشتا
+    // «المحادثات» و«معلومات المجموعة» تقرآن ChatColors بلا المرور بخلفيّة
+    // الدردشة، فكانتا تُرسمان بقيم الفاتح في الوضع الداكن (نصّ kTealDark فوق
+    // Ink900 ≈ 1.5:1) حتّى تُزار المجموعة فتنقلب الألوان فجأة.
+    // السمة سلف كلّ الشاشات فتُكتب القيمة قبل أن يقرأها أيّ مستهلك ⇒ بلا وميض،
+    // والشرط يمنع كتابة عقيمة تُعيد التأليف بلا داعٍ.
+    if (ChatColors.dark != darkTheme) ChatColors.dark = darkTheme
     MaterialTheme(
         colorScheme = if (darkTheme) AdminDarkColors else AdminLightColors,
         shapes = AdminShapes,

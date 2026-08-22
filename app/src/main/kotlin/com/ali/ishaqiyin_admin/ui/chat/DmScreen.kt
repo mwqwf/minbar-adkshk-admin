@@ -3,7 +3,7 @@ package com.ali.ishaqiyin_admin.ui.chat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -126,6 +126,15 @@ private val REPLY_SWIPE_THRESHOLD = 56.dp
 private val REPLY_SWIPE_MAX = 72.dp
 private const val REPLY_SWIPE_RESISTANCE = 0.55f
 
+/** ترشيح رسائل الخاصّ بالبحث — مصدر واحد للقائمة المرسومة ولحساب القفز. */
+private fun filterDmMessages(all: List<ChatMessage>, query: String): List<ChatMessage> {
+    if (query.isEmpty()) return all
+    return all.filter {
+        it.text.lowercase().contains(query) ||
+            it.attachment?.name?.lowercase()?.contains(query) == true
+    }
+}
+
 /**
  * 💬 محادثة خاصّة بين مشرفَين — بنفس مزايا المجموعة: نصّ/صور/فيديو/صوت/
  * رسائل صوتيّة/ملفّات، ردود، تفاعلات، حضور، «يكتب…»، وعلامة قراءة ✓✓،
@@ -212,13 +221,13 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
     // نهاية التمرير (أقدم الرسائل) → وسّع النافذة المحمَّلة.
     // المقارنة بحجم الصفحة الخام لا بالمرشَّحة: رسالة مخفيّة واحدة كانت تكفي
     // لتجميد الترقيم إلى الأبد فلا يصل المستخدم لما هو أقدم.
+    // ⚠️ العدد من القائمة **المرسومة** (كالمجموعة) لا من `messages`: أثناء بحث
+    // نشط كان الشرط لا يتحقّق أبداً فلا تظهر نتائج أقدم.
     LaunchedEffect(listState) {
-        androidx.compose.runtime.snapshotFlow {
-            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-        }.collect { lastIndex ->
+        snapshotFlowOfLastVisible(listState) { lastIndex, total ->
             if (
-                messages.isNotEmpty() &&
-                lastIndex >= messages.size - 5 &&
+                total > 0 &&
+                lastIndex >= total - 5 &&
                 limit < 2000 &&
                 rawPageSize >= limit
             ) {
@@ -230,30 +239,33 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
     // ترشيح البحث (داخل المحمَّل) — نمط واتساب. مرفوع إلى هنا ليراه القفز
     // إلى الرسالة المقتبَسة قبل بناء القائمة.
     val query = searchQuery.trim().lowercase()
-    val shown = remember(messages, query) {
-        if (query.isEmpty()) {
-            messages
-        } else {
-            messages.filter {
-                it.text.lowercase().contains(query) ||
-                    it.attachment?.name?.lowercase()?.contains(query) == true
-            }
-        }
-    }
+    val shown = remember(messages, query) { filterDmMessages(messages, query) }
+
+    /**
+     * القائمة **المعروضة الآن** — تُقرأ من الحالة الحيّة داخل الكوروتين فلا
+     * تتجمّد على لقطة إعادة التركيب التي أُطلق منها القفز.
+     */
+    fun displayedNow(): List<ChatMessage> =
+        filterDmMessages(messages, searchQuery.trim().lowercase())
 
     /**
      * القفز إلى الرسالة المقتبَسة وإضاءتها لحظات (نمط واتساب) — يوسّع
      * النافذة المحمَّلة تدريجياً إن كانت أقدم من المعروض.
      *
-     * البحث النشط يرشّح القائمة فيختلف فهرسها عن المعروض، لذا يُغلق أوّلاً.
+     * ⚠️ الفهرس يُحسب من القائمة المعروضة فعلاً لا من كامل المحمَّل: أثناء
+     * بحث نشط كان النقر يقفز إلى مكان خاطئ، فالبحث يُمسح أوّلاً ثمّ تُنتظر
+     * مهلة قصيرة كي تُبنى القائمة الكاملة قبل الحساب.
      */
     fun jumpTo(ref: ChatReplyRef) {
-        searching = false
-        searchQuery = ""
         scope.launch {
+            if (searchQuery.isNotBlank()) {
+                searching = false
+                searchQuery = ""
+                delay(80)
+            }
             repeat(4) {
                 // `messages` حالة حيّة: توسيع النافذة أدناه يُحدّثها فعلاً.
-                val index = messages.indexOfFirst { it.id == ref.messageId }
+                val index = displayedNow().indexOfFirst { it.id == ref.messageId }
                 if (index >= 0) {
                     listState.animateScrollToItem(index)
                     highlightedId = ref.messageId
@@ -261,7 +273,11 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                     highlightedId = ""
                     return@launch
                 }
-                if (limit >= 2000) return@repeat
+                // بلغنا سقف النافذة ولم نجدها: رسالة صريحة بدل صمت.
+                if (limit >= 2000) {
+                    snack("الرسالة الأصليّة أقدم من المحمَّل حاليّاً.")
+                    return@launch
+                }
                 limit += 200
                 delay(320)
             }
@@ -273,8 +289,11 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         ChatNotifications.openDmThreadId = threadId
         PendingGroupQuote.value = null
         onDispose {
-            ChatNotifications.openDmThreadId = ""
-            SharedAudioPlayer.stop()
+            // ⚠️ بشرط الهويّة: محادثة أخرى قد تكون سجّلت معرّفها قبل إتلافنا.
+            if (ChatNotifications.openDmThreadId == threadId) {
+                ChatNotifications.openDmThreadId = ""
+            }
+            SharedAudioPlayer.release()
         }
     }
 
@@ -301,7 +320,7 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
 
     // انتهت رسالة صوتيّة؟ شغّل التالية تلقائياً (نمط واتساب — كالمجموعة).
     DisposableEffect(messages) {
-        SharedAudioPlayer.onCompleted = { finishedKey ->
+        val handler: (String) -> Unit = { finishedKey ->
             val index = messages.indexOfFirst {
                 it.attachment?.let(ChatMediaStore::keyOf) == finishedKey
             }
@@ -318,7 +337,12 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                 }
             }
         }
-        onDispose { SharedAudioPlayer.onCompleted = null }
+        SharedAudioPlayer.onCompleted = handler
+        // ⚠️ بشرط الهويّة: الوجهة الجديدة تسجّل مُعالجها قبل إتلاف السابقة،
+        // فمسحٌ غير مشروط كان يمحو معالج الشاشة التي تفتح للتوّ.
+        onDispose {
+            if (SharedAudioPlayer.onCompleted === handler) SharedAudioPlayer.onCompleted = null
+        }
     }
 
     val picker = rememberLauncherForActivityResult(
@@ -971,19 +995,25 @@ private fun SwipeToReplyRow(
     val density = LocalDensity.current
     val thresholdPx = with(density) { REPLY_SWIPE_THRESHOLD.toPx() }
     val maxPx = with(density) { REPLY_SWIPE_MAX.toPx() }
-    val scope = rememberCoroutineScope()
-    val slide = remember(messageId) { Animatable(0f) }
+    // ⚠️ حالة + animateFloatAsState لا Animatable: كوروتين `snapTo` لكلّ حدث
+    // مؤشّر كان يخصّص ويُلغى في كلّ إطار فتتأخّر الفقاعة عن الإصبع.
+    var target by remember(messageId) { mutableFloatStateOf(0f) }
+    val shift by animateFloatAsState(
+        target,
+        animationSpec = spring(dampingRatio = 0.6f),
+        label = "replySwipe",
+    )
     var accumulated by remember(messageId) { mutableFloatStateOf(0f) }
     var passed by remember(messageId) { mutableStateOf(false) }
 
     Box(Modifier.fillMaxWidth()) {
-        val progress = (abs(slide.value) / thresholdPx).coerceIn(0f, 1f)
+        val progress = (abs(shift) / thresholdPx).coerceIn(0f, 1f)
         if (progress > 0f) {
             // أيقونة الردّ تنمو خلف الفقاعة وتكتمل عند العتبة، على الجهة التي
             // يُسحب منها (فتصلح للاتّجاهين).
             Box(
                 Modifier
-                    .align(if (slide.value < 0f) Alignment.CenterEnd else Alignment.CenterStart)
+                    .align(if (shift < 0f) Alignment.CenterEnd else Alignment.CenterStart)
                     .padding(horizontal = 12.dp)
                     .size((20 + 14 * progress).dp)
                     .background(
@@ -1003,7 +1033,7 @@ private fun SwipeToReplyRow(
         Box(
             Modifier
                 .fillMaxWidth()
-                .offset { IntOffset(slide.value.roundToInt(), 0) }
+                .offset { IntOffset(shift.roundToInt(), 0) }
                 .pointerInput(messageId, enabled) {
                     if (!enabled) return@pointerInput
                     detectHorizontalDragGestures(
@@ -1015,21 +1045,17 @@ private fun SwipeToReplyRow(
                             if (passed) onReply()
                             accumulated = 0f
                             passed = false
-                            scope.launch { slide.animateTo(0f, spring(dampingRatio = 0.6f)) }
+                            target = 0f
                         },
                         onDragCancel = {
                             accumulated = 0f
                             passed = false
-                            scope.launch { slide.animateTo(0f, spring(dampingRatio = 0.6f)) }
+                            target = 0f
                         },
                     ) { change, dragAmount ->
                         change.consume()
                         accumulated += dragAmount
-                        scope.launch {
-                            slide.snapTo(
-                                (accumulated * REPLY_SWIPE_RESISTANCE).coerceIn(-maxPx, maxPx),
-                            )
-                        }
+                        target = (accumulated * REPLY_SWIPE_RESISTANCE).coerceIn(-maxPx, maxPx)
                         if (!passed && abs(accumulated) >= thresholdPx) {
                             // مرّة واحدة لكلّ سحبة: العلَم يُصفَّر عند بدء التالية.
                             passed = true

@@ -281,7 +281,9 @@ class CallService : Service(), CallAudioRouter {
             else -> state.note.ifEmpty { "جارٍ الاتصال…" }
         }
         return NotificationCompat.Builder(this, AdminChannels.CALLS)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            // أحاديّ اللون: أيقونة المشغّل الملوّنة يحوّلها النظام إلى قناع
+            // ألفا مصمت فتظهر مربّعاً أبيض في شريط الحالة.
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(state.peerName.ifEmpty { "مكالمة صوتيّة" })
             .setContentText(text)
             .setContentIntent(open)
