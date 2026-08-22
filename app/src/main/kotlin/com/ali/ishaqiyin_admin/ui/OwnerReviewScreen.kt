@@ -16,7 +16,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.DoneAll
-import androidx.compose.material.icons.filled.ManageSearch
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
@@ -72,10 +71,6 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
     var bulkBusy by remember { mutableStateOf(false) }
     var bulkDone by remember { mutableIntStateOf(0) }
     var bulkTotal by remember { mutableIntStateOf(0) }
-    // فهرسة المتون للبحث: تقدّم حيّ (فُحص/فُهرس) ثم رسالة حصيلة.
-    var indexing by remember { mutableStateOf(false) }
-    var indexScanned by remember { mutableIntStateOf(0) }
-    var indexIndexed by remember { mutableIntStateOf(0) }
 
     val isOwner = AuthService.isOwnerEmail(AuthService.currentUser?.email)
     if (!isOwner) {
@@ -199,39 +194,6 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            // 🏗️ بطاقة فهرسة المتون فوق الفرعين كليهما: عمليّة مالكٍ تكفي
-            // مرّة واحدة بعد نشر الفهرس، فلا تستحق شاشةً ومدخلاً مستقلّين.
-            TranscriptIndexCard(
-                indexing = indexing,
-                scanned = indexScanned,
-                indexed = indexIndexed,
-                onStart = {
-                    indexing = true
-                    indexScanned = 0
-                    indexIndexed = 0
-                    scope.launch {
-                        try {
-                            val result = OwnerReviewRepository.backfillTranscriptIndex { scanned, indexed ->
-                                indexScanned = scanned
-                                indexIndexed = indexed
-                            }
-                            snack(
-                                if (result.indexed > 0) {
-                                    "اكتملت الفهرسة: فُهرس ${result.indexed} من ${result.scanned} متناً."
-                                } else {
-                                    "اكتملت الفهرسة: المتون كلّها (${result.scanned}) مفهرسة أصلاً."
-                                },
-                            )
-                        } catch (e: Exception) {
-                            snack("تعذّرت الفهرسة: ${e.arabicReason()}")
-                        }
-                        indexing = false
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, top = 16.dp),
-            )
             // أثناء الاعتماد الجماعي تفرغ القائمة تدريجياً من البثّ الحيّ؛ نُبقي
             // الشاشة على وضع القائمة كي لا يختفي شريط التقدّم قبل انتهاء العملية.
             if (items.isEmpty() && !bulkBusy) {
@@ -437,67 +399,3 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
     }
 }
 
-/**
- * 🏗️ بطاقة «فهرسة النصوص للبحث» — بنمط بطاقة الاعتماد الجماعي نفسه: عنوان
- * وشرح وزرّ، وعند التشغيل شريطُ تقدّم وسطرُ عدّ حيّ. النداء يتكرّر تلقائياً
- * في المستودع حتى يكتمل، فالمالك يضغط مرّة ويرى الحصيلة.
- */
-@Composable
-private fun TranscriptIndexCard(
-    indexing: Boolean,
-    scanned: Int,
-    indexed: Int,
-    onStart: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Card(
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        modifier = modifier,
-    ) {
-        Column(Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("فهرسة النصوص للبحث", fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.size(2.dp))
-                    Text(
-                        "تُدرج المتون المعتمدة قبل تفعيل البحث في فهرسه. " +
-                            "تكفي مرّة واحدة، وإعادتها لا تضرّ.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.size(8.dp))
-                Button(
-                    onClick = onStart,
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                    ),
-                    enabled = !indexing,
-                ) {
-                    Icon(
-                        Icons.Filled.ManageSearch,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.size(4.dp))
-                    Text("فهرسة")
-                }
-            }
-            if (indexing) {
-                Spacer(Modifier.size(10.dp))
-                LinearProgressIndicator(
-                    Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.size(6.dp))
-                Text(
-                    "جارٍ الفهرسة… فُحص $scanned وفُهرس $indexed",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}

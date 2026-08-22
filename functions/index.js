@@ -2124,6 +2124,107 @@ exports.backfillTranscriptIndex = functions
     };
   });
 
+/// محارف التحكّم ثنائيّة الاتّجاه — تكسر عرض النصّ العربي وتلتصق بمخرجات
+/// الماسح، ولا يراها المستخدم فلا يفهم لماذا اضطرب السطر.
+const BIDI_CONTROLS = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+const ARABIC_LETTER = /[\u0600-\u06ff]/;
+const HAS_CONTENT = /[\w\u0600-\u06ff]/;
+
+/**
+ * 🧹 تنقية سطرٍ ممسوح: يُعاد فارغاً إن كان ضوضاء.
+ *
+ * ضوضاء الماسح في هوامش الكتب: أرقام الصفحات، والشُّرَط، وحروفٌ لاتينيّة
+ * مفردة يخلّفها الحبر أو الظلّ. وشرط «قصيرٌ وبلا حرف عربيّ» يحفظ النصّ
+ * الأجنبيّ الحقيقيّ (اسم كتاب مثلاً) ويُسقط الشاردة.
+ */
+function cleanScannedLine(line) {
+  const value = String(line || "").replace(BIDI_CONTROLS, "")
+    .replace(/[ \t\u00a0]+/g, " ").trim();
+  if (!value) return "";
+  if (!ARABIC_LETTER.test(value) && value.length <= 6) return "";
+  if (!HAS_CONTENT.test(value)) return "";
+  return value;
+}
+
+/**
+ * 📄 نصّ الصفحة من بنية Vision — **سطرٌ لكلّ سطرٍ مطبوع**.
+ *
+ * ⛔ ولا تُدمج الأسطر في فقرات: أكثر متون هذه المكتبة منظومات (لامية العجم،
+ * نظم مقدّمة الرسالة…) والبيت سطرٌ مستقلّ، فالدمج — وإن بدا «أنظف» في
+ * النثر — يُذهب الوزن ويُتلف الشعر. البنية تُحفظ كما في الورقة، والعمل
+ * كلّه في إسقاط الضوضاء: أسقط ٧٣ سطر ضوضاء من متون المكتبة إلى صفر.
+ */
+function pageTextOf(fullTextAnnotation) {
+  const annotation = fullTextAnnotation || {};
+  const blocks = [];
+  for (const page of annotation.pages || []) {
+    for (const block of page.blocks || []) {
+      const lines = [];
+      let buffer = "";
+      for (const paragraph of block.paragraphs || []) {
+        for (const word of paragraph.words || []) {
+          const symbols = word.symbols || [];
+          buffer += symbols.map((s) => s.text || "").join("");
+          const last = symbols[symbols.length - 1] || {};
+          const brk = ((last.property || {}).detectedBreak || {}).type || "";
+          if (brk === "SPACE" || brk === "SURE_SPACE") {
+            buffer += " ";
+          } else if (brk === "EOL_SURE_SPACE" || brk === "LINE_BREAK") {
+            lines.push(buffer);
+            buffer = "";
+          }
+        }
+      }
+      if (buffer) lines.push(buffer);
+      const kept = lines.map(cleanScannedLine).filter(Boolean);
+      if (kept.length) blocks.push(kept.join("\n"));
+    }
+  }
+  return blocks.join("\n\n");
+}
+
+/**
+ * 🔎 استخراج نصّ صورةٍ واحدة عبر Cloud Vision.
+ *
+ * يستعملها المسار التلقائيّ (المُشغِّل أدناه). وتُعيد نصّاً فارغاً عند أيّ
+ * عطل ولا ترمي: الاستخراج تحسينٌ لا شرطٌ لاعتماد النصّ، فصورةٌ واحدة تعصى
+ * لا يجوز أن تُسقط بقيّة الصفحات. أمّا زرّ المشرف فيبقى على مساره الخاصّ
+ * لأنّه يحتاج تمييز «الواجهة غير مفعّلة» من «صورة بلا نصّ» ليقوله له.
+ */
+async function visionTextOf(storagePath) {
+  const file = bucket.file(storagePath);
+  let metadata;
+  try {
+    [metadata] = await file.getMetadata();
+  } catch (_) {
+    return "";
+  }
+  const size = Number(metadata.size || 0);
+  if (size <= 0 || size > MAX_TRANSCRIPT_IMAGE_BYTES
+      || !String(metadata.contentType || "").startsWith("image/")) {
+    return "";
+  }
+  const [buffer] = await file.download();
+  const { GoogleAuth } = require("google-auth-library");
+  const auth = new GoogleAuth({
+    scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+  });
+  const client = await auth.getClient();
+  const response = await client.request({
+    url: "https://vision.googleapis.com/v1/images:annotate",
+    method: "POST",
+    data: {
+      requests: [{
+        image: { content: buffer.toString("base64") },
+        features: [{ type: "DOCUMENT_TEXT_DETECTION" }],
+        imageContext: { languageHints: ["ar"] },
+      }],
+    },
+  });
+  const result = (((response.data || {}).responses || [])[0]) || {};
+  return cleanString(pageTextOf(result.fullTextAnnotation), MAX_TRANSCRIPT_CHARS);
+}
+
 // استخراج النص من صورة صفحة الكتاب (OCR عربي) — للمشرفين فقط، عبر Cloud
 // Vision REST بهوية حساب خدمة الدوال. إن لم تكن الواجهة مفعّلة تُعاد رسالة
 // إرشادية واضحة بدل فشل غامض.
@@ -2187,6 +2288,57 @@ exports.extractImageText = functions
       MAX_TRANSCRIPT_CHARS,
     );
     return { ok: true, text };
+  });
+
+/**
+ * 🤖 **استخراج النصّ تلقائياً من صور «النص المشروح»** — بلا تدخّل مشرف.
+ *
+ * **لماذا؟** أغلب المتون تُرفع صوراً لصفحات الكتاب وحقلُ النصّ فارغ، فيبقى
+ * المتن غير قابلٍ للبحث ولا للنسخ ولا لقارئ الشاشة — ولا يملؤه إلا مشرفٌ
+ * يضغط زرّ الاستخراج في كل درس. فصار يجري من نفسه لحظةَ كتابة المتن.
+ *
+ * ⛔ **حارس التكرار**: المُشغِّل يكتب في الوثيقة نفسها التي أطلقته، فلولا
+ * `ocrAt` لدار بلا نهاية. ولا يعمل إلا حين يكون النصّ فارغاً فعلاً وفيها
+ * صور — فنصّ المشرف المكتوب بيده لا يُدهَس أبداً.
+ */
+exports.autoExtractTranscriptText = functions
+  .runWith({ timeoutSeconds: 300, memory: "1GB" })
+  .firestore.document("lesson_transcripts/{lessonId}")
+  .onWrite(async (change, context) => {
+    const after = change.after.exists ? unwrapLegacy(change.after.data()) : null;
+    if (!after) return null;
+    // نصٌّ موجود ⇒ لا شأن لنا به (وهذا يشمل ما كتبناه نحن، فلا دوران).
+    if (cleanString(after.text, 10).length > 0) return null;
+    if (after.ocrAt) return null;
+    const images = Array.isArray(after.images) ? after.images : [];
+    const paths = images
+      .map((img) => cleanString(img && img.path, 700))
+      .filter((p) => p && p.startsWith("lesson_transcripts/") && !p.includes(".."));
+    if (!paths.length) return null;
+
+    const lessonId = context.params.lessonId;
+    const parts = [];
+    for (const path of paths) {
+      try {
+        const text = await visionTextOf(path);
+        if (text) parts.push(text);
+      } catch (error) {
+        console.error("auto ocr failed", lessonId, path, error && error.message);
+      }
+    }
+    // نضع الوسم في الحالين: نجح الاستخراج أم عاد فارغاً (صورةٌ بلا نصّ
+    // مقروء) — وإلّا أُعيدت المحاولة على الصور نفسها مع كل كتابة لاحقة.
+    const merged = cleanString(parts.join("\n\n"), MAX_TRANSCRIPT_CHARS);
+    await change.after.ref.set({
+      text: merged,
+      ocrAt: admin.firestore.FieldValue.serverTimestamp(),
+      ocrPages: paths.length,
+    }, { merge: true });
+    if (merged) {
+      console.log("auto ocr ok", lessonId, paths.length, "pages", merged.length, "chars");
+      await syncTranscriptIndex(lessonId, merged);
+    }
+    return null;
   });
 
 exports.onTranscriptSubmissionCreated = functions.firestore

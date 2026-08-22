@@ -248,7 +248,21 @@ data class JustEnqueued(
     val position: Int,
     val total: Int,
     val atMs: Long,
+    /**
+     * عدد ما أُدرج في هذه الدفعة (1 = إضافة مفردة). رفع مجلّد كامل يُدرج
+     * عشرين درساً في حلقة واحدة، وإعلان كلّ واحد على حدة كان يُومض التأكيد
+     * عشرين مرّة وينتهي عند آخر ملفّ وحده — فلا يرى المشرف أنّ الدفعة كلّها
+     * دخلت. انظر [UploadQueue.markBatchEnqueued].
+     */
+    val batchCount: Int = 1,
 )
+
+/**
+ * تقدّم إدراج دفعة (رفع مجلّد كامل) — حالة **مشتركة خارج التركيب**، فتصمد
+ * لإعادة إنشاء النشاط: عدّادٌ بـ`remember` كان يختفي مع أوّل تدوير للشاشة
+ * والدفعة ماضية في الخلفية، فيبقى المشرف بلا مؤشّر واحد.
+ */
+data class BatchProgress(val prepared: Int, val total: Int)
 
 /**
  * 📤 طابور رفع الدروس — يعمل دون اتصال ويستأنف تلقائياً.
@@ -529,10 +543,90 @@ object UploadQueue {
         )
     }
 
+    /**
+     * إعلان **واحد** لدفعة كاملة (رفع مجلّد): يُنادى بعد آخر إدراج وقبل
+     * إيقاظ العامل، فيرى المشرف «أُضيف ن درساً» مرّة واحدة بدل ن ومضات
+     * متتابعة ينتهي أثرها عند آخر ملفّ وحده.
+     */
+    fun markBatchEnqueued(batch: List<PendingUpload>) {
+        val first = batch.firstOrNull() ?: return
+        if (batch.size == 1) {
+            markJustEnqueued(first)
+            return
+        }
+        val all = _items.value
+        val index = all.indexOfFirst { it.id == first.id }
+        _justEnqueued.value = JustEnqueued(
+            id = first.id,
+            title = first.title,
+            fileName = first.fileName,
+            position = if (index < 0) 1 else index + 1,
+            total = all.size,
+            atMs = System.currentTimeMillis(),
+            batchCount = batch.size,
+        )
+    }
+
     /** تُنادى من الواجهة بعد عرض التأكيد لحظات. */
     fun clearJustEnqueued(id: String) {
         if (_justEnqueued.value?.id == id) _justEnqueued.value = null
     }
+
+    /**
+     * 🛡️ «دفعة قيد الإدراج الآن» — علم **خارج التركيب** يصمد لإعادة إنشاء
+     * النشاط.
+     *
+     * ⚠️ حارسٌ داخل الشاشة (`remember`) لا يكفي: تدوير الشاشة أثناء نسخ
+     * خمسين ملفّاً يُعيد بناءها بحارس صفريّ بينما الحلقة الأولى ماضية في
+     * `NonCancellable`، فضغطة ثانية كانت تُشغّل حلقة ثانية بلقطتَي مقارنة
+     * متداخلتين ⇒ دروس مكرَّرة و`seq` متشابك ⇒ ينكسر ضمان «الترتيب = ترتيب
+     * الإضافة».
+     */
+    private val batchRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private val _batchProgress = MutableStateFlow<BatchProgress?>(null)
+    val batchProgress: StateFlow<BatchProgress?> = _batchProgress
+
+    /** يحجز الإدراج الجماعيّ لمُنادٍ واحد؛ `false` تعني أنّ دفعة تعمل الآن. */
+    fun beginBatch(total: Int): Boolean {
+        if (!batchRunning.compareAndSet(false, true)) return false
+        _batchProgress.value = BatchProgress(prepared = 0, total = total)
+        return true
+    }
+
+    fun updateBatchProgress(prepared: Int) {
+        val current = _batchProgress.value ?: return
+        _batchProgress.value = current.copy(prepared = prepared)
+    }
+
+    /** ⛔ يُنادى داخل `NonCancellable`: خارجه يبقى الحجز أبداً بعد المغادرة. */
+    fun endBatch() {
+        _batchProgress.value = null
+        batchRunning.set(false)
+    }
+
+    /**
+     * كتابة **واحدة** لدفعة كاملة (تُنادى بعد إدراج كلّه بـ`persistNow = false`).
+     *
+     * ⚠️ كلّ [enqueue] كان ينتهي بـ`persist(load() + item)`: تحليل المدوّنة
+     * كاملةً وتسلسلها وكتابتها ن مرّة — والمدوّنة تضمّ نصوص «النص المشروح».
+     * خمسون ملفّاً = خمسون دورة على مدوّنة متنامية وخمسون إصداراً للتدفّق.
+     */
+    fun persistBatch(batch: List<PendingUpload>) {
+        if (batch.isEmpty()) return
+        synchronized(lock) { persist(load() + batch) }
+    }
+
+    /**
+     * معرّف فريد. ⚠️ العدّاد ليس زينة: كان المعرّف `الوقت + عشوائيّ من
+     * 10000`، وحلقة إدراج عشرين ملفّاً صغيراً تقع كلّها في الملّي ثانية
+     * نفسها — فاحتمال تصادم معرّفين ~2%، وثمنه أنّ `remove` يحذف درسين
+     * و`update` يكتب على الاثنين.
+     */
+    private val idCounter = java.util.concurrent.atomic.AtomicLong(0)
+
+    private fun newId(): String =
+        "up_${System.currentTimeMillis()}_${idCounter.incrementAndGet()}_${(0..9999).random()}"
 
     /** مجلّد النسخ الدائم (files لا cache — النظام لا يمسحه تحت الضغط). */
     private fun queueDir(): File =
@@ -571,8 +665,19 @@ object UploadQueue {
         transcriptBookTitle: String = "",
         transcriptSourceRef: String = "",
         transcriptImages: List<Uri> = emptyList(),
+        /**
+         * `false` في الإدراج الجماعيّ وحده: الدفعة تُعلَن مرّة واحدة في
+         * نهايتها بـ[markBatchEnqueued].
+         */
+        announce: Boolean = true,
+        /**
+         * `false` في الإدراج الجماعيّ وحده: العنصر يُنسخ ويُبنى بلا كتابة
+         * المدوّنة، والمُنادي يكتبها **مرّة واحدة** بـ[persistBatch] قبل
+         * [markBatchEnqueued] — انظر علّة O(ن²) هناك.
+         */
+        persistNow: Boolean = true,
     ): PendingUpload = withContext(Dispatchers.IO) {
-        val id = "up_${System.currentTimeMillis()}_${(0..9999).random()}"
+        val id = newId()
         val safeName = fileName.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").takeLast(120)
         val dest = File(queueDir(), "${id}_$safeName")
         context.contentResolver.openInputStream(sourceUri)?.use { input ->
@@ -600,9 +705,9 @@ object UploadQueue {
             transcriptSourceRef = transcriptSourceRef.trim(),
             transcriptImagePaths = context.copyTranscriptImages(id, transcriptImages),
         )
-        synchronized(lock) { persist(load() + item) }
+        if (persistNow) synchronized(lock) { persist(load() + item) }
         // بعد الحفظ: الترتيب صار نهائياً فيصحّ إعلان الموقع «س من ص».
-        markJustEnqueued(item)
+        if (announce) markJustEnqueued(item)
         item
     }
 
@@ -628,7 +733,7 @@ object UploadQueue {
         transcriptSourceRef: String = "",
         transcriptImages: List<Uri> = emptyList(),
     ): PendingUpload = withContext(Dispatchers.IO) {
-        val id = "up_${System.currentTimeMillis()}_${(0..9999).random()}"
+        val id = newId()
         val dest = File(queueDir(), "${id}_${file.name}")
         file.copyTo(dest, overwrite = true)
         runCatching { file.delete() }

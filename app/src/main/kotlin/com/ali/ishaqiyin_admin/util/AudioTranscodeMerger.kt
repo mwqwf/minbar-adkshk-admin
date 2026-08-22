@@ -42,6 +42,12 @@ object AudioTranscodeMerger {
      */
     fun mergeToM4a(inputs: List<File>, outputPath: String): File {
         require(inputs.isNotEmpty()) { "لا ملفات للدمج." }
+        // 🛡️ حارس العدد الأخير: مسار اللصق ([AudioMerger.mergeMp3]) يحرسه،
+        // وهذا المسار كان بلا حارس — فاختلافُ صيغةٍ واحدة كان يكفي ليصير
+        // مجلّدُ خمسين درساً درساً واحداً بلا اعتراض.
+        require(inputs.size <= AudioMerger.maxFiles) {
+            "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد."
+        }
         val output = File(outputPath)
         output.parentFile?.mkdirs()
         if (output.exists()) output.delete()

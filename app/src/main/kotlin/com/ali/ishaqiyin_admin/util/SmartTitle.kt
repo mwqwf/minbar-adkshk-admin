@@ -72,3 +72,70 @@ fun smartTitleFromFileName(fileName: String): String {
     if (s.length < 2) return ""
     return s
 }
+
+/**
+ * 📁 عنوان درس من اسم ملفّه **لا يعود فارغاً أبداً** — لرفع مجلّد كامل حيث
+ * لا يكتب المشرف عشرين عنواناً بيده.
+ *
+ * [smartTitleFromFileName] تعيد '' عمداً للأسماء الآليّة البحتة (AUD-…-WA0001،
+ * «003») لأنّ حقل العنوان الواحد يبقى فارغاً ليكتبه المشرف — وهذا لا يصلح
+ * لعشرين درساً دفعةً: تسقط هنا إلى تنظيف بسيط للاسم ثمّ إلى «درس ن»، ويبقى
+ * التعديل بنقرة واحدة في ورقة المراجعة.
+ */
+fun lessonTitleFromFileName(fileName: String, index: Int): String {
+    smartTitleFromFileName(fileName).takeIf { it.isNotBlank() }?.let { return it }
+    var s = fileName.split(Regex("[/\\\\]")).last()
+    val dot = s.lastIndexOf('.')
+    if (dot > 0) s = s.substring(0, dot)
+    s = s.replace(Regex("[_~•·\\-]+"), " ")
+    // ترقيم بادئ: الرقم يعيش في ترتيب القائمة لا في العنوان.
+    s = s.replace(Regex("^[\\s0-9٠-٩.)\\]]+"), "")
+    s = s.replace(Regex("\\s+"), " ").trim()
+    return s.ifBlank { "درس ${index + 1}" }
+}
+
+/**
+ * ترتيب طبيعيّ بأرقام أسماء الملفّات: «10» **بعد** «9» لا قبله.
+ *
+ * ⛔ ترتيب الرفع هو ترتيب ظهور الدروس في التطبيق، ومنتقي النظام يعيدها
+ * بترتيب عرضه النصّيّ الذي يضع «الدرس 10» قبل «الدرس 9» — فينقلب ترتيب
+ * سلسلة كاملة.
+ *
+ * ⚠️ يكفي **ملفّان مرقّمان**: شرطُ «كلّها مرقّمة» كان يُسقط الفرز كلّه عن
+ * مجلّد فيه «مقدمة.mp3» أو «خاتمة.mp3» بين تسعة عشر ملفّاً مرقّماً — وهو
+ * المجلّد الواقعيّ لا الحالة النادرة. والأسماء بلا أرقام تُرتَّب نصّياً
+ * (المقارن يتحمّلها)، والفرز مستقرّ فلا يُحرّك المتساويات.
+ */
+fun <T> List<T>.sortedByNaturalName(name: (T) -> String): List<T> {
+    if (size < 2) return this
+    if (count { hasDigit.containsMatchIn(name(it)) } < 2) return this
+    return sortedWith { a, b -> compareNaturalNames(name(a), name(b)) }
+}
+
+private val hasDigit = Regex("[0-9٠-٩]")
+
+/** مقاطع متناوبة: أرقام تُقارن عدديّاً وما سواها نصّاً. */
+private val nameChunks = Regex("\\d+|\\D+")
+
+private fun westernDigits(s: String): String =
+    s.map { ch -> if (ch in '٠'..'٩') '0' + (ch - '٠') else ch }.joinToString("")
+
+internal fun compareNaturalNames(a: String, b: String): Int {
+    val left = nameChunks.findAll(westernDigits(a)).map { it.value }.toList()
+    val right = nameChunks.findAll(westernDigits(b)).map { it.value }.toList()
+    for (i in 0 until minOf(left.size, right.size)) {
+        val x = left[i]
+        val y = right[i]
+        val diff = if (x[0].isDigit() && y[0].isDigit()) {
+            // بالطول ثمّ نصّاً بعد إسقاط الأصفار البادئة: `toLong` تنهار على
+            // أرقام أسماء المسجّلات (تاريخ+وقت من 14 خانة).
+            val xs = x.trimStart('0').ifEmpty { "0" }
+            val ys = y.trimStart('0').ifEmpty { "0" }
+            if (xs.length != ys.length) xs.length - ys.length else xs.compareTo(ys)
+        } else {
+            x.compareTo(y, ignoreCase = true)
+        }
+        if (diff != 0) return diff
+    }
+    return left.size - right.size
+}

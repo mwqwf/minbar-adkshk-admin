@@ -41,10 +41,14 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -52,6 +56,7 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -65,6 +70,7 @@ import com.ali.ishaqiyin_admin.data.AppPrefs
 import com.ali.ishaqiyin_admin.data.AuthService
 import com.ali.ishaqiyin_admin.data.Category
 import com.ali.ishaqiyin_admin.data.LessonUploadWorker
+import com.ali.ishaqiyin_admin.data.PendingUpload
 import com.ali.ishaqiyin_admin.data.Subcategory
 import com.ali.ishaqiyin_admin.data.UploadQueue
 import com.ali.ishaqiyin_admin.util.AudioMerger
@@ -73,8 +79,10 @@ import com.ali.ishaqiyin_admin.util.AudioTranscodeMerger
 import com.ali.ishaqiyin_admin.util.Mp3FormatException
 import com.ali.ishaqiyin_admin.util.PickedFile
 import com.ali.ishaqiyin_admin.util.copyUriToCache
+import com.ali.ishaqiyin_admin.util.lessonTitleFromFileName
 import com.ali.ishaqiyin_admin.util.pickedFileFrom
 import com.ali.ishaqiyin_admin.util.smartTitleFromFileName
+import com.ali.ishaqiyin_admin.util.sortedByNaturalName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
@@ -87,6 +95,34 @@ import java.util.Calendar
  * الدرس دخل الطابور فعلاً، فضغطة «رفع» ثانية تُنشئ درساً مكرَّراً.
  */
 private const val DUPLICATE_WINDOW_MS = 60_000L
+
+/**
+ * سقف ما يُختار في المرّة الواحدة. مجلّد كامل من الدروس هو الحالة المقصودة
+ * (عشرون ملفّاً وأكثر)، والسقف حارس لجهاز المستخدم لا غير: كلّ ملفّ يُنسخ
+ * إلى تخزين التطبيق قبل رفعه، فمئة ملفّ دفعةً تعني نسخاً بحجم عدّة غيغابايت.
+ */
+private const val BATCH_MAX_FILES = 50
+
+/** نيّة المشرف في عدّة الملفات — سؤال واحد لا معالج خطوات. */
+private const val MODE_MERGE = "merge"
+private const val MODE_SEPARATE = "separate"
+
+/**
+ * العناوين التي عدّلها المشرف بيده في ورقة المراجعة — مفتاحها الـUri فتصمد
+ * لحذف ملفّ أو إعادة ترتيب. ⚠️ تُحفظ عبر إعادة الإنشاء: تدوير الشاشة بعد
+ * تسمية عشرين درساً بيدٍ واحدة كان سيمحوها كلّها.
+ */
+private val batchTitlesSaver = listSaver<SnapshotStateMap<String, String>, String>(
+    save = { map -> map.map { (uri, title) -> "$uri\n$title" } },
+    restore = { saved ->
+        mutableStateMapOf<String, String>().apply {
+            saved.forEach { entry ->
+                val parts = entry.split("\n", limit = 2)
+                if (parts.size == 2) put(parts[0], parts[1])
+            }
+        }
+    },
+)
 
 /** منتقي تاريخ ثم وقت بحوارات النظام (نظير showDatePicker/showTimePicker). */
 fun pickDateTime(context: Context, initialMs: Long, onPicked: (Long) -> Unit) {
@@ -200,13 +236,69 @@ fun AddLessonScreen(onBack: () -> Unit) {
     var categoryId by rememberSaveable { mutableStateOf<String?>(null) }
     var subcategoryId by rememberSaveable { mutableStateOf<String?>(null) }
 
-    /** الملفات المختارة بالترتيب — أكثر من ملف يعني دمجها في درس واحد. */
+    /** الملفات المختارة بالترتيب — الترتيب هنا هو ترتيب الرفع حرفيّاً. */
     val files = rememberSaveable(saver = pickedFilesSaver) { mutableStateListOf<PickedFile>() }
+
+    // 📁 رفع مجلّد كامل: عدّة ملفّات = عدّة دروس، أو درس واحد مدموج. النيّة
+    // تُسأل مرّة واحدة عند تجاوز الملفّ الواحد، وتبقى قابلة للتغيير بنقرة.
+    var multiMode by rememberSaveable { mutableStateOf("") }
+    // ⚠️ محفوظان عبر إعادة الإنشاء: تدوير الشاشة والسؤالُ معروض كان يبتلعه
+    // بلا جواب، فيمضي النموذج على الدمج بلا أن يختار المشرف شيئاً.
+    var askMultiMode by rememberSaveable { mutableStateOf(false) }
+    var showBatchSheet by rememberSaveable { mutableStateOf(false) }
+    /**
+     * كم ملفّاً جُهِّز من الدفعة — نَسخُ عشرين ملفّاً يستغرق، فلا يُترك بلا
+     * مؤشّر. ⚠️ من **الحالة المشتركة** لا من `remember`: تدوير الشاشة كان
+     * يمحو العدّاد فيختفي الشريط والدفعة ماضية في الخلفية.
+     *
+     * ⚡ القيمة تُقرأ في موضع عرضها وحده: قراءتها هنا كانت ستُعيد تركيب
+     * الشاشة كلّها مع **كلّ ملفّ** (خمسون مرّة) بينما النسخ يشتغل.
+     */
+    val batchState = UploadQueue.batchProgress.collectAsState()
+    /** مشتقّ: يتغيّر مرّتين لا غير — بدء الدفعة ونهايتها. */
+    val batchRunning by remember { derivedStateOf { batchState.value != null } }
+    val batchTitles = rememberSaveable(saver = batchTitlesSaver) {
+        mutableStateMapOf<String, String>()
+    }
+    /** الوضع الفعليّ: «دروس منفصلة» لا معنى له بملفّ واحد. */
+    val separate = multiMode == MODE_SEPARATE && files.size > 1
+    /**
+     * سقف الإضافة: سقف الدمج قيدُ **الدمج وحده**. والنيّة غير المحسومة تأخذ
+     * سقف الدفعة — اختيار مجلّد كامل هو الحالة المقصودة والسؤالُ بعده هو ما
+     * يحسمها، فالقصّ عند عشرة قبل السؤال كان يبتلع أربعين ملفّاً. وهو نفسه
+     * السقف الذي يقصّ عنده المنتقي، فلا يَعِد نصّ الزرّ بما لا يقع.
+     */
+    val addLimit = if (multiMode == MODE_MERGE) AudioMerger.maxFiles else BATCH_MAX_FILES
+
+    /** عنوان الدرس رقم [index]: ما كتبه المشرف، وإلّا فمن اسم الملفّ. */
+    fun batchTitleOf(index: Int): String {
+        val file = files[index]
+        return batchTitles[file.uri.toString()]?.takeIf { it.isNotBlank() }
+            ?: lessonTitleFromFileName(file.name, index)
+    }
+
+    /**
+     * ❓ السؤال يُطرح متى احتُمِلت نيّتان: أكثر من ملفّ بلا نيّة محسومة، أو
+     * نيّة «دمج» محفوظة تجاوز عددُها سقفَ الدمج.
+     *
+     * ⛔ الشقّ الثاني ليس زينة: نيّةٌ باقية من رفعٍ سابق كانت تمضي بكلّ اختيار
+     * لاحق إلى الدمج بلا سؤال — فيبتلع درسٌ واحد مجلّداً كاملاً.
+     */
+    fun askIntentIfNeeded() {
+        if (files.size <= 1) return
+        val mergeOverflow = multiMode == MODE_MERGE && files.size > AudioMerger.maxFiles
+        if (multiMode.isEmpty() || mergeOverflow) askMultiMode = true
+    }
 
     // «إدراج» لا «رفع»: النموذج لا ينتظر الشبكة إطلاقاً — يُدرَج الدرس في
     // الطابور فيفرغ النموذج فوراً ويستطيع المشرف تعبئة درس آخر بينما
     // يُرفع الأوّل في الخلفية (ويستأنف وحده إن انقطع الاتصال).
     var queuing by remember { mutableStateOf(false) }
+    /**
+     * الانشغال الحقيقيّ: الحارس المحلّيّ **زائد** علم الدفعة المشترك — إعادة
+     * إنشاء النشاط تعيد `queuing` صفراً بينما حلقة الإدراج ماضية في الخلفية.
+     */
+    val busy = queuing || batchRunning
     var merging by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
@@ -261,15 +353,22 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     duplicate -> Unit
                     // لا بوابة صيغة بعد اليوم: الدمج يقبل أي صيغ (إعادة ترميز
                     // AAC/M4A عند الحاجة) — فقط حدّ العدد يبقى.
-                    files.size >= AudioMerger.maxFiles -> {
-                        message = "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد " +
-                            "— لم يُضف «${shared.name}»."
+                    files.size >= addLimit -> {
+                        message = if (multiMode == MODE_MERGE) {
+                            "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد " +
+                                "— لم يُضف «${shared.name}»."
+                        } else {
+                            "الحدّ الأقصى $BATCH_MAX_FILES ملفّاً في الدفعة " +
+                                "— لم يُضف «${shared.name}»."
+                        }
                         isError = true
                     }
 
                     else -> {
                         files.add(shared)
                         if (title.isBlank()) title = smartTitleFromFileName(shared.name)
+                        // الملفّ الثاني يطرح السؤال: درس واحد مدموج أم دروس؟
+                        askIntentIfNeeded()
                     }
                 }
                 ShareIntake.consumeFirst()
@@ -283,24 +382,39 @@ fun AddLessonScreen(onBack: () -> Unit) {
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         val picked = uris.map { context.pickedFileFrom(it) }
         val existing = files.map { it.uri.toString() }.toSet()
-        val combined = files + picked.filter { it.uri.toString() !in existing }
+        // ⛔ فرز طبيعيّ بأرقام الأسماء للمضاف حديثاً وحده: منتقي النظام يعيد
+        // «الدرس 10» قبل «الدرس 9»، وترتيب الرفع هو ترتيب ظهور الدروس في
+        // التطبيق. وقصْره على الجديد يحفظ أيّ ترتيب رتّبه المشرف يدويّاً قبله.
+        val fresh = picked
+            .filter { it.uri.toString() !in existing }
+            .sortedByNaturalName { it.name }
+        val combined = files + fresh
 
         // قيد «MP3 فقط» أُلغي: الدمج يقبل أي صيغ (لصق مباشر إن كانت كلها
         // MP3، وإلا فكّ وإعادة ترميز AAC/M4A) — لا عبء تحويل على المشرف.
-        if (combined.size > AudioMerger.maxFiles) {
-            message = "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد — أُبقي أولها."
+        // ⛔ ونيّة «دمج» محفوظة لا تصمد لاختيار مجلّد: تجاوزُ سقفِ الدمج
+        // يُسقطها فيُطرح السؤال من جديد. بلا ذلك كانت خمسون ملفّاً تُدمج في
+        // درس واحد صامتاً، وقصُّها عند عشرة كان سيبتلع أربعين بلا اختيار.
+        if (multiMode == MODE_MERGE && combined.size > AudioMerger.maxFiles) multiMode = ""
+        // السقف سقفُ النيّة القائمة بعد ذلك (سقف الدمج للدمج، وسقف الدفعة لما
+        // سواه) — وهو نفسه ما يَعِد به نصّ الزرّ، فلا يُقصّ ما لم يُعلَن قصّه.
+        val cap = if (multiMode == MODE_MERGE) AudioMerger.maxFiles else BATCH_MAX_FILES
+        if (combined.size > cap) {
+            message = "الحدّ الأقصى $cap ملفّاً في الدفعة — أُبقي أوّلها."
             isError = true
         } else {
             message = ""
             isError = false
         }
         files.clear()
-        files.addAll(combined.take(AudioMerger.maxFiles))
+        files.addAll(combined.take(cap))
         if (title.isBlank() && files.isNotEmpty()) {
             // عنوان مقترح ذكيّ — يزيل الترقيم وبصمات المواقع وأنماط
             // المسجّلات؛ الاسم الآليّ البحت يُترك فارغاً ليكتبه المشرف.
             title = smartTitleFromFileName(files.first().name)
         }
+        // ❓ سؤال واحد صريح لا استنتاج: أكثر من ملفّ يحتمل نيّتين لا ثالث لهما.
+        askIntentIfNeeded()
     }
 
     val subsForCategory = subcategories.filter { it.categoryId == categoryId }
@@ -309,7 +423,9 @@ fun AddLessonScreen(onBack: () -> Unit) {
     /// والنقص يُشرح صراحةً بدل زر أصمّ لا يفسّر امتناعه.
     fun firstMissing(): String? = when {
         files.isEmpty() -> "اختر ملفاً صوتياً (أو سجّل مباشرة) أولاً."
-        title.isBlank() -> "اكتب عنوان الدرس."
+        // في «دروس منفصلة» لكلّ درس عنوانه من اسم ملفّه — حقل العنوان الواحد
+        // لا يُستعمل أصلاً، فاشتراطه كان سيمنع رفع مجلّد بلا سبب.
+        !separate && title.isBlank() -> "اكتب عنوان الدرس."
         categoryId == null -> "اختر القسم الرئيسي."
         subcategoryId == null && subsForCategory.isEmpty() ->
             "لا توجد أقسام فرعية لهذا القسم — أنشئ واحداً أو اختر قسماً آخر."
@@ -323,7 +439,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
      * ويُختم زمن الإضافة الآن فيصل الدرس إلى التطبيق العام بترتيب إضافته.
      */
     fun queueLesson() {
-        if (queuing) return
+        if (busy) return
         val missing = firstMissing()
         if (missing != null) {
             message = missing
@@ -467,6 +583,11 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 val suggestion = nextTitleSuggestion(snapshotTitle)
                 title = suggestion
                 files.clear()
+                // ⛔ النيّة تُنسى مع الملفّات: بقاؤها على «الدمج» كانت تجعل
+                // **كلّ** اختيار لاحق يمضي بلا سؤال — فأوّل رفع مدموج كان
+                // يبتلع بعده مجلّداً كاملاً في درس واحد صامتاً.
+                multiMode = ""
+                batchTitles.clear()
                 featured = false
                 featuredUntil = null
                 featuredLabel = ""
@@ -514,6 +635,265 @@ fun AddLessonScreen(onBack: () -> Unit) {
         }
     }
 
+    /**
+     * 📁 رفع مجلّد كامل: كلّ ملفّ درسٌ مستقلّ.
+     *
+     * ⛔ حلقة إدراج **واحدة بالترتيب** ثمّ إيقاظ **واحد** في نهايتها — لا
+     * عامل لكلّ درس ولا رفع متوازٍ: العامل الواحد يستنزف الطابور بالدور
+     * (`UploadQueue.peek` يعيد أصغر `seq` غير مركون)، فترتيب الإضافة هو
+     * ترتيب الرفع وترتيب الظهور في التطبيق. لو رُفعت متوازيةً لوصل الملفّ
+     * الأخفّ أوّلاً فانقلبت السلسلة كلّها.
+     *
+     * والاستئناف مضمون بلا شيء إضافيّ: كلّ عنصر يحمل نسخته المحليّة وجلسة
+     * رفعه، فانقطاع الشبكة أو إطفاء الهاتف يُكمل من البايت نفسه.
+     */
+    fun queueSeparateLessons() {
+        if (busy) return
+        val missing = firstMissing()
+        if (missing != null) {
+            message = missing
+            isError = true
+            return
+        }
+        // لقطة ثابتة قبل أيّ عمل غير متزامن: القائمة قد تتغيّر تحت اليد.
+        val plan = files.mapIndexed { index, file -> file to batchTitleOf(index) }
+        if (plan.isEmpty()) return
+        val cat = categories.firstOrNull { it.id == categoryId }
+        val sub = subsForCategory.firstOrNull { it.id == subcategoryId }
+        val label = listOfNotNull(cat?.name, sub?.name).joinToString(" ← ")
+        val catLabel = cat?.name.orEmpty()
+        val subLabel = sub?.name.orEmpty()
+        val catId = categoryId!!
+        val subId = subcategoryId!!
+        val featuredSnapshot = featured
+        val featuredUntilSnapshot = featuredUntil
+        val transcriptSnapshot = transcriptText
+        val transcriptBookSnapshot = transcriptBookTitle
+        val transcriptRefSnapshot = transcriptSourceRef
+        val transcriptImagesSnapshot = transcriptImages.toList()
+        val addedBy = AuthService.currentUser?.email.orEmpty()
+        queuing = true
+        merging = false
+        message = ""
+        isError = false
+        AppPrefs.lastAddCategoryId = categoryId
+        AppPrefs.lastAddSubcategoryId = subcategoryId
+        scope.launch {
+            // 🛡️ الحجز الذرّيّ **خارج التركيب** هو الحارس الحقيقيّ: إعادة
+            // إنشاء النشاط أثناء نسخ الملفّات تُعيد الزرّ صالحاً والحلقةُ
+            // الأولى ماضية في `NonCancellable`، فضغطة ثانية كانت تُشغّل حلقة
+            // ثانية بلقطتَي مقارنة متداخلتين ⇒ دروس مكرَّرة و`seq` متشابك.
+            //
+            // ⛔ وموضعه **أوّل الجسد** لا قبل `launch`: إلغاء النطاق قبل بدء
+            // الجسد كان سيترك حجزاً بلا `finally` يفكّه — شاشة مقفلة إلى
+            // إعادة تشغيل التطبيق. ولا نقطة تعليق بينه وبين `try` فالدخول مضمون.
+            if (!UploadQueue.beginBatch(plan.size)) {
+                queuing = false
+                message = "دفعة دروس قيد التجهيز الآن — انتظر انتهاءها."
+                isError = true
+                return@launch
+            }
+            try {
+                // ⛔ الإدراج كلّه داخل NonCancellable على IO: مغادرة الشاشة أو
+                // تدويرها في منتصف إدراج عشرين ملفّاً كانت ستُلغي الكوروتين
+                // فيضيع نصفها بلا رسالة — والملفّات نُسخت وحُذفت مصادرها.
+                val result = withContext(NonCancellable + Dispatchers.IO) {
+                    val inserted = mutableListOf<PendingUpload>()
+                    val failed = mutableListOf<String>()
+                    var skipped = 0
+                    var transcriptTaken = false
+                    // ⚠️ لقطة **قبل** الحلقة: الفحص على الطابور الحيّ كان
+                    // يعدّ ملفّاً أدرجته الحلقة نفسها «مكرّراً»، فملفّان
+                    // باسم واحد من مجلّدين مختلفين يسقط ثانيهما صامتاً.
+                    // الحارس لضغطة ثانية بعد تدوير الشاشة، لا لدفعة واحدة.
+                    val before = UploadQueue.items.value
+                    plan.forEachIndexed { index, (file, lessonTitle) ->
+                        val duplicate = before.any { item ->
+                            item.fileName == file.name && item.title == lessonTitle &&
+                                System.currentTimeMillis() - item.queuedAtMs < DUPLICATE_WINDOW_MS
+                        }
+                        if (duplicate) {
+                            skipped++
+                        } else {
+                            runCatching {
+                                UploadQueue.enqueue(
+                                    context = context,
+                                    sourceUri = file.uri,
+                                    fileName = file.name,
+                                    title = lessonTitle,
+                                    categoryId = catId,
+                                    subcategoryId = subId,
+                                    sectionLabel = label,
+                                    featured = featuredSnapshot,
+                                    featuredUntilMs = featuredUntilSnapshot,
+                                    addedBy = addedBy,
+                                    categoryName = catLabel,
+                                    subcategoryName = subLabel,
+                                    // «النص المشروح» نصّ مقطع بعينه من كتاب:
+                                    // نسخُه على عشرين درساً كذب، فيُرفق بأوّل
+                                    // درس دخل فعلاً وحده (وورقة المراجعة تقوله).
+                                    transcriptText = if (transcriptTaken) {
+                                        ""
+                                    } else {
+                                        transcriptSnapshot
+                                    },
+                                    transcriptBookTitle = if (transcriptTaken) {
+                                        ""
+                                    } else {
+                                        transcriptBookSnapshot
+                                    },
+                                    transcriptSourceRef = if (transcriptTaken) {
+                                        ""
+                                    } else {
+                                        transcriptRefSnapshot
+                                    },
+                                    transcriptImages = if (transcriptTaken) {
+                                        emptyList()
+                                    } else {
+                                        transcriptImagesSnapshot
+                                    },
+                                    // الدفعة تُعلَن مرّة واحدة في نهايتها.
+                                    announce = false,
+                                    // ⚡ وتُكتب المدوّنة **مرّة واحدة** بعد
+                                    // الحلقة: كتابةٌ لكلّ ملفّ كانت O(ن²) على
+                                    // مدوّنة تضمّ نصوص «النص المشروح».
+                                    persistNow = false,
+                                )
+                            }.onSuccess {
+                                inserted += it
+                                transcriptTaken = true
+                            }.onFailure {
+                                // ملفّ تعذّرت قراءته لا يُسقط الدفعة كلّها:
+                                // يُسمَّى للمشرف في النهاية وتمضي البقيّة.
+                                failed += file.name
+                            }
+                        }
+                        UploadQueue.updateBatchProgress(index + 1)
+                    }
+                    if (inserted.isNotEmpty()) {
+                        // كتابة واحدة **قبل** الإعلان: الموقع «س من ص» يُقرأ
+                        // من الطابور المحفوظ فلا يصحّ إلّا بعدها.
+                        UploadQueue.persistBatch(inserted)
+                        UploadQueue.markBatchEnqueued(inserted)
+                        // إيقاظ **واحد** بعد آخر إدراج: `kick` لا يقاطع رفعاً
+                        // جارياً، والدور محفوظ في `seq` لا في سلسلة WorkManager.
+                        LessonUploadWorker.kick(context)
+                    }
+                    Triple(inserted.size, skipped, failed.toList())
+                }
+                val (added, skipped, failed) = result
+
+                // إفراغ النموذج: النيّة نفسها تُنسى كي يُسأل عنها من جديد.
+                files.clear()
+                batchTitles.clear()
+                multiMode = ""
+                title = ""
+                featured = false
+                featuredUntil = null
+                featuredLabel = ""
+                transcriptText = ""
+                transcriptBookTitle = ""
+                transcriptSourceRef = ""
+                transcriptImages.clear()
+                transcriptOpen = false
+                queuing = false
+                message = buildString {
+                    when {
+                        added > 0 -> {
+                            append("أُضيف ${lessonsCountLabel(added)} إلى طابور الرفع ")
+                            append("بالترتيب المعروض — تُرفع واحداً تلو الآخر، ")
+                            append("والأوّل يظهر أوّلاً في التطبيق. ")
+                            append("تستطيع إغلاق الشاشة، ويصلك إشعار عند اكتمال كلّ درس.")
+                        }
+                        // الحالة الغالبة لـ«لم يُضف شيء»: ضغطة ثانية بعد تدوير
+                        // الشاشة والدفعة دخلت فعلاً — نصّ «لم يُضف شيء» وحده
+                        // كان سيُفهم فشلاً فيعيد المحاولة بلا داعٍ.
+                        skipped > 0 -> append(
+                            "كلّها في طابور الرفع فعلاً منذ أقلّ من دقيقة — " +
+                                "لم يُضف شيء مكرّر.",
+                        )
+                        else -> append("لم يُضف شيء.")
+                    }
+                    if (added > 0 && skipped > 0) {
+                        append(" (تُخُطّي $skipped مكرّراً في الطابور)")
+                    }
+                    if (failed.isNotEmpty()) {
+                        append(" ⚠️ تعذّرت قراءة: ${failed.joinToString("، ")}")
+                    }
+                }
+                isError = failed.isNotEmpty() || added == 0
+                if (added > 0) snack("أُضيف ${lessonsCountLabel(added)} إلى طابور الرفع")
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                // الإدراج تمّ داخل NonCancellable — لا رسالة خطأ لمغادرة الشاشة.
+                throw cancel
+            } catch (e: Exception) {
+                queuing = false
+                message = "تعذّر تجهيز الدروس: ${e.message ?: e}"
+                isError = true
+            } finally {
+                // 🔓 فكّ الحجز في كلّ المخارج — ومنها إلغاء الكوروتين بمغادرة
+                // الشاشة: `finally` يعمل عند الإلغاء أيضاً، وبعد أن يكون
+                // `NonCancellable` قد أتمّ عمله. بلاه يبقى الطابور محجوزاً
+                // إلى إعادة تشغيل التطبيق فلا تُقبل دفعة أخرى أبداً.
+                UploadQueue.endBatch()
+            }
+        }
+    }
+
+    if (askMultiMode) {
+        MultiFilesIntentDialog(
+            count = files.size,
+            mergeLimit = AudioMerger.maxFiles,
+            onMerge = {
+                multiMode = MODE_MERGE
+                askMultiMode = false
+            },
+            onSeparate = {
+                multiMode = MODE_SEPARATE
+                askMultiMode = false
+            },
+            onDismiss = {
+                askMultiMode = false
+                // إغلاق بلا اختيار لا يترك النموذج معلّقاً: الدمج هو السلوك
+                // القائم، وفوق سقفه لا يبقى إلّا الفصل — و«تغيير» بجانبهما.
+                if (multiMode.isEmpty()) {
+                    multiMode = if (files.size > AudioMerger.maxFiles) {
+                        MODE_SEPARATE
+                    } else {
+                        MODE_MERGE
+                    }
+                }
+            },
+        )
+    }
+
+    if (showBatchSheet) {
+        BatchUploadSheet(
+            titles = files.indices.map { batchTitleOf(it) },
+            fileNames = files.map { it.name },
+            sectionLabel = listOfNotNull(
+                categories.firstOrNull { it.id == categoryId }?.name,
+                subsForCategory.firstOrNull { it.id == subcategoryId }?.name,
+            ).joinToString(" ← "),
+            notes = buildList {
+                if (featured) {
+                    add("⭐ التمييز سيُطبَّق على الدروس كلّها.")
+                }
+                if (transcriptText.isNotBlank() || transcriptImages.isNotEmpty()) {
+                    add("📖 «النص المشروح» يخصّ مقطعاً بعينه — يُرفق بالدرس الأوّل وحده.")
+                }
+            },
+            onRename = { index, newTitle ->
+                files.getOrNull(index)?.let { batchTitles[it.uri.toString()] = newTitle }
+            },
+            onConfirm = {
+                showBatchSheet = false
+                queueSeparateLessons()
+            },
+            onDismiss = { showBatchSheet = false },
+        )
+    }
+
     if (showFeatureSheet) {
         FeatureDurationSheet(
             lessonTitle = title.ifBlank { "الدرس الجديد" },
@@ -538,9 +918,8 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 showRecorder = false
                 // التسجيل (m4a) صار يقبل الدمج كأي صيغة أخرى: يُلحق بالقائمة
                 // بدل أن يمحوها — سجّل مقاطع متتابعة أو اخلطها بملفات مختارة.
-                if (files.size >= AudioMerger.maxFiles) {
-                    message = "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد " +
-                        "— لم يُضف التسجيل."
+                if (files.size >= addLimit) {
+                    message = "الحد الأقصى $addLimit ملفات — لم يُضف التسجيل."
                     isError = true
                 } else {
                     files.add(
@@ -552,6 +931,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     )
                     message = ""
                     isError = false
+                    askIntentIfNeeded()
                 }
             },
         )
@@ -576,7 +956,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedButton(
                         onClick = { picker.launch("audio/*") },
-                        enabled = !queuing,
+                        enabled = !busy,
                         modifier = Modifier.weight(1f),
                     ) {
                         Icon(
@@ -587,9 +967,9 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         Spacer(Modifier.size(6.dp))
                         Text(
                             if (files.isEmpty()) {
-                                "اختر ملفاً (أو عدّة)"
+                                "اختر ملفاً (أو مجلّداً كاملاً)"
                             } else {
-                                "إضافة ملفات (${files.size}/${AudioMerger.maxFiles})"
+                                "إضافة ملفات (${files.size}/$addLimit)"
                             },
                             overflow = TextOverflow.Ellipsis,
                             maxLines = 1,
@@ -597,7 +977,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     }
                     OutlinedButton(
                         onClick = { showRecorder = true },
-                        enabled = !queuing,
+                        enabled = !busy,
                         modifier = Modifier.weight(1f),
                     ) {
                         Icon(Icons.Filled.Mic, contentDescription = null, tint = MaterialTheme.colorScheme.error)
@@ -605,20 +985,33 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         Text("تسجيل مباشر", overflow = TextOverflow.Ellipsis, maxLines = 1)
                     }
                 }
+                // نيّة الدفعة معروضة دائماً بلا سؤال متكرّر: سطر واحد يقول ما
+                // سيقع، و«تغيير» يعيد السؤال — الترتيب أدناه هو ترتيب الرفع.
                 if (files.size > 1) {
                     Spacer(Modifier.height(8.dp))
-                    Box(
+                    Row(
                         Modifier
                             .fillMaxWidth()
                             .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
-                            .padding(10.dp),
+                            .padding(start = 10.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            "ستُدمج ${files.size} ملفات بالترتيب أدناه في درس واحد " +
-                                "متصل — استعمل الأسهم لإعادة الترتيب.",
+                            if (separate) {
+                                "${files.size} ملفّاً = ${lessonsCountLabel(files.size)} " +
+                                    "منفصلاً بالترتيب أدناه (وهو ترتيب ظهورها في " +
+                                    "التطبيق) — والعناوين من أسماء الملفّات."
+                            } else {
+                                "ستُدمج ${files.size} ملفات بالترتيب أدناه في درس واحد " +
+                                    "متصل — استعمل الأسهم لإعادة الترتيب."
+                            },
                             fontSize = 13.sp,
                             lineHeight = 22.sp,
+                            modifier = Modifier.weight(1f),
                         )
+                        TextButton(onClick = { askMultiMode = true }, enabled = !busy) {
+                            Text("تغيير", fontSize = 13.sp)
+                        }
                     }
                 }
             }
@@ -629,7 +1022,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     name = file.name,
                     canMoveUp = index > 0,
                     canMoveDown = index < files.size - 1,
-                    enabled = !queuing,
+                    enabled = !busy,
                     showReorder = files.size > 1,
                     onUp = {
                         val item = files.removeAt(index)
@@ -650,7 +1043,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     items = categories,
                     selected = categories.firstOrNull { it.id == categoryId },
                     itemLabel = { it.name },
-                    enabled = !queuing,
+                    enabled = !busy,
                     onSelected = {
                         categoryId = it.id
                         subcategoryId = null
@@ -663,7 +1056,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         items = subsForCategory,
                         selected = subsForCategory.firstOrNull { it.id == subcategoryId },
                         itemLabel = { it.name },
-                        enabled = !queuing,
+                        enabled = !busy,
                         onSelected = { subcategoryId = it.id },
                     )
                     if (subsForCategory.isEmpty()) {
@@ -680,7 +1073,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     Checkbox(
                         checked = featured,
                         onCheckedChange = {
-                            if (queuing) return@Checkbox
+                            if (busy) return@Checkbox
                             if (it) {
                                 // التمييز يلزمه مدّة — لا يُترك دائماً بالصدفة.
                                 showFeatureSheet = true
@@ -690,7 +1083,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                                 featuredLabel = ""
                             }
                         },
-                        enabled = !queuing,
+                        enabled = !busy,
                     )
                     Icon(Icons.Filled.Star, contentDescription = null, tint = adminGold)
                     Spacer(Modifier.size(8.dp))
@@ -757,14 +1150,14 @@ fun AddLessonScreen(onBack: () -> Unit) {
                                 value = transcriptBookTitle,
                                 onValueChange = { if (it.length <= 200) transcriptBookTitle = it },
                                 label = "اسم الكتاب/المتن (اختياري)",
-                                enabled = !queuing,
+                                enabled = !busy,
                             )
                             Spacer(Modifier.height(8.dp))
                             AdminTextField(
                                 value = transcriptSourceRef,
                                 onValueChange = { if (it.length <= 300) transcriptSourceRef = it },
                                 label = "المقطع (من … إلى …) — اختياري",
-                                enabled = !queuing,
+                                enabled = !busy,
                             )
                             Spacer(Modifier.height(8.dp))
                             AdminTextField(
@@ -774,12 +1167,12 @@ fun AddLessonScreen(onBack: () -> Unit) {
                                 singleLine = false,
                                 minLines = 4,
                                 maxLines = 10,
-                                enabled = !queuing,
+                                enabled = !busy,
                             )
                             Spacer(Modifier.height(8.dp))
                             AdminTranscriptImagesEditor(
                                 images = transcriptImages,
-                                enabled = !queuing,
+                                enabled = !busy,
                                 onError = { errorText ->
                                     message = errorText
                                     isError = true
@@ -803,6 +1196,31 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     )
                     Spacer(Modifier.height(12.dp))
                 }
+                // نسخ عشرين ملفّاً إلى تخزين التطبيق يستغرق لحظات — شريط
+                // محدَّد لأنّ العدد معلوم، ونصّ يقول إنّ المغادرة لا تُبطله.
+                // ⚠️ من الحالة المشتركة: تدوير الشاشة كان يُخفيه والدفعة ماضية.
+                val batchProgress = batchState.value
+                if (batchProgress != null) {
+                    LinearProgressIndicator(
+                        progress = {
+                            if (batchProgress.total <= 0) {
+                                0f
+                            } else {
+                                batchProgress.prepared / batchProgress.total.toFloat()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "جارٍ إدراج الدروس بالترتيب — يكمل حتى لو غادرت الشاشة.",
+                        color = MaterialTheme.colorScheme.primary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
                 if (message.isNotEmpty()) {
                     Text(
                         message,
@@ -813,15 +1231,37 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     )
                 }
                 Button(
-                    onClick = { queueLesson() },
-                    enabled = !queuing,
+                    onClick = {
+                        if (separate) {
+                            // ورقة المراجعة أوّلاً: عشرون درساً لا تُرفع بنقرة
+                            // عمياء — يرى ترتيبها وعناوينها قبل أن تمضي.
+                            val missing = firstMissing()
+                            if (missing != null) {
+                                message = missing
+                                isError = true
+                            } else {
+                                showBatchSheet = true
+                            }
+                        } else {
+                            queueLesson()
+                        }
+                    },
+                    enabled = !busy,
                     shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                 ) {
                     Icon(Icons.Filled.CloudUpload, contentDescription = null)
                     Spacer(Modifier.size(8.dp))
-                    Text(if (queuing) "جارٍ التجهيز…" else "رفع الدرس الصوتي")
+                    Text(
+                        when {
+                            batchProgress != null ->
+                                "جارٍ التجهيز… ${batchProgress.prepared} من ${batchProgress.total}"
+                            busy -> "جارٍ التجهيز…"
+                            separate -> "مراجعة ورفع ${lessonsCountLabel(files.size)}"
+                            else -> "رفع الدرس الصوتي"
+                        },
+                    )
                 }
                 Spacer(Modifier.height(24.dp))
             }

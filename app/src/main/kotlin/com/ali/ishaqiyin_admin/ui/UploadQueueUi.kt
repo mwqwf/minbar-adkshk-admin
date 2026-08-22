@@ -341,8 +341,14 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                     )
                     Spacer(Modifier.size(6.dp))
                     Column(Modifier.weight(1f)) {
+                        // إعلان الدفعة يذكر عددها لا اسم أوّل ملفّ وحده: من
+                        // رفع مجلّداً كاملاً يريد أن يرى أنّ العشرين دخلت.
                         Text(
-                            "أُضيف إلى الطابور: ${added.fileName}",
+                            if (added.batchCount > 1) {
+                                "أُضيف ${lessonsCountLabel(added.batchCount)} إلى الطابور"
+                            } else {
+                                "أُضيف إلى الطابور: ${added.fileName}"
+                            },
                             fontSize = 11.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = adminGreen,
@@ -350,8 +356,13 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            "الترتيب ${added.position} من ${added.total} — " +
-                                "تابع إضافة درس آخر، الرفع يكمل وحده.",
+                            if (added.batchCount > 1) {
+                                "تبدأ من الترتيب ${added.position} من ${added.total} — " +
+                                    "تُرفع واحداً تلو الآخر بترتيب إضافتها."
+                            } else {
+                                "الترتيب ${added.position} من ${added.total} — " +
+                                    "تابع إضافة درس آخر، الرفع يكمل وحده."
+                            },
                             fontSize = 10.5.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2,
