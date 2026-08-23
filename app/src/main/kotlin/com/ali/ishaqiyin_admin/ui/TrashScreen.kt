@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RestoreFromTrash
@@ -27,7 +28,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -72,6 +77,14 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
     val items by remember { TrashRepository.watchAll() }
         .collectAsState(initial = emptyList())
 
+    // 🗂️ الأقسام المحذوفة: تبويب ثانٍ بجانب الدروس — القسم صار يُنقل إلى
+    // السلة كالدرس تماماً، فحذفٌ بالخطأ يعود بنقرة بلا إعادة بناء يدويّة.
+    val sections by remember { DeletedSectionsRepository.watchAll() }
+        .collectAsState(initial = emptyList())
+    var tab by remember { mutableStateOf(0) }
+    var restoringSection by remember { mutableStateOf<TrashedSection?>(null) }
+    var purgingSection by remember { mutableStateOf<TrashedSection?>(null) }
+
     // الأقسام تُجلب مرّة لحلّ اسم القسم محليّاً للدروس القديمة التي حُذفت
     // بلا `categoryName/subcategoryName` في وثيقتها — بلا هذا يسقط سطر
     // القسم كلّه فلا يميّز المشرف بين دروس متشابهة العناوين قبل قراره.
@@ -108,6 +121,34 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
         }
     }
 
+    restoringSection?.let { item ->
+        ConfirmDialog(
+            title = "استعادة القسم؟",
+            body = "«${item.name.ifEmpty { "بدون اسم" }}»\n" +
+                "يعود القسم بمعرّفه الأصلي، فيرجع إليه كل درس تستعيده من السلة.",
+            confirmLabel = "استعادة",
+            onDismiss = { restoringSection = null },
+            onConfirm = {
+                restoringSection = null
+                run("استُعيد القسم. ✅") { DeletedSectionsRepository.restore(item) }
+            },
+        )
+    }
+
+    purgingSection?.let { item ->
+        ConfirmDialog(
+            title = "حذف نهائي؟",
+            body = "«${item.name.ifEmpty { "بدون اسم" }}»\n" +
+                "⚠️ يُحذف القسم من السلة نهائياً ولا يمكن استعادته بعدها أبداً.",
+            confirmLabel = "حذف نهائياً",
+            onDismiss = { purgingSection = null },
+            onConfirm = {
+                purgingSection = null
+                run("حُذف القسم نهائياً.") { DeletedSectionsRepository.purge(item) }
+            },
+        )
+    }
+
     restoring?.let { item ->
         ConfirmDialog(
             title = "استعادة الدرس؟",
@@ -142,20 +183,36 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
     }
 
     if (emptying) {
-        ConfirmDialog(
-            title = "تفريغ السلة كاملةً؟",
-            body = "⚠️ سيُحذف ${lessonsCountLabel(items.size)} وملفاتها الصوتية نهائياً " +
-                "ولا يمكن استعادة أي منها بعدها أبداً.\n\nهذا الإجراء للمالك فقط.",
-            confirmLabel = "تفريغ نهائي",
-            onDismiss = { emptying = false },
-            onConfirm = {
-                emptying = false
-                // كل البطاقات ستزول، فأيّ معاينة جارية تفقد شريطها.
-                player.stop()
-                run("") {
-                    val purged = TrashRepository.emptyAll()
-                    snack("فُرّغت السلة — حُذف ${lessonsCountLabel(purged)} نهائياً.")
+        // ⚠️ الفعل الوحيد في اللوحة بلا مصدر استرجاع (لا سلّة للسلّة) —
+        // فلا يكفيه زرّ «نعم»: ضغطٌ متّصل ثلاث ثوانٍ يمتلئ أمام العين.
+        AlertDialog(
+            onDismissRequest = { emptying = false },
+            title = { Text("تفريغ السلة كاملةً؟") },
+            text = {
+                Column {
+                    Text(
+                        "⚠️ سيُحذف ${lessonsCountLabel(items.size)} وملفاتها الصوتية " +
+                            "نهائياً ولا يمكن استعادة أي منها بعدها أبداً.\n\n" +
+                            "هذا الإجراء للمالك فقط.",
+                    )
+                    Spacer(Modifier.size(16.dp))
+                    HoldToConfirmButton(
+                        label = "اضغط مع الاستمرار 3 ثوانٍ للحذف النهائي",
+                        onConfirmed = {
+                            emptying = false
+                            // كل البطاقات ستزول، فأيّ معاينة جارية تفقد شريطها.
+                            player.stop()
+                            run("") {
+                                val purged = TrashRepository.emptyAll()
+                                snack("فُرّغت السلة — حُذف ${lessonsCountLabel(purged)} نهائياً.")
+                            }
+                        },
+                    )
                 }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { emptying = false }) { Text("إلغاء") }
             },
         )
     }
@@ -184,165 +241,325 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
             }
         },
     ) { padding ->
-        if (items.isEmpty()) {
-            Box(
-                Modifier.padding(padding).fillMaxSize().padding(32.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "السلة فارغة.\nكل درس تحذفه يبقى هنا 30 يوماً قابلاً " +
-                        "للاستعادة قبل حذفه النهائي تلقائياً.",
-                    textAlign = TextAlign.Center,
-                    lineHeight = 26.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            // تبويبان: الدروس المحذوفة والأقسام المحذوفة — كلاهما بنفس أسلوب
+            // البطاقات وزرّ الاستعادة، فلا يتعلّم المشرف شيئاً جديداً.
+            TabRow(selectedTabIndex = tab) {
+                Tab(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    text = { Text("الدروس (${items.size})") },
+                )
+                Tab(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    text = { Text("الأقسام (${sections.size})") },
                 )
             }
-            return@AdminScaffold
-        }
-        LazyColumn(
-            modifier = Modifier.padding(padding).fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            item {
-                Text(
-                    "الدروس المحذوفة تبقى 30 يوماً ثم تُحذف نهائياً تلقائياً.",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                )
-            }
-            items(items.size) { index ->
-                val item = items[index]
-                val isPlaying = player.playingId == item.id && player.playing
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
+            if (tab == 0) {
+            if (items.isEmpty()) {
+                Box(
+                    Modifier.fillMaxSize().padding(32.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Column(Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                Modifier
-                                    .size(44.dp)
-                                    .background(
-                                        MaterialTheme.colorScheme.surfaceContainer,
-                                        CircleShape,
-                                    ),
-                                contentAlignment = Alignment.Center,
+                    Text(
+                        "السلة فارغة.\nكل درس تحذفه يبقى هنا 30 يوماً قابلاً " +
+                            "للاستعادة قبل حذفه النهائي تلقائياً.",
+                        textAlign = TextAlign.Center,
+                        lineHeight = 26.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                return@Column
+            }
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                item {
+                    Text(
+                        "الدروس المحذوفة تبقى 30 يوماً ثم تُحذف نهائياً تلقائياً.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                items(items.size) { index ->
+                    val item = items[index]
+                    val isPlaying = player.playingId == item.id && player.playing
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    Modifier
+                                        .size(44.dp)
+                                        .background(
+                                            MaterialTheme.colorScheme.surfaceContainer,
+                                            CircleShape,
+                                        ),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    IconButton(
+                                        onClick = { player.toggle(item.id, item.audioUrl) },
+                                        enabled = item.audioUrl.isNotEmpty(),
+                                    ) {
+                                        Icon(
+                                            if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                            contentDescription = "استماع",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.size(8.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        item.title.ifEmpty { "بدون عنوان" },
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    val section = sectionOf(item)
+                                    if (section.isNotEmpty()) {
+                                        Text(
+                                            section,
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                // برتقالي المهلة: نظيره الفاتح في الوضع الداكن.
+                                val deadline = adminOrange
+                                Box(
+                                    Modifier
+                                        .background(
+                                            deadline.copy(alpha = 0.12f),
+                                            RoundedCornerShape(999.dp),
+                                        )
+                                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                                ) {
+                                    Text(
+                                        arabicCount(item.daysLeft, "يوم واحد", "يومان", "أيام", "يوماً"),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = deadline,
+                                    )
+                                }
+                            }
+                            // شريط المعاينة: تقدّم قابل للسحب وقفز ±٣٠ث وسرعة —
+                            // يراجع المشرف الدرس المحذوف قبل استعادته أو محوه.
+                            PreviewPlayerBar(
+                                state = player,
+                                id = item.id,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                            Spacer(Modifier.size(6.dp))
+                            Text(
+                                buildString {
+                                    append("حذفه ${item.deletedBy.ifEmpty { "غير معروف" }}")
+                                    if (item.deletedAtMs > 0) {
+                                        append(
+                                            " • " + SimpleDateFormat(
+                                                "yyyy/MM/dd HH:mm",
+                                                Locale.ENGLISH,
+                                            ).format(Date(item.deletedAtMs)),
+                                        )
+                                    }
+                                    if (item.hasTranscript) append(" • معه نص مشروح 📖")
+                                },
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.size(8.dp))
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                IconButton(
-                                    onClick = { player.toggle(item.id, item.audioUrl) },
-                                    enabled = item.audioUrl.isNotEmpty(),
+                                Button(
+                                    onClick = { restoring = item },
+                                    enabled = !busy,
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = adminGreen,
+                                        // الحبر يُشتقّ من الخلفيّة في الوضعين: لون
+                                        // محتوى البطاقة فوق الأخضر الداكن كان يرسب
+                                        // في التباين بالوضع الفاتح.
+                                        contentColor = contentColorOn(adminGreen),
+                                    ),
+                                    modifier = Modifier.weight(1f),
                                 ) {
                                     Icon(
-                                        if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                        contentDescription = "استماع",
-                                        tint = MaterialTheme.colorScheme.primary,
+                                        Icons.Filled.RestoreFromTrash,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
                                     )
+                                    Spacer(Modifier.size(4.dp))
+                                    Text("استعادة")
                                 }
-                            }
-                            Spacer(Modifier.size(8.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    item.title.ifEmpty { "بدون عنوان" },
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                val section = sectionOf(item)
-                                if (section.isNotEmpty()) {
-                                    Text(
-                                        section,
-                                        fontSize = 12.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                OutlinedButton(
+                                    onClick = { purging = item },
+                                    enabled = !busy,
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Icon(
+                                        Icons.Filled.DeleteForever,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp),
                                     )
+                                    Spacer(Modifier.size(4.dp))
+                                    Text("حذف نهائي", color = MaterialTheme.colorScheme.error)
                                 }
-                            }
-                            // برتقالي المهلة: نظيره الفاتح في الوضع الداكن.
-                            val deadline = adminOrange
-                            Box(
-                                Modifier
-                                    .background(
-                                        deadline.copy(alpha = 0.12f),
-                                        RoundedCornerShape(999.dp),
-                                    )
-                                    .padding(horizontal = 8.dp, vertical = 3.dp),
-                            ) {
-                                Text(
-                                    arabicCount(item.daysLeft, "يوم واحد", "يومان", "أيام", "يوماً"),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = deadline,
-                                )
                             }
                         }
-                        // شريط المعاينة: تقدّم قابل للسحب وقفز ±٣٠ث وسرعة —
-                        // يراجع المشرف الدرس المحذوف قبل استعادته أو محوه.
-                        PreviewPlayerBar(
-                            state = player,
-                            id = item.id,
-                            modifier = Modifier.padding(top = 6.dp),
-                        )
-                        Spacer(Modifier.size(6.dp))
+                    }
+                }
+            }
+
+            } else {
+                if (sections.isEmpty()) {
+                    Box(
+                        Modifier.fillMaxSize().padding(32.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
                         Text(
-                            buildString {
-                                append("حذفه ${item.deletedBy.ifEmpty { "غير معروف" }}")
-                                if (item.deletedAtMs > 0) {
-                                    append(
-                                        " • " + SimpleDateFormat(
-                                            "yyyy/MM/dd HH:mm",
-                                            Locale.ENGLISH,
-                                        ).format(Date(item.deletedAtMs)),
-                                    )
-                                }
-                                if (item.hasTranscript) append(" • معه نص مشروح 📖")
-                            },
-                            fontSize = 12.sp,
+                            "لا أقسام محذوفة.\nكل قسم تحذفه يبقى هنا 30 يوماً " +
+                                "قابلاً للاستعادة بمعرّفه الأصلي.",
+                            textAlign = TextAlign.Center,
+                            lineHeight = 26.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Spacer(Modifier.size(8.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    }
+                    return@Column
+                }
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    item {
+                        Text(
+                            "استعادة القسم تعيده بمعرّفه الأصلي، فيرجع إليه كل درس " +
+                                "تستعيده من تبويب الدروس بلا نقل يدويّ.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                    items(sections.size) { index ->
+                        val item = sections[index]
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Button(
-                                onClick = { restoring = item },
-                                enabled = !busy,
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = adminGreen,
-                                    // الحبر يُشتقّ من الخلفيّة في الوضعين: لون
-                                    // محتوى البطاقة فوق الأخضر الداكن كان يرسب
-                                    // في التباين بالوضع الفاتح.
-                                    contentColor = contentColorOn(adminGreen),
-                                ),
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Icon(
-                                    Icons.Filled.RestoreFromTrash,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp),
+                            Column(Modifier.padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircleIcon(
+                                        Icons.Filled.Folder,
+                                        MaterialTheme.colorScheme.surfaceContainer,
+                                    )
+                                    Spacer(Modifier.size(8.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            item.name.ifEmpty { "بدون اسم" },
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            if (item.isCategory) "قسم رئيسي" else "قسم فرعي",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    val deadline = adminOrange
+                                    Box(
+                                        Modifier
+                                            .background(
+                                                deadline.copy(alpha = 0.12f),
+                                                RoundedCornerShape(999.dp),
+                                            )
+                                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                                    ) {
+                                        Text(
+                                            arabicCount(
+                                                item.daysLeft,
+                                                "يوم واحد",
+                                                "يومان",
+                                                "أيام",
+                                                "يوماً",
+                                            ),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = deadline,
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.size(6.dp))
+                                Text(
+                                    buildString {
+                                        append("حذفه ${item.deletedBy.ifEmpty { "غير معروف" }}")
+                                        if (item.deletedAtMs > 0) {
+                                            append(
+                                                " • " + SimpleDateFormat(
+                                                    "yyyy/MM/dd HH:mm",
+                                                    Locale.ENGLISH,
+                                                ).format(Date(item.deletedAtMs)),
+                                            )
+                                        }
+                                    },
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
-                                Spacer(Modifier.size(4.dp))
-                                Text("استعادة")
-                            }
-                            OutlinedButton(
-                                onClick = { purging = item },
-                                enabled = !busy,
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Icon(
-                                    Icons.Filled.DeleteForever,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                                Spacer(Modifier.size(4.dp))
-                                Text("حذف نهائي", color = MaterialTheme.colorScheme.error)
+                                Spacer(Modifier.size(8.dp))
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Button(
+                                        onClick = { restoringSection = item },
+                                        enabled = !busy,
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = adminGreen,
+                                            contentColor = contentColorOn(adminGreen),
+                                        ),
+                                        modifier = Modifier.weight(1f),
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.RestoreFromTrash,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                        Spacer(Modifier.size(4.dp))
+                                        Text("استعادة")
+                                    }
+                                    OutlinedButton(
+                                        onClick = { purgingSection = item },
+                                        enabled = !busy,
+                                        modifier = Modifier.weight(1f),
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.DeleteForever,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                        Spacer(Modifier.size(4.dp))
+                                        Text("حذف نهائي", color = MaterialTheme.colorScheme.error)
+                                    }
+                                }
                             }
                         }
                     }

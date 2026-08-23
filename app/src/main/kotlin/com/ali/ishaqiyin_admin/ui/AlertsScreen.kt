@@ -71,6 +71,8 @@ fun AlertsScreen(
 ) {
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
+    // شريط «تراجع» لهذه الشاشة — الإزالة تقع فوراً والتراجع يستردّها.
+    val undoBar = rememberUndoBar()
     var confirmPublicDelete by remember { mutableStateOf<AdminAlert?>(null) }
     val live by remember(isOwner) { AdminAlertsFeed.stream(isOwner) }
         .collectAsState(initial = emptyList())
@@ -111,6 +113,29 @@ fun AlertsScreen(
     }
 
     /**
+     * ↩️ إزالة تنبيهي الشخصيّ: فعل رخيص لا يستحقّ سؤالاً قبله. يختفي
+     * الصفّ فوراً، والحذف الفعليّ من القاعدة **يؤجَّل** عشر ثوانٍ — فإن ضغط
+     * المشرف «تراجع» عاد التنبيه إلى موضعه وحالته بعينهما (القائمة مرتَّبة
+     * بزمن الإنشاء) لأنّ شيئاً لم يُمَسّ في القاعدة أصلاً.
+     */
+    fun removeWithUndo(alert: AdminAlert) {
+        session.remove(alert.id)
+        undoBar.show(
+            message = "أُزيل التنبيه «${alert.title.ifEmpty { "تنبيه" }}».",
+            onUndo = { session[alert.id] = alert },
+            onCommit = {
+                scope.launch {
+                    runCatching { AdminAlertsFeed.delete(alert) }
+                        .onFailure {
+                            session[alert.id] = alert
+                            snack("تعذّر حذف التنبيه: ${it.arabicReason()}")
+                        }
+                }
+            },
+        )
+    }
+
+    /**
      * فتح هدف التنبيه: يُبنى المسار من نوعه ومعرّفه بنفس خريطة الإشعارات،
      * ويُميَّز مقروءاً لأنّ المشرف عالجه فعلاً. تنبيه بلا شاشة (تهنئة أو
      * موجز) لا يُسقط شيئاً — يُعلَن أنّه للعلم فقط.
@@ -143,8 +168,11 @@ fun AlertsScreen(
     confirmPublicDelete?.let { alert ->
         ConfirmDialog(
             title = "حذف تنبيه عامّ",
-            body = "هذا تنبيه عامّ — سيختفي عن جميع المشرفين لا عنك وحدك، " +
-                "ولا يمكن التراجع.",
+            // اسم التنبيه في الحوار لا وصفه المجرّد: المشرف يرى **ماذا**
+            // سيحذف بعينه قبل أن يوافق.
+            body = "«${alert.title.ifEmpty { "تنبيه" }}»\n\n" +
+                "هذا تنبيه عامّ — سيختفي عن " +
+                "جميع المشرفين لا عنك وحدك، ولا يمكن التراجع.",
             confirmLabel = "حذف للجميع",
             confirmColor = MaterialTheme.colorScheme.error,
             onDismiss = { confirmPublicDelete = null },
@@ -155,130 +183,132 @@ fun AlertsScreen(
         )
     }
 
-    AdminScaffold(
-        title = "تنبيهاتك",
-        onBack = onBack,
-        actions = {
-            if (!markedAll && alerts.any { !it.isReadBy(me) }) {
-                IconButton(
-                    onClick = {
-                        val unread = alerts.filter { !it.isReadBy(me) }
-                        AdminAlertsFeed.markAllRead(unread)
-                        unread.forEach { marked.add(it.id) }
-                        markedAll = true
-                        snack("مُيّزت التنبيهات مقروءة.")
-                    },
-                ) {
-                    Icon(Icons.Filled.DoneAll, contentDescription = "تمييز الكل مقروءاً")
-                }
-            }
-        },
-    ) { padding ->
-        if (alerts.isEmpty()) {
-            Box(
-                Modifier.padding(padding).fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "لا تنبيهات — كلّ شيء تحت السيطرة ✅",
-                    fontSize = 16.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            return@AdminScaffold
-        }
-        LazyColumn(
-            modifier = Modifier.padding(padding).fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
-        ) {
-            items(alerts.size) { index ->
-                val alert = alerts[index]
-                val unread = !alert.isReadBy(me)
-                val deletable = AdminAlertsFeed.canDelete(alert, isOwner)
-
-                // 👁️ الظهور الفعلي = القراءة: لا يُميَّز إلّا ما رُكّب في
-                // القائمة وبقي لحظة أمام العين — لا كلّ ما جلبه الاستعلام.
-                if (unread && !marked.contains(alert.id)) {
-                    LaunchedEffect(alert.id) {
-                        delay(900)
-                        marked.add(alert.id)
-                        AdminAlertsFeed.markRead(alert)
-                    }
-                }
-
-                // الدائرة الباهتة (المقروء) تُظهر خلفيّة الشاشة من تحتها،
-                // فأيقونتها تتبع السطح لا اللون المصمت — وإلّا اختفى الحبر
-                // الداكن فوق ذهب الليل الشفّاف.
-                val bubble = MaterialTheme.colorScheme.primary
-                val bubbleIcon = when {
-                    unread -> contentColorOn(bubble)
-                    isAdminDarkTheme() -> MaterialTheme.colorScheme.onSurface
-                    else -> Color.White
-                }
-
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { openTarget(alert) }
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
-                        Modifier
-                            .size(40.dp)
-                            .background(
-                                if (unread) bubble else bubble.copy(alpha = 0.35f),
-                                CircleShape,
-                            ),
-                        contentAlignment = Alignment.Center,
+    UndoBarOverlay(undoBar) {
+        AdminScaffold(
+            title = "تنبيهاتك",
+            onBack = onBack,
+            actions = {
+                if (!markedAll && alerts.any { !it.isReadBy(me) }) {
+                    IconButton(
+                        onClick = {
+                            val unread = alerts.filter { !it.isReadBy(me) }
+                            AdminAlertsFeed.markAllRead(unread)
+                            unread.forEach { marked.add(it.id) }
+                            markedAll = true
+                            snack("مُيّزت التنبيهات مقروءة.")
+                        },
                     ) {
-                        Icon(
-                            iconFor(alert.type),
-                            contentDescription = null,
-                            tint = bubbleIcon,
-                            modifier = Modifier.size(20.dp),
-                        )
+                        Icon(Icons.Filled.DoneAll, contentDescription = "تمييز الكل مقروءاً")
                     }
-                    Spacer(Modifier.size(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            alert.title.ifEmpty { "تنبيه" },
-                            fontWeight = if (unread) FontWeight.ExtraBold else FontWeight.Medium,
-                        )
-                        if (alert.body.isNotEmpty()) {
-                            Text(alert.body, lineHeight = 20.sp, fontSize = 13.sp)
+                }
+            },
+        ) { padding ->
+            if (alerts.isEmpty()) {
+                Box(
+                    Modifier.padding(padding).fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "لا تنبيهات — كلّ شيء تحت السيطرة ✅",
+                        fontSize = 16.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                return@AdminScaffold
+            }
+            LazyColumn(
+                modifier = Modifier.padding(padding).fillMaxWidth(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
+            ) {
+                items(alerts.size) { index ->
+                    val alert = alerts[index]
+                    val unread = !alert.isReadBy(me)
+                    val deletable = AdminAlertsFeed.canDelete(alert, isOwner)
+
+                    // 👁️ الظهور الفعلي = القراءة: لا يُميَّز إلّا ما رُكّب في
+                    // القائمة وبقي لحظة أمام العين — لا كلّ ما جلبه الاستعلام.
+                    if (unread && !marked.contains(alert.id)) {
+                        LaunchedEffect(alert.id) {
+                            delay(900)
+                            marked.add(alert.id)
+                            AdminAlertsFeed.markRead(alert)
                         }
                     }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(
-                            ago(alert.createdAtMs),
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (unread) {
-                            Spacer(Modifier.size(4.dp))
-                            Box(Modifier.size(9.dp).background(adminOrange, CircleShape))
-                        }
+
+                    // الدائرة الباهتة (المقروء) تُظهر خلفيّة الشاشة من تحتها،
+                    // فأيقونتها تتبع السطح لا اللون المصمت — وإلّا اختفى الحبر
+                    // الداكن فوق ذهب الليل الشفّاف.
+                    val bubble = MaterialTheme.colorScheme.primary
+                    val bubbleIcon = when {
+                        unread -> contentColorOn(bubble)
+                        isAdminDarkTheme() -> MaterialTheme.colorScheme.onSurface
+                        else -> Color.White
                     }
-                    if (deletable) {
-                        IconButton(
-                            onClick = {
-                                if (alert.email.isEmpty()) {
-                                    confirmPublicDelete = alert
-                                } else {
-                                    deleteNow(alert)
-                                }
-                            },
+
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { openTarget(alert) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(40.dp)
+                                .background(
+                                    if (unread) bubble else bubble.copy(alpha = 0.35f),
+                                    CircleShape,
+                                ),
+                            contentAlignment = Alignment.Center,
                         ) {
                             Icon(
-                                Icons.Filled.Delete,
-                                contentDescription = "حذف التنبيه",
-                                tint = MaterialTheme.colorScheme.error,
+                                iconFor(alert.type),
+                                contentDescription = null,
+                                tint = bubbleIcon,
+                                modifier = Modifier.size(20.dp),
                             )
                         }
+                        Spacer(Modifier.size(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                alert.title.ifEmpty { "تنبيه" },
+                                fontWeight = if (unread) FontWeight.ExtraBold else FontWeight.Medium,
+                            )
+                            if (alert.body.isNotEmpty()) {
+                                Text(alert.body, lineHeight = 20.sp, fontSize = 13.sp)
+                            }
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(
+                                ago(alert.createdAtMs),
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (unread) {
+                                Spacer(Modifier.size(4.dp))
+                                Box(Modifier.size(9.dp).background(adminOrange, CircleShape))
+                            }
+                        }
+                        if (deletable) {
+                            IconButton(
+                                onClick = {
+                                    if (alert.email.isEmpty()) {
+                                        confirmPublicDelete = alert
+                                    } else {
+                                        removeWithUndo(alert)
+                                    }
+                                },
+                            ) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "حذف التنبيه",
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
                     }
+                    HorizontalDivider()
                 }
-                HorizontalDivider()
             }
         }
     }

@@ -1,6 +1,7 @@
 package com.ali.ishaqiyin_admin.data
 
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FieldPath
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
@@ -533,6 +534,79 @@ object AdminRepository {
     suspend fun deleteLesson(lesson: Lesson) {
         functions.getHttpsCallable("deleteLesson")
             .call(mapOf("lessonId" to lesson.id)).await()
+    }
+
+    // ---------------- «آخر ما جرى» (من فعل ماذا ومتى) ----------------
+    /**
+     * تغيير واحد كما يُعرض في شاشة «آخر ما جرى».
+     * [kind]: `lesson` أو `category` أو `subcategory`.
+     */
+    data class RecentChange(
+        val id: String,
+        val kind: String,
+        val name: String,
+        val byEmail: String,
+        val atMs: Long,
+    )
+
+    /**
+     * آخر ما عُدِّل في المحتوى.
+     *
+     * ⚠️ لا شيء جديد يُكتب من أجل هذه الشاشة: [updateCompat] تكتب
+     * `updatedByEmail` و`updatedByUid` و`updatedAt` مع **كل** تعديل منذ اليوم
+     * الأوّل — والسجلّ كان موجوداً في القاعدة بلا شاشة واحدة تعرضه.
+     *
+     * خفّة الاستعلام مقصودة (إنترنت المشرفين ضعيف): استعلامات مقيَّدة بحدٍّ
+     * صغير وفرزٍ على الخادم، **بلا مستمع حيّ** وبلا جلب المجموعة كاملة.
+     *
+     * ⚠️ الوثائق على شكلين: حديثة تحمل الحقول في الجذر، وقديمة تغلّفها في
+     * `data.` — و`orderBy` لا يُرجع وثيقة لا تملك الحقل المطلوب أصلاً، فلكلّ
+     * شكل استعلامه ثمّ تُدمج النتيجتان. والفرز على حقل واحد لا يحتاج فهرساً
+     * مركّباً.
+     */
+    suspend fun fetchRecentChanges(limit: Int = 50): List<RecentChange> {
+        val plan = listOf(
+            Triple("lessons", "lesson", limit),
+            Triple("categories", "category", 15),
+            Triple("subcategories", "subcategory", 15),
+        )
+        val found = LinkedHashMap<String, RecentChange>()
+        plan.forEach { (collection, kind, cap) ->
+            listOf(
+                FieldPath.of("updatedAt"),
+                FieldPath.of("data", "updatedAt"),
+            ).forEach { path ->
+                val snap = runCatching {
+                    db.collection(collection)
+                        .orderBy(path, Query.Direction.DESCENDING)
+                        .limit(cap.toLong())
+                        .get()
+                        .await()
+                }.getOrNull() ?: return@forEach
+                snap.documents.forEach { doc ->
+                    val raw = doc.dataMap()
+                    val body = unwrap(raw)
+                    val atMs = parseDateMs(body["updatedAt"] ?: raw["updatedAt"])
+                    if (atMs <= 0L) return@forEach
+                    val name = str(body["title"]).ifEmpty { str(body["name"]) }
+                    val by = str(body["updatedByEmail"]).ifEmpty { str(raw["updatedByEmail"]) }
+                    // المفتاح بالمعرّف: الشكلان قد يُرجعان الوثيقة نفسها.
+                    val previous = found[doc.id]
+                    if (previous == null || previous.atMs < atMs) {
+                        found[doc.id] = RecentChange(
+                            id = doc.id,
+                            kind = kind,
+                            name = name,
+                            byEmail = by.lowercase(),
+                            atMs = atMs,
+                        )
+                    }
+                }
+            }
+        }
+        return withContext(Dispatchers.Default) {
+            found.values.sortedByDescending { it.atMs }.take(limit)
+        }
     }
 
     // ---------------- تفاعل المستمعين (feedback) ----------------

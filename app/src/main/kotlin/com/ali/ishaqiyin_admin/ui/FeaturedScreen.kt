@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -33,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -40,6 +42,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -92,6 +95,9 @@ fun remainingLabel(untilMs: Long?, now: Long = System.currentTimeMillis()): Stri
 fun FeaturedScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val snack = LocalSnack.current
+    // ↩️ إلغاء التمييز فعل رخيص قابل للرجوع تماماً — يقع فوراً ويُتاح
+    // التراجع عنه عشر ثوانٍ، بدل حوار تأكيد يُقرأ مرّة ويُتخطّى دائماً.
+    val undoBar = rememberUndoBar()
     val lessons by remember { AdminRepository.watchFeatured() }
         .collectAsState(initial = emptyList())
 
@@ -106,22 +112,71 @@ fun FeaturedScreen(onBack: () -> Unit) {
 
     var durationFor by remember { mutableStateOf<Lesson?>(null) }
     var busyId by remember { mutableStateOf("") }
-    var confirmClean by remember { mutableStateOf(false) }
     // التنظيف تسلسليّ وقد يطول: بلا هذا العلم يبقى الزرّ مفعّلاً فيُطلَق مرّتين
     // وتظهر رسالتان متناقضتان.
     var cleaning by remember { mutableStateOf(false) }
 
-    val expired = lessons.filter { it.featuredUntilMs != null && it.featuredUntilMs <= now }
-    val active = lessons.filterNot { it.featuredUntilMs != null && it.featuredUntilMs <= now }
+    // الدروس التي أُزيل تمييزها في هذه اللحظة ولم تنقضِ مهلة تراجعها:
+    // تُخفى من القائمة فوراً بينما الكتابة في القاعدة مؤجَّلة، فالتراجع
+    // يعيد الدرس إلى موضعه ومدّته بعينهما بلا كتابة أصلاً.
+    val pendingRemoval = remember { mutableStateListOf<String>() }
+
+    // ما ينتظر انقضاء مهلة تراجعه لا يُعرض — كأنّه أُزيل، وهو لم يُكتب بعد.
+    val shown = lessons.filterNot { pendingRemoval.contains(it.id) }
+    val expired = shown.filter { it.featuredUntilMs != null && it.featuredUntilMs <= now }
+    val active = shown.filterNot { it.featuredUntilMs != null && it.featuredUntilMs <= now }
 
     fun unfeature(lesson: Lesson) {
-        busyId = lesson.id
-        scope.launch {
-            runCatching { AdminRepository.setLessonFeatured(lesson.id, false) }
-                .onSuccess { snack("أُزيل «${lesson.title}» من مختارات المنبر.") }
-                .onFailure { snack("تعذّرت الإزالة: ${it.message ?: it}") }
-            busyId = ""
-        }
+        pendingRemoval.add(lesson.id)
+        undoBar.show(
+            message = "أُزيل «${lesson.title.ifBlank { "الدرس" }}» من مختارات المنبر.",
+            onUndo = { pendingRemoval.remove(lesson.id) },
+            onCommit = {
+                busyId = lesson.id
+                scope.launch {
+                    runCatching { AdminRepository.setLessonFeatured(lesson.id, false) }
+                        .onFailure {
+                            // فشل الكتابة يعيد الدرس للعرض: إخفاؤه وهو
+                            // مميّز في القاعدة يخدع المشرف.
+                            pendingRemoval.remove(lesson.id)
+                            snack("تعذّرت الإزالة: ${it.message ?: it}")
+                        }
+                    busyId = ""
+                    pendingRemoval.remove(lesson.id)
+                }
+            },
+        )
+    }
+
+    /**
+     * تنظيف المنتهية: كان حوار تأكيد بعدد مجرّد. صار يقع فوراً بشريط تراجع
+     * واحد يُعيد كلّ ما أُخفي — والكتابة لا تقع إلّا بعد انقضاء المهلة.
+     */
+    fun cleanExpired(batch: List<Lesson>) {
+        val ids = batch.map { it.id }
+        pendingRemoval.addAll(ids)
+        undoBar.show(
+            message = "أُزيل التمييز عن ${lessonsCountLabel(batch.size)} انتهت مدّتها.",
+            onUndo = { pendingRemoval.removeAll(ids) },
+            onCommit = {
+                cleaning = true
+                scope.launch {
+                    var failed = 0
+                    batch.forEach { lesson ->
+                        runCatching { AdminRepository.setLessonFeatured(lesson.id, false) }
+                            .onFailure {
+                                failed++
+                                pendingRemoval.remove(lesson.id)
+                            }
+                    }
+                    if (failed > 0) {
+                        snack("نُظّفت ${batch.size - failed}، وتعذّر $failed — أعد المحاولة.")
+                    }
+                    pendingRemoval.removeAll(ids)
+                    cleaning = false
+                }
+            },
+        )
     }
 
     durationFor?.let { lesson ->
@@ -141,151 +196,119 @@ fun FeaturedScreen(onBack: () -> Unit) {
         )
     }
 
-    if (confirmClean && !cleaning && expired.isNotEmpty()) {
-        // العدد المشمول مذكور صراحةً: التنظيف يمسّ دروساً عدّة دفعة واحدة.
-        val batch = expired
-        ConfirmDialog(
-            title = "تنظيف المنتهية؟",
-            body = "سيُزال التمييز عن ${lessonsCountLabel(batch.size)} انتهت مدّتها، فتسقط " +
-                "من مختارات المنبر في التطبيق العام. الدروس نفسها لا تُحذف.",
-            confirmLabel = "نظّف ${batch.size}",
-            confirmColor = adminOrange,
-            onConfirm = {
-                confirmClean = false
-                cleaning = true
-                scope.launch {
-                    var failed = 0
-                    batch.forEach { lesson ->
-                        runCatching { AdminRepository.setLessonFeatured(lesson.id, false) }
-                            .onFailure { failed++ }
+    UndoBarOverlay(undoBar) {
+        AdminScaffold(
+            title = "مختارات المنبر",
+            onBack = onBack,
+            actions = {
+                if (expired.isNotEmpty()) {
+                    IconButton(onClick = { cleanExpired(expired.toList()) }, enabled = !cleaning) {
+                        Icon(Icons.Filled.CleaningServices, contentDescription = "تنظيف المنتهية")
                     }
-                    // النجاح لا يُعلن إلّا عمّا نجح فعلاً: إعلان ثابت كان
-                    // يُخفي فشل كلّ الكتابات فيظنّها المشرف نُظّفت.
-                    snack(
-                        if (failed == 0) {
-                            "نُظّفت ${batch.size} من المنتهية."
-                        } else {
-                            "نُظّفت ${batch.size - failed}، وتعذّر $failed — أعد المحاولة."
-                        },
-                    )
-                    cleaning = false
                 }
             },
-            onDismiss = { confirmClean = false },
-        )
-    }
-
-    AdminScaffold(
-        title = "مختارات المنبر",
-        onBack = onBack,
-        actions = {
-            if (expired.isNotEmpty()) {
-                IconButton(onClick = { confirmClean = true }, enabled = !cleaning) {
-                    Icon(Icons.Filled.CleaningServices, contentDescription = "تنظيف المنتهية")
-                }
-            }
-        },
-    ) { padding ->
-        if (lessons.isEmpty()) {
-            Box(
-                Modifier.padding(padding).fillMaxSize().padding(28.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Filled.StarBorder,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(58.dp),
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        "لا دروس مميّزة الآن",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "ميّز درساً من «التعديل والبحث» بالنجمة ⭐ ليظهر أعلى " +
-                            "التطبيق العام، واختر مدّة بقائه.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.5.sp,
-                        lineHeight = 21.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    )
-                }
-            }
-            return@AdminScaffold
-        }
-
-        LazyColumn(
-            modifier = Modifier.padding(padding).fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            item {
-                // تدرّج الترويسة يتبع السمة، وحبره يُشتقّ من أوّل لونيه لأنّ
-                // الذهب في الوضع الداكن فاتح لا يحتمل نصّاً أبيض.
-                val bannerInk = contentColorOn(adminGold)
+        ) { padding ->
+            if (shown.isEmpty()) {
                 Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .background(
-                            Brush.horizontalGradient(listOf(adminGold, adminOrange)),
-                            RoundedCornerShape(14.dp),
-                        )
-                        .padding(14.dp),
+                    Modifier.padding(padding).fillMaxSize().padding(28.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(
-                            Icons.Filled.Star,
+                            Icons.Filled.StarBorder,
                             contentDescription = null,
-                            tint = bannerInk,
-                            modifier = Modifier.size(22.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(58.dp),
                         )
-                        Spacer(Modifier.size(10.dp))
-                        Column {
-                            Text(
-                                "${lessonsCountLabel(active.size)} في مختارات المنبر",
-                                color = bannerInk,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "لا دروس مميّزة الآن",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "ميّز درساً من «التعديل والبحث» بالنجمة ⭐ ليظهر أعلى " +
+                                "التطبيق العام، واختر مدّة بقائه.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.5.sp,
+                            lineHeight = 21.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                    }
+                }
+                return@AdminScaffold
+            }
+
+            LazyColumn(
+                modifier = Modifier.padding(padding).fillMaxWidth(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                item {
+                    // تدرّج الترويسة يتبع السمة، وحبره يُشتقّ من أوّل لونيه لأنّ
+                    // الذهب في الوضع الداكن فاتح لا يحتمل نصّاً أبيض.
+                    val bannerInk = contentColorOn(adminGold)
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(
+                                Brush.horizontalGradient(listOf(adminGold, adminOrange)),
+                                RoundedCornerShape(14.dp),
                             )
-                            Text(
-                                "تظهر أعلى التطبيق العام، وتسقط منه فور انتهاء " +
-                                    "المدّة أو إزالة التمييز.",
-                                color = bannerInk.copy(alpha = 0.9f),
-                                fontSize = 11.sp,
-                                lineHeight = 17.sp,
+                            .padding(14.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Filled.Star,
+                                contentDescription = null,
+                                tint = bannerInk,
+                                modifier = Modifier.size(22.dp),
                             )
+                            Spacer(Modifier.size(10.dp))
+                            Column {
+                                Text(
+                                    "${lessonsCountLabel(active.size)} في مختارات المنبر",
+                                    color = bannerInk,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                )
+                                Text(
+                                    "تظهر أعلى التطبيق العام، وتسقط منه فور انتهاء " +
+                                        "المدّة أو إزالة التمييز.",
+                                    color = bannerInk.copy(alpha = 0.9f),
+                                    fontSize = 11.sp,
+                                    lineHeight = 17.sp,
+                                )
+                            }
                         }
                     }
                 }
-            }
 
-            if (expired.isNotEmpty()) {
-                item { SectionTitle("انتهت مدّتها (${expired.size})") }
-                items(expired, key = { it.id }) { lesson ->
-                    FeaturedRow(
-                        lesson = lesson,
-                        now = now,
-                        busy = busyId == lesson.id,
-                        onChangeDuration = { durationFor = lesson },
-                        onRemove = { unfeature(lesson) },
-                    )
+                if (expired.isNotEmpty()) {
+                    item { SectionTitle("انتهت مدّتها (${expired.size})") }
+                    items(expired, key = { it.id }) { lesson ->
+                        FeaturedRow(
+                            lesson = lesson,
+                            now = now,
+                            busy = busyId == lesson.id,
+                            onChangeDuration = { durationFor = lesson },
+                            onRemove = { unfeature(lesson) },
+                        )
+                    }
                 }
-            }
 
-            if (active.isNotEmpty()) {
-                item { SectionTitle("مميّزة الآن (${active.size})") }
-                items(active, key = { it.id }) { lesson ->
-                    FeaturedRow(
-                        lesson = lesson,
-                        now = now,
-                        busy = busyId == lesson.id,
-                        onChangeDuration = { durationFor = lesson },
-                        onRemove = { unfeature(lesson) },
-                    )
+                if (active.isNotEmpty()) {
+                    item { SectionTitle("مميّزة الآن (${active.size})") }
+                    items(active, key = { it.id }) { lesson ->
+                        FeaturedRow(
+                            lesson = lesson,
+                            now = now,
+                            busy = busyId == lesson.id,
+                            onChangeDuration = { durationFor = lesson },
+                            onRemove = { unfeature(lesson) },
+                        )
+                    }
                 }
             }
         }
@@ -375,7 +398,11 @@ private fun FeaturedRow(
         } else {
             Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                TextButton(onClick = onChangeDuration) {
+                // هدف لمس 48dp لكلا الزرّين (جمهور اللوحة كبار سنّ).
+                TextButton(
+                    onClick = onChangeDuration,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
                     Icon(
                         Icons.Filled.Timer,
                         contentDescription = null,
@@ -385,7 +412,16 @@ private fun FeaturedRow(
                     Spacer(Modifier.size(4.dp))
                     Text("تغيير المدّة", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
                 }
-                TextButton(onClick = onRemove) {
+                // ⛔ قاعدة بصريّة واحدة للحذف في اللوحة كلّها: أحمر دائماً،
+                // وآخر عنصر دائماً، ومفصول بخطّ عمّا قبله — كي لا يُضغَط
+                // بالخطأ وهو مجاور لأزرار عاديّة.
+                VerticalDivider(
+                    modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
+                )
+                TextButton(
+                    onClick = onRemove,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
                     Icon(
                         Icons.Filled.StarBorder,
                         contentDescription = null,

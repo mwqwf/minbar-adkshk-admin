@@ -1,12 +1,17 @@
 package com.ali.ishaqiyin_admin.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -44,9 +49,14 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -54,6 +64,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 
 /** مرسِل رسائل Snackbar المتاح لكلّ الشاشات (نظير ScaffoldMessenger). */
 val LocalSnack = compositionLocalOf<(String) -> Unit> { {} }
@@ -398,4 +409,105 @@ fun CircleIcon(icon: ImageVector, background: Color, size: Int = 40, iconSize: I
 @Composable
 fun SnackbarScaffoldHost(state: SnackbarHostState) {
     SnackbarHost(state)
+}
+
+/**
+ * زرّ «اضغط مع الاستمرار» — للأفعال التي **لا مصدر لاسترجاعها** (كتفريغ
+ * السلة: لا سلّة للسلّة). نقرة واحدة على «نعم» كانت تجعل الفعل الماحي كأيّ
+ * زرّ آخر؛ هنا يُشترط ضغط متّصل مدّته [holdMillis] يمتلئ أمام العين، ورفع
+ * الإصبع قبل اكتماله يُلغي بلا أثر.
+ *
+ * ⚠️ المؤشّر لا يعتمد على اللون وحده: شريط امتلاء يتقدّم + نسبة مئوية
+ * بأرقام لاتينية داخل الزرّ، فيُفهم في السمتين ومع عمى الألوان.
+ * ضعه في أيّ فعل ماحٍ آخر لاحقاً بدل حوار «نعم» المجرّد.
+ */
+@Composable
+fun HoldToConfirmButton(
+    label: String,
+    onConfirmed: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    holdMillis: Int = 3000,
+    color: Color = MaterialTheme.colorScheme.error,
+) {
+    val scope = rememberCoroutineScope()
+    val progress = remember { Animatable(0f) }
+    val haptics = LocalHapticFeedback.current
+    val shape = RoundedCornerShape(12.dp)
+    val ratio = progress.value
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            // 56dp: أكبر من حدّ اللمس (48dp) لأنّ داخل الزرّ شرحاً ونسبة.
+            .height(56.dp)
+            .clip(shape)
+            .background(
+                if (enabled) color.copy(alpha = 0.16f)
+                else MaterialTheme.colorScheme.surfaceContainerHigh,
+            )
+            .pointerInput(enabled, holdMillis) {
+                if (!enabled) return@pointerInput
+                detectTapGestures(
+                    onPress = {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        val filling = scope.launch {
+                            progress.snapTo(0f)
+                            progress.animateTo(
+                                1f,
+                                tween(holdMillis, easing = LinearEasing),
+                            )
+                        }
+                        // رفع الإصبع (أو إلغاء اللمسة) يوقف الامتلاء فوراً.
+                        tryAwaitRelease()
+                        filling.cancel()
+                        val completed = progress.value >= 1f
+                        scope.launch { progress.snapTo(0f) }
+                        if (completed) {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onConfirmed()
+                        }
+                    },
+                )
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        // شريط الامتلاء: يتقدّم من حافة الزرّ حتى يملأه عند الاكتمال.
+        // (لا يُرسم عند الصفر: fillMaxWidth لا تقبل كسراً صفريّاً.)
+        if (ratio > 0f) {
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(ratio.coerceIn(0.01f, 1f))
+                    .background(color.copy(alpha = 0.55f)),
+            )
+        }
+        Row(
+            Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                label,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            if (ratio > 0f) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    // نسبة بأرقام لاتينية: مؤشّر ثانٍ لا يعتمد على اللون.
+                    "${(ratio * 100).toInt()}%",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
 }

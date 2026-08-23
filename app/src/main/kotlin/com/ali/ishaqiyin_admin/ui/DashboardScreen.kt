@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.GppMaybe
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.RestoreFromTrash
@@ -64,6 +66,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.navigation.NavHostController
 import com.ali.ishaqiyin_admin.data.AdminAlert
 import com.ali.ishaqiyin_admin.data.AdminAlertsFeed
@@ -745,6 +749,14 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
                             0, Routes.ADMINS,
                         ),
                     )
+                    // 🕘 «آخر ما جرى»: من عدّل ماذا ومتى. البيانات كانت
+                    // مكتوبة في القاعدة مع كل تعديل بلا شاشة تعرضها.
+                    add(
+                        ActionSpec(
+                            Icons.Filled.History, c.blue, "آخر ما جرى",
+                            "من عدّل ماذا ومتى", 0, ROUTE_RECENT_CHANGES,
+                        ),
+                    )
                     // لغير المالك لا يُنشأ شيء من هذين، فلا يظهر له أثر.
                     if (isOwner) {
                         add(
@@ -767,6 +779,8 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
 
     // البطاقة المجمَّعة المفتوحة الآن (ورقة أبوابها).
     var openHub by remember { mutableStateOf<ActionSpec?>(null) }
+    // «آخر ما جرى» شاشة كاملة تُفتح فوق اللوحة بلا مسار تنقّل خاصّ بها.
+    var showRecentChanges by remember { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         cards.chunked(2).forEach { row ->
@@ -817,7 +831,11 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
                             .fillMaxWidth()
                             .clickable {
                                 openHub = null
-                                nav.navigate(entry.route)
+                                if (entry.route == ROUTE_RECENT_CHANGES) {
+                                    showRecentChanges = true
+                                } else {
+                                    nav.navigate(entry.route)
+                                }
                             }
                             .padding(horizontal = 20.dp, vertical = 13.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -875,7 +893,24 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
             }
         }
     }
+
+    if (showRecentChanges) {
+        Dialog(
+            onDismissRequest = { showRecentChanges = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.background,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                RecentChangesScreen(onBack = { showRecentChanges = false })
+            }
+        }
+    }
 }
+
+/** مدخل «آخر ما جرى» داخل ورقة «الإدارة» — شاشة لا مسار تنقّل. */
+private const val ROUTE_RECENT_CHANGES = "recent_changes_sheet"
 
 /** بطاقة إجراء واحدة في شبكة اللوحة. */
 @Composable

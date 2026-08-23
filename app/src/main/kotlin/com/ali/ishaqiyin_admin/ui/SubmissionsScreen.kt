@@ -41,6 +41,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -51,6 +52,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -375,6 +377,18 @@ private fun BulkDecisionBar(
     }
 }
 
+/**
+ * سرد أسماء ما سيقع عليه فعل جماعيّ: أوّل ثلاثة بأسمائها، والباقي معدود.
+ * الغرض أن يقرأ المشرف **ماذا** يفعل لا **كم** يفعل.
+ */
+private fun namesPreview(names: List<String>): String {
+    val clean = names.map { it.ifBlank { "بدون عنوان" } }
+    val head = clean.take(3).joinToString("\n") { "• $it" }
+    val rest = clean.size - 3
+    if (rest <= 0) return head
+    return head + "\n• وغيرها: " + rest
+}
+
 // ─── تبويب الدروس الصوتية (سلوك «طلبات النشر» السابق كما هو) ─────────
 
 @Composable
@@ -581,8 +595,10 @@ private fun AudioSubmissionsContent(targetId: String = "") {
         val targets = chosen.toList()
         ConfirmDialog(
             title = "نشر المحدَّد؟",
-            body = "سيُنشر ${lessonsCountLabel(targets.size)} دفعة واحدة كما هي (بلا تعديل " +
-                "عنوان أو قسم)، ويصل كل مساهم إشعار شكر.",
+            // ⚠️ العدد وحده لا يُقرأ: تُسرَد **أسماء** ما سيُنشر (وبقيّتها
+            // معدودة) كي يرى المشرف ما بين يديه لا رقماً مجرّداً.
+            body = "سيُنشر ما يلي دفعة واحدة كما هو (بلا تعديل عنوان أو قسم)، " +
+                "ويصل كل مساهم إشعار شكر:\n\n" + namesPreview(targets.map { it.title }),
             confirmLabel = "نشر المحدَّد",
             onDismiss = { confirmBulkPublish = false },
             onConfirm = {
@@ -869,6 +885,14 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                                     Spacer(Modifier.size(4.dp))
                                     Text("تعديل ثم نشر")
                                 }
+                                // ⛔ قاعدة واحدة لأزرار الرفض/الحذف: أحمر،
+                                // وآخر الصفّ، ومفصول بخطّ عمّا قبله كي لا
+                                // يُضغط بالخطأ وهو ملاصق لأزرار النشر.
+                                VerticalDivider(
+                                    modifier = Modifier
+                                        .height(26.dp)
+                                        .padding(horizontal = 4.dp),
+                                )
                                 IconButton(
                                     onClick = { rejectingId = s.id },
                                     enabled = !busy && !bulkBusy,
@@ -881,6 +905,9 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                                 }
                             }
                         } else {
+                            // ⛔ الحذف أحمر دائماً، وآخر ما في البطاقة،
+                            // ومفصول بخطّ عمّا قبله.
+                            HorizontalDivider(Modifier.padding(top = 6.dp, bottom = 2.dp))
                             Row(
                                 Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.End,
@@ -888,14 +915,19 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                                 TextButton(
                                     onClick = { removingId = s.id },
                                     enabled = !busy && !bulkBusy,
+                                    modifier = Modifier.heightIn(min = 48.dp),
                                 ) {
                                     Icon(
                                         Icons.Filled.Delete,
                                         contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
                                         modifier = Modifier.size(18.dp),
                                     )
                                     Spacer(Modifier.size(4.dp))
-                                    Text("إزالة من السجل")
+                                    Text(
+                                        "إزالة من السجل",
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
                                 }
                             }
                         }
@@ -1144,7 +1176,9 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
     removing?.let { s ->
         ConfirmDialog(
             title = "إزالة من السجل؟",
+            // الاسم لا الوصف المجرّد: المشرف يقرأ **أيّ** اقتراح يحذف.
             body = buildString {
+                append("«${s.lessonTitle}»\n\n")
                 append("سيُحذف سجلّ هذا الاقتراح")
                 if (s.imagePaths.isNotEmpty()) append(" وصوره")
                 append(" نهائياً. لا يمكن التراجع.")
@@ -1166,10 +1200,9 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
         ConfirmDialog(
             title = "اعتماد المحدَّد؟",
             body = buildString {
-                append(
-                    "سيُعتمد ${arabicCount(targets.size, "اقتراح واحد", "اقتراحان", "اقتراحات", "اقتراحاً")} " +
-                        "كما هو ويصل كل مساهم إشعار شكر.",
-                )
+                // أسماء الدروس المعنيّة أوّلاً — الرقم وحده لا يُراجَع.
+                append("سيُعتمد ما يلي كما هو ويصل كل مساهم إشعار شكر:\n\n")
+                append(namesPreview(targets.map { it.lessonTitle }))
                 if (replaced > 0) {
                     append("\n\n⚠️ $replaced منها لدروس لها نص معتمد سابق سيُستبدل.")
                 }
@@ -1537,6 +1570,14 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
                                     Spacer(Modifier.size(4.dp))
                                     Text("تعديل ثم اعتماد")
                                 }
+                                // ⛔ قاعدة واحدة لأزرار الرفض/الحذف: أحمر،
+                                // وآخر الصفّ، ومفصول بخطّ عمّا قبله كي لا
+                                // يُضغط بالخطأ وهو ملاصق لأزرار النشر.
+                                VerticalDivider(
+                                    modifier = Modifier
+                                        .height(26.dp)
+                                        .padding(horizontal = 4.dp),
+                                )
                                 IconButton(
                                     onClick = { rejectingId = s.id },
                                     enabled = !busy && !bulkBusy,
@@ -1549,6 +1590,9 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
                                 }
                             }
                         } else {
+                            // ⛔ الحذف أحمر دائماً، وآخر ما في البطاقة،
+                            // ومفصول بخطّ عمّا قبله.
+                            HorizontalDivider(Modifier.padding(top = 6.dp, bottom = 2.dp))
                             Row(
                                 Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.End,
@@ -1556,14 +1600,19 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
                                 TextButton(
                                     onClick = { removingId = s.id },
                                     enabled = !busy && !bulkBusy,
+                                    modifier = Modifier.heightIn(min = 48.dp),
                                 ) {
                                     Icon(
                                         Icons.Filled.Delete,
                                         contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
                                         modifier = Modifier.size(18.dp),
                                     )
                                     Spacer(Modifier.size(4.dp))
-                                    Text("إزالة من السجل")
+                                    Text(
+                                        "إزالة من السجل",
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
                                 }
                             }
                         }

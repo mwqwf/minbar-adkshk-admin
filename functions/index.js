@@ -2709,9 +2709,20 @@ exports.purgeExpiredTrash = functions
         console.error("trash purge failed", doc.id, error);
       });
     }
-    if (snap.size > 0) {
+    // وسلّة الأقسام بالمنطق نفسه: وثيقة واحدة لكل قسم بلا ملفات تخزين.
+    const sectionsSnap = await db.collection(SECTION_TRASH_COLLECTION)
+      .where("purgeAfterMs", "<", Date.now())
+      .limit(100)
+      .get();
+    for (const doc of sectionsSnap.docs) {
+      await doc.ref.delete().catch((error) => {
+        console.error("section trash purge failed", doc.id, error);
+      });
+    }
+    if (snap.size > 0 || sectionsSnap.size > 0) {
       await auditOwnerAction("system", "purge_expired_trash", "", {
         purged: snap.size,
+        sectionsPurged: sectionsSnap.size,
       });
     }
     return null;
@@ -2767,6 +2778,106 @@ async function trashLessonDocs(lessonDocs, actorEmail) {
   return lessonDocs.length;
 }
 
+// 🗂️ سلّة الأقسام: كانت وثيقة القسم تُمحى نهائياً بينما دروسه تنجو في
+// السلّة — فنقرةٌ خاطئة تُلزم المشرف بإعادة بناء القسم يدوياً ثم استعادة
+// الدروس واحداً واحداً ثم نقلها إليه. الآن تُنسخ وثيقة القسم هنا بمدّة
+// الاحتفاظ نفسها (TRASH_RETENTION_MS، لا رقماً مكرّراً) فتعود بمعرّفها
+// الأصلي، ويعود إليها الدرس المستعاد إلى مكانه تلقائياً.
+const SECTION_TRASH_COLLECTION = "deleted_sections";
+
+/** معرّف مركّب كي لا يصطدم قسمٌ رئيسيّ بفرعيٍّ يحمل المعرّف نفسه. */
+function sectionTrashId(kind, docId) {
+  return `${kind}__${docId}`;
+}
+
+/**
+ * نقل وثائق أقسام إلى سلّة الأقسام (لا تمسّ الدروس إطلاقاً — تلك تمرّ
+ * بـtrashLessonDocs كما كانت).
+ * @param {Array} sectionDocs لقطات وثائق موجودة.
+ * @param {string} kind "category" أو "subcategory".
+ */
+async function trashSectionDocs(sectionDocs, kind, actorEmail) {
+  const docs = sectionDocs.filter((doc) => doc && doc.exists);
+  if (!docs.length) return 0;
+  const now = Date.now();
+  for (let offset = 0; offset < docs.length; offset += 400) {
+    const batch = db.batch();
+    docs.slice(offset, offset + 400).forEach((doc) => {
+      const raw = doc.data() || {};
+      const value = unwrapLegacy(raw);
+      batch.set(
+        db.collection(SECTION_TRASH_COLLECTION).doc(sectionTrashId(kind, doc.id)),
+        {
+          kind,
+          docId: doc.id,
+          name: cleanString(value.name || value.title, 180),
+          parentCategoryId: kind === "subcategory"
+            ? cleanString(value.categoryId, 180)
+            : "",
+          data: raw,
+          deletedBy: actorEmail || "",
+          deletedAt: admin.firestore.FieldValue.serverTimestamp(),
+          deletedAtMs: now,
+          purgeAfterMs: now + TRASH_RETENTION_MS,
+        },
+      );
+    });
+    await batch.commit();
+  }
+  return docs.length;
+}
+
+/** استعادة قسم محذوف: تعيد وثيقته بمعرّفها الأصلي كما كانت. */
+exports.restoreDeletedSection = functions.https.onCall(async (data, context) => {
+  const actor = await assertAuthorized(context);
+  const entryId = requireString(data && data.entryId, "entryId", 1, 400);
+  const trashRef = db.collection(SECTION_TRASH_COLLECTION).doc(entryId);
+  const snap = await trashRef.get();
+  if (!snap.exists) {
+    throw new functions.https.HttpsError("not-found", "القسم غير موجود في السلة.");
+  }
+  const value = snap.data() || {};
+  const kind = value.kind === "category" ? "category" : "subcategory";
+  const docId = cleanString(value.docId, 180);
+  const payload = value.data;
+  if (!docId || !payload || typeof payload !== "object") {
+    throw new functions.https.HttpsError("internal", "بيانات السلة غير مكتملة.");
+  }
+  const collection = kind === "category" ? "categories" : "subcategories";
+  const targetRef = db.collection(collection).doc(docId);
+  // ⛔ لا نكتب فوق قسم قائم: قد يكون المشرف أعاد بناءه يدوياً بعد الحذف،
+  // فالكتابة الصامتة تمحو عمله. الرسالة تشرح السبب بلا لبس.
+  const existing = await targetRef.get();
+  if (existing.exists) {
+    throw new functions.https.HttpsError(
+      "already-exists",
+      "يوجد قسم آخر بالمعرّف نفسه الآن — احذفه أو غيّره ثم أعد المحاولة.",
+    );
+  }
+  const batch = db.batch();
+  batch.set(targetRef, Object.assign({}, payload, {
+    restoredAt: admin.firestore.FieldValue.serverTimestamp(),
+    restoredAtMs: Date.now(),
+    restoredBy: actor.email,
+  }));
+  batch.delete(trashRef);
+  await batch.commit();
+  await auditOwnerAction(actor.email, "restore_section", docId, { kind });
+  return { ok: true, id: docId, kind };
+});
+
+/** الحذف النهائي لقسم من السلة (وثيقة واحدة، بلا ملفات تخزين). */
+exports.purgeDeletedSection = functions.https.onCall(async (data, context) => {
+  const actor = await assertAuthorized(context);
+  const entryId = requireString(data && data.entryId, "entryId", 1, 400);
+  const ref = db.collection(SECTION_TRASH_COLLECTION).doc(entryId);
+  const snap = await ref.get();
+  if (!snap.exists) return { ok: true, alreadyDeleted: true };
+  await ref.delete();
+  await auditOwnerAction(actor.email, "purge_section", entryId, {});
+  return { ok: true, id: entryId };
+});
+
 exports.deleteSubcategoryCascade = functions.runWith({ timeoutSeconds: 540, memory: "512MB" })
   .https.onCall(async (data, context) => {
     const actor = await assertAuthorized(context);
@@ -2793,7 +2904,12 @@ exports.deleteSubcategoryCascade = functions.runWith({ timeoutSeconds: 540, memo
     // دروس القسم تنتقل إلى السلة (لا حذف نهائي ولا مساس بالتخزين) —
     // فحذف قسم بالخطأ قابل للتراجع درساً درساً من سلة المحذوفات.
     await trashLessonDocs(lessons, actor.email);
-    if (subcategorySnap.exists) await subcategorySnap.ref.delete();
+    // ووثيقة القسم نفسها تُنسخ إلى سلّة الأقسام قبل محوها — لتعود بمعرّفها
+    // الأصلي فيرجع إليها كل درس مستعاد بلا نقلٍ يدويّ.
+    if (subcategorySnap.exists) {
+      await trashSectionDocs([subcategorySnap], "subcategory", actor.email);
+      await subcategorySnap.ref.delete();
+    }
     await auditOwnerAction(actor.email, "delete_subcategory_cascade", subcategoryId, {
       lessonsTrashed: lessons.length,
     });
@@ -2863,6 +2979,12 @@ exports.deleteCategoryCascade = functions.runWith({ timeoutSeconds: 540, memory:
         .filter(Boolean)
         .forEach((path) => bookPaths.push(path));
     });
+    // القسم الرئيسيّ وكلّ فروعه يُنسخون إلى سلّة الأقسام قبل المحو، فحذفٌ
+    // بالخطأ يُتراجَع عنه بالبناء نفسه لا بإعادة إنشاء يدويّة.
+    await trashSectionDocs(subcategories, "subcategory", actor.email);
+    if (categorySnap.exists) {
+      await trashSectionDocs([categorySnap], "category", actor.email);
+    }
     const refs = [
       ...books.map((doc) => doc.ref),
       ...subcategories.map((doc) => doc.ref),
@@ -4482,3 +4604,82 @@ exports.cleanupDeletedIds = functions
     if (removed > 0) console.log("cleanupDeletedIds removed", removed);
     return null;
   });
+
+// ─── تصحيح المساهم لمساهمته ────────────────────────────────────────
+// كان على من أخطأ في عنوان درسٍ رفعه أن يسحب المساهمة ويرفع الملفّ
+// الصوتيّ كلّه من جديد على إنترنت ضعيف. هذه الدوالّ تسمح بتصحيح النصّ
+// وحده ما دامت المساهمة `pending`: لا الملفّ ولا القسم ولا الحالة.
+exports.updateMySubmission = functions.https.onCall(async (data, context) => {
+  assertAppCheck(context);
+  const uid = assertSignedIn(context);
+  const submissionId = requireString(
+    data && data.submissionId,
+    "submissionId",
+    1,
+    180,
+  );
+  // الحدّان نفسهما المستعملان في createSubmission (3..120 للعنوان، 500 للملاحظة).
+  const title = requireString(data && data.title, "title", 3, 120);
+  const note = cleanString(data && data.note, 500);
+  const ref = db.collection("lesson_submissions").doc(submissionId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new functions.https.HttpsError("not-found", "الطلب غير موجود.");
+  }
+  const value = snap.data() || {};
+  // التحقّق نفسه المستعمل في deleteMySubmission حرفياً.
+  if (value.uid !== uid || value.status !== "pending") {
+    throw new functions.https.HttpsError("permission-denied", "لا يمكن تعديل هذا الطلب.");
+  }
+  await ref.update({
+    title,
+    note,
+    editedAt: admin.firestore.FieldValue.serverTimestamp(),
+    editedAtMs: Date.now(),
+  });
+  return { ok: true, id: submissionId };
+});
+
+// نظيرتها لاقتراح النصّ المشروح: **له معنى** — فصور الصفحات مرفوعة فعلاً
+// وسحب الاقتراح يعني رفعها كلّها ثانيةً، والنصّ نفسه يُكتب باليد فالخطأ
+// فيه أرجح. تُعدَّل الحقول النصّيّة وحدها (لا الصور ولا الدرس ولا الحالة).
+exports.updateMyTranscriptSubmission = functions.https.onCall(async (data, context) => {
+  assertAppCheck(context);
+  const uid = assertSignedIn(context);
+  const submissionId = requireString(
+    data && data.submissionId,
+    "submissionId",
+    1,
+    180,
+  );
+  const ref = db.collection(TRANSCRIPT_SUBMISSIONS_COLLECTION).doc(submissionId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new functions.https.HttpsError("not-found", "الطلب غير موجود.");
+  }
+  const value = snap.data() || {};
+  if (value.uid !== uid || value.status !== "pending") {
+    throw new functions.https.HttpsError("permission-denied", "لا يمكن تعديل هذا الطلب.");
+  }
+  const text = cleanString(data && data.text, MAX_TRANSCRIPT_CHARS);
+  const bookTitle = cleanString(data && data.bookTitle, 200);
+  const sourceRef = cleanString(data && data.sourceRef, 300);
+  const note = cleanString(data && data.note, 500);
+  const images = Array.isArray(value.imagePaths) ? value.imagePaths : [];
+  // الشرط نفسه المستعمل عند الإنشاء: نصّ معتبر أو صورة صفحة واحدة على الأقلّ.
+  if (text.length < MIN_TRANSCRIPT_TEXT_CHARS && !images.length) {
+    throw new functions.https.HttpsError(
+      "invalid-argument",
+      "أرفق نص المقطع أو صورة صفحة واحدة على الأقل.",
+    );
+  }
+  await ref.update({
+    text,
+    bookTitle,
+    sourceRef,
+    note,
+    editedAt: admin.firestore.FieldValue.serverTimestamp(),
+    editedAtMs: Date.now(),
+  });
+  return { ok: true, id: submissionId };
+});

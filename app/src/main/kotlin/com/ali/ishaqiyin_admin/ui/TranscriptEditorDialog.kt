@@ -34,11 +34,14 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -156,8 +159,10 @@ fun TranscriptEditorDialog(
     var sourceRef by rememberSaveable { mutableStateOf("") }
     var viewingImage by remember { mutableStateOf<Any?>(null) }
     var cropIndex by rememberSaveable { mutableIntStateOf(-1) }
-    // 🛡️ إزالة صورة صفحة لا تراجع فيها — تُؤكَّد كما يُؤكَّد حذف النص كلّه.
-    var confirmRemoveImage by remember { mutableIntStateOf(-1) }
+    // ↩️ إزالة صورة صفحة **قبل الحفظ** فعل محلّيّ رخيص: تقع فوراً ويُعرض
+    // شريط «تراجع» عشر ثوانٍ يعيدها إلى موضعها نفسه. الحوار السابق كان
+    // سؤالاً يُتخطّى بالعادة فلا يمنع خطأً.
+    val undoBar = rememberUndoBar()
     val images = rememberSaveable(saver = editorImagesSaver) {
         mutableStateListOf<EditorImage>()
     }
@@ -298,18 +303,13 @@ fun TranscriptEditorDialog(
         }
     }
 
-    if (confirmRemoveImage >= 0) {
-        val index = confirmRemoveImage
-        ConfirmDialog(
-            title = "إزالة الصورة؟",
-            body = "ستُزال صورة الصفحة ${index + 1} من هذا النص. لا يمكن التراجع.",
-            confirmLabel = "إزالة",
-            confirmColor = MaterialTheme.colorScheme.error,
-            onDismiss = { confirmRemoveImage = -1 },
-            onConfirm = {
-                confirmRemoveImage = -1
-                if (index in images.indices) images.removeAt(index)
-            },
+    /** إزالة فوريّة مع تراجع يُرجع الصورة إلى موضعها بالضبط. */
+    fun removeImage(index: Int) {
+        if (index !in images.indices) return
+        val removed = images.removeAt(index)
+        undoBar.show(
+            message = "أُزيلت صورة الصفحة ${index + 1}.",
+            onUndo = { images.add(index.coerceAtMost(images.size), removed) },
         )
     }
 
@@ -498,34 +498,9 @@ fun TranscriptEditorDialog(
                                                 fontWeight = FontWeight.Bold,
                                             )
                                         }
-                                        // ⚠️ هدف اللمس كان 22dp: صندوق 48dp
-                                        // للّمس والدائرة تبقى 22dp في ركنها.
-                                        Box(
-                                            Modifier
-                                                .align(Alignment.TopEnd)
-                                                .size(48.dp)
-                                                .clickable(enabled = !saving) {
-                                                    confirmRemoveImage = i
-                                                },
-                                            contentAlignment = Alignment.TopEnd,
-                                        ) {
-                                            Box(
-                                                Modifier
-                                                    .size(22.dp)
-                                                    .background(
-                                                        Color.Black.copy(alpha = 0.55f),
-                                                        CircleShape,
-                                                    ),
-                                                contentAlignment = Alignment.Center,
-                                            ) {
-                                                Icon(
-                                                    Icons.Filled.Close,
-                                                    contentDescription = "إزالة الصورة",
-                                                    tint = Color.White,
-                                                    modifier = Modifier.size(13.dp),
-                                                )
-                                            }
-                                        }
+                                        // ⛔ زرّ الإزالة لم يعد ركناً فوق الصورة
+                                        // (يُلمَس بالخطأ): صار آخر أزرار الصفّ،
+                                        // أحمر، مفصولاً بخطّ ومسافة.
                                     }
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         IconButton(
@@ -572,6 +547,25 @@ fun TranscriptEditorDialog(
                                             Icon(
                                                 Icons.Filled.ArrowBack,
                                                 contentDescription = "تأخير",
+                                                modifier = Modifier.size(15.dp),
+                                            )
+                                        }
+                                        // فاصل ظاهر بين أزرار الترتيب/القصّ
+                                        // وبين الإزالة الحمراء الأخيرة.
+                                        VerticalDivider(
+                                            modifier = Modifier
+                                                .height(22.dp)
+                                                .padding(horizontal = 5.dp),
+                                        )
+                                        IconButton(
+                                            onClick = { removeImage(i) },
+                                            enabled = !saving,
+                                            modifier = Modifier.size(48.dp),
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.Close,
+                                                contentDescription = "إزالة الصورة",
+                                                tint = MaterialTheme.colorScheme.error,
                                                 modifier = Modifier.size(15.dp),
                                             )
                                         }
@@ -712,9 +706,13 @@ fun TranscriptEditorDialog(
                     }
                     if (existed) {
                         Spacer(Modifier.height(6.dp))
+                        // ⛔ الحذف النهائيّ: أحمر، وآخر ما في الورقة، ومفصول
+                        // بخطّ عمّا قبله — ولا تراجع فيه فيبقى له حوار تأكيد.
+                        HorizontalDivider(Modifier.padding(vertical = 6.dp))
                         TextButton(
                             onClick = { confirmRemove = true },
                             enabled = !saving,
+                            modifier = Modifier.heightIn(min = 48.dp),
                         ) {
                             Text(
                                 "حذف النص المشروح نهائياً",
@@ -723,6 +721,9 @@ fun TranscriptEditorDialog(
                             )
                         }
                     }
+                    // شريط «تراجع» داخل الورقة نفسها: نافذة الحوار تعلو
+                    // شريط الشاشة الأمّ، فلو عُرض هناك لاختفى تحتها.
+                    SnackbarHost(undoBar.host)
                 }
             }
         },

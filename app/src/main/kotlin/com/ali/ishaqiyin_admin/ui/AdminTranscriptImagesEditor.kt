@@ -31,6 +31,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,7 +48,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -93,8 +94,10 @@ fun AdminTranscriptImagesEditor(
         mutableStateListOf<Uri>()
     }
     var cropActive by remember { mutableStateOf(false) }
-    // 🛡️ حذف الصورة لا تراجع فيه (وقد تكون الصفحة الوحيدة المصوَّرة) — يُؤكَّد.
-    var confirmRemove by remember { mutableIntStateOf(-1) }
+    // ↩️ إزالة صورة قبل الحفظ فعل محلّيّ رخيص: تقع فوراً ويُعرض «تراجع»
+    // عشر ثوانٍ يعيد الصورة إلى **موضعها نفسه** في الترتيب. حوار التأكيد
+    // السابق كان يُقرأ مرّة ثم يُتخطّى بالعادة فلا يمنع خطأً.
+    val undoBar = rememberUndoBar()
 
     fun cropOptions(uri: Uri) = CropImageContractOptions(
         uri,
@@ -151,18 +154,13 @@ fun AdminTranscriptImagesEditor(
         }
     }
 
-    if (confirmRemove >= 0) {
-        val index = confirmRemove
-        ConfirmDialog(
-            title = "إزالة الصورة؟",
-            body = "ستُزال صورة الصفحة ${index + 1} من هذا النص. لا يمكن التراجع.",
-            confirmLabel = "إزالة",
-            confirmColor = MaterialTheme.colorScheme.error,
-            onDismiss = { confirmRemove = -1 },
-            onConfirm = {
-                confirmRemove = -1
-                if (index in images.indices) images.removeAt(index)
-            },
+    /** إزالة فوريّة مع تراجع يُرجع الصورة إلى موضعها بالضبط. */
+    fun removeImage(index: Int) {
+        if (index !in images.indices) return
+        val removed = images.removeAt(index)
+        undoBar.show(
+            message = "أُزيلت صورة الصفحة ${index + 1}.",
+            onUndo = { images.add(index.coerceAtMost(images.size), removed) },
         )
     }
 
@@ -193,6 +191,9 @@ fun AdminTranscriptImagesEditor(
         onImage = { uri -> pendingNew.add(uri) },
         modifier = Modifier.padding(bottom = 8.dp),
     )
+    // شريط «تراجع» مُدرَج في مكانه من النموذج: هذا المحرّر جزء من شاشة
+    // أخرى ولا يملك طبقةً عائمة خاصّة به.
+    SnackbarHost(undoBar.host)
     if (images.isNotEmpty()) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             items(images.size) { i ->
@@ -226,29 +227,9 @@ fun AdminTranscriptImagesEditor(
                                 fontWeight = FontWeight.Bold,
                             )
                         }
-                        // ⚠️ هدف اللمس كان 22dp (جمهور اللوحة كبار سنّ):
-                        // صُندوق 48dp للّمس، والدائرة تبقى 22dp في ركنها.
-                        Box(
-                            Modifier
-                                .align(Alignment.TopEnd)
-                                .size(48.dp)
-                                .clickable(enabled = enabled) { confirmRemove = i },
-                            contentAlignment = Alignment.TopEnd,
-                        ) {
-                            Box(
-                                Modifier
-                                    .size(22.dp)
-                                    .background(Color.Black.copy(alpha = 0.55f), CircleShape),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = "إزالة",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(13.dp),
-                                )
-                            }
-                        }
+                        // ⛔ زرّ الإزالة لم يعد فوق الصورة نفسها: كان ركناً
+                        // صغيراً يُلمَس بالخطأ مع سحب القائمة. صار آخر أزرار
+                        // الصفّ، أحمر، ومفصولاً عنها بخطّ ومسافة.
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         // في RTL «التالي» بصريّاً يساراً — أسهم منطقية لا بصرية.
@@ -292,6 +273,23 @@ fun AdminTranscriptImagesEditor(
                             Icon(
                                 Icons.Filled.ArrowBack,
                                 contentDescription = "تأخير الصورة",
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                        // خطّ ومسافة ظاهرة تفصلان الإزالة عن التقديم/التأخير
+                        // والقصّ — اللون وحده لا يكفي مع أهداف لمس متجاورة.
+                        VerticalDivider(
+                            modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
+                        )
+                        IconButton(
+                            onClick = { removeImage(i) },
+                            enabled = enabled,
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "إزالة الصورة",
+                                tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.size(16.dp),
                             )
                         }

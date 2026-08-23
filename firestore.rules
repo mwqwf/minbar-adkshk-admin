@@ -603,6 +603,13 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // سلّة الأقسام — بنفس نمط سلّة الدروس تماماً: تُقرأ لمن يدير المحتوى،
+    // والكتابة للدوالّ وحدها (نسخ عند الحذف، ومسح عند الاستعادة/الانتهاء).
+    match /deleted_sections/{entryId} {
+      allow read: if canManageContent();
+      allow write: if false;
+    }
+
     // قائمة الدروس المشبوهة سرية تماماً عن بقية المشرفين.
     match /owner_lesson_reviews/{reviewId} {
       allow read: if isOwner();
