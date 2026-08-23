@@ -45,7 +45,7 @@ object AppConfig {
      * يُذكَّر أحد بالتحديث — ثمّ تكرّر: بقي هنا 18 والتطبيق 21 (المصحف)،
      * فكان زرّ «استعمل» يكتب رقماً أقدم من الواقع بثلاث نسخ.
      */
-    const val PUBLIC_APP_VERSION_CODE = 23
+    const val PUBLIC_APP_VERSION_CODE = 24
 }
 
 /** إعداد Firebase لمشروع التطبيق نفسه (mxqp-8d1e8) بحزمة اللوحة. */
