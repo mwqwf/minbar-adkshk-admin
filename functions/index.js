@@ -4278,3 +4278,207 @@ exports.onAdminCallUpdated = functions.firestore
     }
     return null;
   });
+
+// ─── فحص أسبوعيّ لروابط الصوت الميتة ──────────────────────────────
+// لماذا: في ٢٠٢٦-٠٨-١٢ اكتُشف ٧٠ درساً صوتها لا يعمل (حساب الاستضافة
+// القديم زال)، والاكتشاف كان يدويّاً بعد أن بقيت معطّلة عند المستخدمين
+// مدّةً مجهولة. هذا الفحص يكشفها مبكّراً.
+// ⚠️ الاكتشاف فقط: لا حذف ولا نقل إلى السلّة — القرار بشريّ.
+
+const AUDIO_CHECK_CONCURRENCY = 10;
+const AUDIO_CHECK_TIMEOUT_MS = 12000;
+const AUDIO_ALERT_SAMPLE = 5;
+
+/** صياغة العدد بالعربية: «درس واحد»/«درسان»/«٣ دروس»/«١٢ درساً». */
+function arabicLessonsCount(n) {
+  if (n === 1) return "درس واحد";
+  if (n === 2) return "درسان";
+  if (n <= 10) return `${n} دروس`;
+  return `${n} درساً`;
+}
+
+/**
+ * طلب HEAD واحد. يرجع true إن ردّ الخادم بنجاح، و false إن ردّ بخطأ
+ * دائم (404/403/410)، و null إن كان العطل عابراً (شبكة أو 5xx) فيُعاد.
+ */
+async function probeAudioOnce(url) {
+  try {
+    const response = await fetch(url, {
+      method: "HEAD",
+      redirect: "follow",
+      signal: AbortSignal.timeout(AUDIO_CHECK_TIMEOUT_MS),
+    });
+    if (response.ok) return true;
+    if (response.status >= 500 || response.status === 429) return null;
+    return false;
+  } catch (error) {
+    return null;
+  }
+}
+
+/** محاولتان قبل الحكم بالموت: العطل العابر لا يُحسب رابطاً ميتاً. */
+async function isAudioDead(url) {
+  const first = await probeAudioOnce(url);
+  if (first === true) return false;
+  const second = await probeAudioOnce(url);
+  if (second === true) return false;
+  // بقي الشكّ بعد محاولتين عابرتين: لا نتّهم الرابط.
+  if (first === null && second === null) return false;
+  return true;
+}
+
+exports.weeklyDeadAudioScan = functions
+  .runWith({ timeoutSeconds: 540, memory: "512MB" })
+  .pubsub.schedule("20 4 * * 1")
+  .timeZone("Asia/Riyadh")
+  .onRun(async () => {
+    const dead = [];
+    let checked = 0;
+    let cursor = null;
+    // مرور على دفعات بحجم ٣٠٠ وثيقة كي لا تُحمَّل المجموعة كلّها دفعة واحدة.
+    for (;;) {
+      let query = db.collection("lessons").orderBy("__name__").limit(300);
+      if (cursor) query = query.startAfter(cursor);
+      const snap = await query.get();
+      if (snap.empty) break;
+      cursor = snap.docs[snap.docs.length - 1];
+
+      const targets = [];
+      snap.docs.forEach((doc) => {
+        const fields = lessonModerationFields(doc.data());
+        if (!fields.audioUrl || !/^https?:\/\//i.test(fields.audioUrl)) return;
+        targets.push({ id: doc.id, title: fields.title, url: fields.audioUrl });
+      });
+
+      // توازٍ محدود (١٠ طلبات معاً) كي لا تُستنزف حصّة الشبكة.
+      for (let i = 0; i < targets.length; i += AUDIO_CHECK_CONCURRENCY) {
+        const slice = targets.slice(i, i + AUDIO_CHECK_CONCURRENCY);
+        const results = await Promise.all(slice.map((item) => isAudioDead(item.url)));
+        results.forEach((isDead, index) => {
+          checked += 1;
+          if (isDead) dead.push(slice[index]);
+        });
+      }
+      if (snap.size < 300) break;
+    }
+
+    // الصمت خير من ضجيج أسبوعيّ: لا تنبيه إن لم يفشل شيء.
+    if (!dead.length) {
+      console.log("weeklyDeadAudioScan: كل الروابط تعمل", { checked });
+      return null;
+    }
+
+    // الأسماء تُراجَع والأرقام لا تُراجَع — فتُذكر أسماء أوّل خمسة صراحةً.
+    const sample = dead.slice(0, AUDIO_ALERT_SAMPLE)
+      .map((item) => `• ${item.title || "درس بلا عنوان"}`)
+      .join("\n");
+    const rest = dead.length - Math.min(dead.length, AUDIO_ALERT_SAMPLE);
+    const body = `${arabicLessonsCount(dead.length)} صوتها لا يعمل:\n${sample}`
+      + (rest > 0 ? `\nوغيرها (${arabicLessonsCount(rest)}).` : "")
+      + "\nراجعها في «إدارة الكل» — لم يُحذف شيء.";
+
+    await writeAdminAlert(
+      OWNER_EMAIL,
+      "دروس صوتها لا يعمل",
+      body,
+      {
+        type: "dead_audio_scan",
+        refId: `dead_audio_${new Date().toISOString().slice(0, 10)}`,
+        deadCount: dead.length,
+        checked,
+        lessonIds: dead.slice(0, 50).map((item) => item.id),
+      },
+    );
+    await auditOwnerAction("system", "weekly_dead_audio_scan", "", {
+      checked,
+      dead: dead.length,
+    });
+    return null;
+  });
+
+// ---------------------------------------------------------------------------
+// 🧾 سجلّ الاختفاء `deleted_ids` — عين التطبيق على ما لم يعد موجوداً
+// ---------------------------------------------------------------------------
+//
+// التطبيق صار يزامن **تفاضليّاً**: يجلب ما تغيّر بعد آخر مزامنة بدل تنزيل
+// المكتبة كلّها كلّما صُحِّح حرفٌ في اسم قسم. لكن الاستعلام التفاضليّ لا
+// يرى المحذوف أبداً — الوثيقة لم تعد هناك لتُقرأ — فيبقى الدرس المحذوف
+// معروضاً في الأجهزة إلى الأبد.
+//
+// فلكل اختفاءٍ من `lessons`/`categories`/`subcategories` سطرٌ هنا يقرؤه
+// التطبيق فيحذفه من نسخته المحفوظة.
+//
+// ⚠️ مُشغِّل `onDelete` لا مساسَ له بمسارات الحذف: الحذف في هذا المشروع
+// يمرّ غالباً بالسلّة (`deleted_lessons`) وبدفعات الحذف التعاقبي، وكلّها
+// تنتهي إلى `delete()` على وثيقة المجموعة — والمُشغِّل يلتقطها جميعاً:
+// deleteLesson/deleteLessonPermanently، وdeleteSubcategoryCascade،
+// وdeleteCategoryCascade، وأي حذفٍ مباشر من الوحدة. (أمّا purgeDeletedLesson
+// وemptyTrash فيمسحان من السلّة لا من `lessons`، والدرس كان قد سُجِّل
+// اختفاؤه لحظة دخوله السلّة.)
+//
+// و**الاستعادة** لا تحتاج شيئاً: restoreDeletedLesson يعيد كتابة الوثيقة
+// فتصل إلى التطبيق كوثيقة متغيّرة، والدمج يعيدها مكانها.
+const DELETED_IDS_COLLECTION = "deleted_ids";
+const DELETED_IDS_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+async function recordDeletedId(collection, docId) {
+  const id = cleanString(docId, 400);
+  if (!id) return null;
+  try {
+    // معرّفٌ مركَّب: المجموعات الثلاث قد تتشارك معرّفاً فلا يدهس أحدها الآخر.
+    await db.collection(DELETED_IDS_COLLECTION).doc(`${collection}__${id}`).set({
+      collection,
+      docId: id,
+      // رقم خام لا Timestamp: التطبيق يستعلم بـ`deletedAtMs >` وحدَّه رقم،
+      // وFirestore يرتّب القيم بأنواعها فلا يرى حدٌّ رقميّ قيمةً من نوع آخر.
+      deletedAtMs: Date.now(),
+      deletedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (error) {
+    console.error("recordDeletedId failed", collection, id, error);
+  }
+  return null;
+}
+
+exports.onLessonDeleted = functions.firestore
+  .document("lessons/{docId}")
+  .onDelete((snap, context) => recordDeletedId("lessons", context.params.docId));
+
+exports.onCategoryDeleted = functions.firestore
+  .document("categories/{docId}")
+  .onDelete((snap, context) => recordDeletedId("categories", context.params.docId));
+
+exports.onSubcategoryDeleted = functions.firestore
+  .document("subcategories/{docId}")
+  .onDelete((snap, context) => recordDeletedId("subcategories", context.params.docId));
+
+/**
+ * تنظيف سجلّ الاختفاء: ما مضى عليه أكثر من تسعين يوماً يُمسح.
+ *
+ * تسعون يوماً سخاءٌ مقصود: جهازٌ لم يُفتح فيه التطبيق طوال هذه المدّة يكون
+ * سجلّ حذفه ناقصاً — وهذا مأمون، لأن التطبيق يقارن أعداد المجموعات بعد كل
+ * دمج فيسقط إلى الجلب الكامل من تلقاء نفسه حين لا تتطابق.
+ */
+exports.cleanupDeletedIds = functions
+  .runWith({ timeoutSeconds: 300, memory: "256MB" })
+  .pubsub.schedule("50 3 * * *")
+  .timeZone("Asia/Riyadh")
+  .onRun(async () => {
+    const cutoff = Date.now() - DELETED_IDS_RETENTION_MS;
+    let removed = 0;
+    // على دفعات: مجموعةٌ متضخّمة لا تُقرأ دفعةً واحدة في الذاكرة.
+    for (let round = 0; round < 20; round += 1) {
+      const snap = await db.collection(DELETED_IDS_COLLECTION)
+        .where("deletedAtMs", "<", cutoff)
+        .limit(400)
+        .get();
+      if (snap.empty) break;
+      const batch = db.batch();
+      snap.docs.forEach((doc) => batch.delete(doc.ref));
+      await batch.commit();
+      removed += snap.size;
+      if (snap.size < 400) break;
+    }
+    if (removed > 0) console.log("cleanupDeletedIds removed", removed);
+    return null;
+  });

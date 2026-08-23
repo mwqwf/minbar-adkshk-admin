@@ -420,6 +420,70 @@ object AdminRepository {
         updateCompat("lessons", id, mapOf("title" to title.trim()))
 
     /**
+     * نتيجة نقل درس: [placedLast] يخبر هل استقرّ الدرس في آخر قائمة وجهته،
+     * فقد ينجح النقل ويتعذّر الترتيب وحده — والتفريق ضروريّ كي لا نقول
+     * «فشل» لعملٍ تمّ فيعيد المشرف رفع الصوتيّة بلا داعٍ.
+     */
+    data class MoveLessonResult(val placedLast: Boolean)
+
+    /**
+     * نقل درس إلى قسم فرعيّ آخر: **تغيير حقلَي القسم فقط**، بلا لمس الملفّ
+     * الصوتيّ ولا معرّف الدرس — فيبقى نصّه المشروح وعدّاد استماعه وروابطه
+     * المشارَكة كما هي، ولا يُعاد رفع شيء على شبكة ضعيفة.
+     *
+     * القسم الرئيسيّ يُشتقّ من [target] نفسه (`target.categoryId`) لا يُمرَّر
+     * منفصلاً: تمريره كان يسمح ببقاء الدرس على رئيسيّ لا ينتمي إليه فرعيّه.
+     */
+    suspend fun moveLessonToSubcategory(
+        lesson: Lesson,
+        target: Subcategory,
+        targetCategoryName: String = "",
+    ): MoveLessonResult {
+        // نقلٌ إلى الموضع نفسه لا معنى له — ولا نكتب في القاعدة من أجله.
+        if (target.id == lesson.subcategoryId) return MoveLessonResult(true)
+
+        val snapshot = db.collection("lessons").document(lesson.id).get().await()
+        if (!snapshot.exists()) error("الدرس المطلوب غير موجود.")
+        val body = unwrap(snapshot.data ?: emptyMap())
+
+        val fields = mutableMapOf<String, Any?>(
+            "categoryId" to target.categoryId,
+            "subcategoryId" to target.id,
+        )
+        // الاسمان مخزَّنان مع الدرس منذ إنشائه (انظر addLesson)؛ تركهما على
+        // القسم القديم يجعل كل شاشة تقرؤهما تعرض وجهةً خاطئة.
+        if (targetCategoryName.isNotBlank()) fields["categoryName"] = targetCategoryName.trim()
+        if (target.name.isNotBlank()) fields["subcategoryName"] = target.name
+        // وثائق أقدم تخزّن القسم الفرعيّ خريطةً `subcategory{_id,name}`؛ لو
+        // تُركت لعاد الدرس إلى قسمه الأوّل عند كل قارئ يعتمدها. تُحدَّث فقط
+        // إن كانت موجودة أصلاً كي لا نخترع حقلاً في الوثائق الحديثة.
+        if (body["subcategory"] is Map<*, *>) {
+            fields["subcategory._id"] = target.id
+            if (target.name.isNotBlank()) fields["subcategory.name"] = target.name
+        }
+        // updateCompat نفسها: تحافظ على شكل `{data:{...}}` القديم فيقرأ
+        // التطبيق العامّ التغيير كما يقرأ تعديل العنوان تماماً.
+        updateCompat("lessons", lesson.id, fields)
+
+        // الترتيب داخل القسم مبنيّ على طابع الإنشاء لا على حقل رقميّ، فخروج
+        // الدرس من قسمه القديم **لا يترك ثغرة** تحتاج إصلاحاً. يبقى أن يأخذ
+        // موضعه الصحيح في وجهته: آخر القائمة.
+        val placedLast = runCatching {
+            val destination = fetchSubcategoryLessons(target.id)
+            // درس وحيد في وجهته لا ترتيب له (والدالّة الخادميّة ترفض أقلّ من اثنين).
+            if (destination.size < 2) return@runCatching true
+            val ordered = destination
+                .filter { it.id != lesson.id }
+                .sortedBy { it.createdAtMs }
+                .map { it.id } + lesson.id
+            reorderSubcategoryLessons(target.id, ordered)
+            true
+        }.getOrDefault(false)
+
+        return MoveLessonResult(placedLast)
+    }
+
+    /**
      * يحافظ على شكل الوثائق القديمة `{data:{...}}` بدلاً من كتابة حقل جديد
      * في الجذر لا يقرأه التطبيق العام.
      */

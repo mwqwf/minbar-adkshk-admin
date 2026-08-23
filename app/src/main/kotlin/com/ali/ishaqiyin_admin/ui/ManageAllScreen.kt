@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.SwapVert
@@ -75,6 +76,10 @@ fun ManageAllScreen(onBack: () -> Unit) {
     var transcriptFor by remember { mutableStateOf<Lesson?>(null) }
     // شاشة إعادة ترتيب دروس القسم الفرعي المفلتَر.
     var reorderOpen by remember { mutableStateOf(false) }
+    // نقل درس إلى قسم آخر — البديل عن «احذف ثم أعد الرفع» الذي كان يكلّف
+    // رفع الصوتيّة كاملةً ويُضيّع النصّ المشروح وعدّاد الاستماع.
+    var moveFor by remember { mutableStateOf<Lesson?>(null) }
+    var moveBusy by remember { mutableStateOf(false) }
 
     var categories by remember { mutableStateOf<List<Category>>(emptyList()) }
     var subcategories by remember { mutableStateOf<List<Subcategory>>(emptyList()) }
@@ -244,7 +249,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
             // الحذف تعاقبيّ: المشرف يستحقّ معرفة مدى ما سيختفي قبل الضغط.
             val doomedSubs = subcategories.filter { it.categoryId == action.item.id }
             val doomedSubIds = doomedSubs.map { it.id }.toSet()
-            val doomedLessons = lessons.count {
+            val doomedLessons = lessons.filter {
                 it.categoryId == action.item.id || it.subcategoryId in doomedSubIds
             }
             ConfirmDialog(
@@ -253,8 +258,12 @@ fun ManageAllScreen(onBack: () -> Unit) {
                 body = (if (!scopeKnown) "⚠️ تعذّر حساب مدى الحذف — لا تتابع. أعد التحميل ثمّ حاول.\n\n" else "") +
                     "هل أنت متأكد من حذف \"${action.item.name}\"؟\n\n" +
                     "سيُحذف ${arabicCount(doomedSubs.size, "قسم فرعيّ واحد", "قسمان فرعيّان", "أقسام فرعيّة", "قسماً فرعيّاً")} " +
-                    "و${lessonsCountLabel(doomedLessons)}، " +
-                    "وملفاتها الصوتية من التخزين نهائياً. لا يمكن التراجع.",
+                    "و${lessonsCountLabel(doomedLessons.size)}، " +
+                    "وملفاتها الصوتية من التخزين نهائياً. لا يمكن التراجع." +
+                    // الرقم لا يُراجَع والاسم يُراجَع: رؤية اسم لم يقصده
+                    // المشرف توقفه قبل الضغط، والعدد وحده لا يوقفه.
+                    namesBlock("الأقسام الفرعيّة:", doomedSubs.map { it.name }, ::moreSubsLabel) +
+                    namesBlock("الدروس:", doomedLessons.map { it.title }, ::moreLessonsLabel),
                 confirmLabel = "حذف",
                 confirmColor = MaterialTheme.colorScheme.error,
                 // ⛔ الحذف التعاقبيّ لا يُؤكَّد ومداه مجهول.
@@ -274,15 +283,17 @@ fun ManageAllScreen(onBack: () -> Unit) {
         }
 
         is PendingAction.DeleteSubcategory -> {
-            val doomedLessons = lessons.count { it.subcategoryId == action.item.id }
+            val doomedLessons = lessons.filter { it.subcategoryId == action.item.id }
             ConfirmDialog(
                 title = "تأكيد الحذف",
                 // ⚠️ حين يفشل الجلب تكون الأعداد أدناه صفرية كاذبة، فيُصدَّر التحذير أوّلاً.
                 body = (if (!scopeKnown) "⚠️ تعذّر حساب مدى الحذف — لا تتابع. أعد التحميل ثمّ حاول.\n\n" else "") +
                     "هل أنت متأكد من حذف \"${action.item.name}\"؟\n\n" +
-                    "سيُحذف ${lessonsCountLabel(doomedLessons)} " +
+                    "سيُحذف ${lessonsCountLabel(doomedLessons.size)} " +
                     "وملفاتها الصوتية من التخزين نهائياً. " +
-                    "لا يمكن التراجع.",
+                    "لا يمكن التراجع." +
+                    // أسماء الدروس لا عددها: العدد لا يكشف الخطأ، والاسم يكشفه.
+                    namesBlock("الدروس:", doomedLessons.map { it.title }, ::moreLessonsLabel),
                 confirmLabel = "حذف",
                 confirmColor = MaterialTheme.colorScheme.error,
                 // ⛔ الحذف التعاقبيّ لا يُؤكَّد ومداه مجهول.
@@ -338,6 +349,51 @@ fun ManageAllScreen(onBack: () -> Unit) {
             subcategoryName = subName(filterSubcategoryId!!),
             onDismiss = { reorderOpen = false },
             onSaved = { reload++ },
+        )
+    }
+
+    moveFor?.let { lesson ->
+        MoveLessonDialog(
+            lesson = lesson,
+            currentCategoryName = catName(lesson.categoryId),
+            currentSubcategoryName = subName(lesson.subcategoryId),
+            categories = categories,
+            subcategories = subcategories,
+            busy = moveBusy,
+            onDismiss = { if (!moveBusy) moveFor = null },
+            onConfirm = { target, targetCategoryName ->
+                moveBusy = true
+                scope.launch {
+                    runCatching {
+                        AdminRepository.moveLessonToSubcategory(
+                            lesson = lesson,
+                            target = target,
+                            targetCategoryName = targetCategoryName,
+                        )
+                    }.onSuccess { result ->
+                        moveBusy = false
+                        moveFor = null
+                        // النقل نجح والترتيب وحده قد يتعذّر — لا يُقال «فشل»
+                        // لعملٍ تمّ، وإلا أعاد المشرف رفع الصوتيّة بلا داعٍ.
+                        snack(
+                            if (result.placedLast) {
+                                "نُقل الدرس إلى «$targetCategoryName ← ${target.name}» ووُضع في آخر القائمة. ✅"
+                            } else {
+                                "نُقل الدرس إلى «$targetCategoryName ← ${target.name}». " +
+                                    "رتّبه داخل القسم من زرّ «إعادة ترتيب الدروس» إن أردت."
+                            },
+                        )
+                        reloadLessons++
+                    }.onFailure {
+                        moveBusy = false
+                        snack(
+                            "تعذّر النقل: ${it.arabicReason()} " +
+                                "الدرس وملفّه الصوتيّ سليمان في مكانهما — " +
+                                "تحقّق من الإنترنت وأعد المحاولة.",
+                        )
+                    }
+                }
+            },
         )
     }
 
@@ -547,6 +603,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                             onEdit = { pending = PendingAction.EditLesson(l) },
                             onDelete = { pending = PendingAction.DeleteLesson(l) },
                             onTranscript = { transcriptFor = l },
+                            onMove = { moveFor = l },
                         )
                     }
                 }
@@ -595,6 +652,7 @@ private fun LessonRow(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onTranscript: () -> Unit,
+    onMove: () -> Unit,
 ) {
     Card(
         shape = RoundedCornerShape(12.dp),
@@ -662,6 +720,55 @@ private fun LessonRow(
                     )
                 }
             }
+            // زرّ نصّيّ عريض لا أيقونة خامسة مزدحمة: «رُفع في القسم الخطأ»
+            // أشهر خطأ في اللوحة، وعلاجه يجب أن يُقرأ لا أن يُخمَّن.
+            OutlinedButton(
+                onClick = onMove,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.DriveFileMove,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.size(6.dp))
+                Text("نقل إلى قسم آخر")
+            }
         }
     }
+}
+
+// ─── أسماء ما سيُحذف (لا عدده وحده) ───────────────────────────────────
+
+/** كم اسماً يُعرض قبل «وغيرها» — خمسة تكفي للمراجعة ولا تُطيل الحوار. */
+private const val NAMES_PREVIEW = 5
+
+/**
+ * كتلة أسماء جاهزة للإلحاق بنصّ حوار الحذف — فارغة تماماً إن لم يكن هناك
+ * ما يُحذف، كي لا يظهر عنوان بلا قائمة تحته.
+ */
+private fun namesBlock(title: String, names: List<String>, more: (Int) -> String): String {
+    if (names.isEmpty()) return ""
+    val lines = names.take(NAMES_PREVIEW)
+        .joinToString("\n") { "• ${it.ifBlank { "بدون عنوان" }}" }
+    val rest = names.size - NAMES_PREVIEW
+    val tail = if (rest > 0) "\n• ${more(rest)}" else ""
+    return "\n\n$title\n$lines$tail"
+}
+
+/** «ودرس واحد آخر»/«ودرسان آخران»/«و٣ دروس أخرى»/«و١١ درساً آخر». */
+private fun moreLessonsLabel(rest: Int): String = when {
+    rest == 1 -> "ودرس واحد آخر"
+    rest == 2 -> "ودرسان آخران"
+    rest <= 10 -> "و$rest دروس أخرى"
+    else -> "و$rest درساً آخر"
+}
+
+/** نظيرتها للأقسام الفرعيّة. */
+private fun moreSubsLabel(rest: Int): String = when {
+    rest == 1 -> "وقسم فرعيّ واحد آخر"
+    rest == 2 -> "وقسمان فرعيّان آخران"
+    rest <= 10 -> "و$rest أقسام فرعيّة أخرى"
+    else -> "و$rest قسماً فرعيّاً آخر"
 }

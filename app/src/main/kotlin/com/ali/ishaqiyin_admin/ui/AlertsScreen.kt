@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -292,6 +293,9 @@ private fun iconFor(type: String): ImageVector = when (type) {
     "engagement" -> Icons.AutoMirrored.Filled.TrendingUp
     "suspicious_lesson", "suspicious_scan" -> Icons.Filled.GppMaybe
     "featured_expiring" -> Icons.Filled.Star
+    // 🔇 تنبيه الفحص الأسبوعيّ لروابط الصوت الميتة — أيقونته صوت مقطوع
+    // ليميّزه المشرف عن بقيّة التنبيهات من نظرة واحدة.
+    "dead_audio_scan" -> Icons.Filled.VolumeOff
     else -> Icons.Filled.Campaign
 }
 

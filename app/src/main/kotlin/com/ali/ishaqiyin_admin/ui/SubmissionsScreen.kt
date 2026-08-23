@@ -2,6 +2,7 @@ package com.ali.ishaqiyin_admin.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -195,6 +197,55 @@ private fun SubmissionsFilterBar(
     }
 }
 
+/** اسم المساهم كما يُعرض في الشرائح وفي بطاقة المساهمة (بلا اسم = مجهول). */
+private const val NO_NAME = "بدون اسم"
+
+/**
+ * مرشِّح باسم المساهم.
+ *
+ * ⚠️ لماذا شرائح لا حقل كتابة: المساهمات تأتي **دفعاتٍ** من شخص واحد يرفع
+ * سلسلةً كاملة، والمشرف لا يتقن الكتابة العربية بالضرورة — فالأسماء تُعرض
+ * كما هي في القائمة الحالية ويُنقَر عليها. ولا يظهر الشريط أصلاً ما لم
+ * يكن هناك مساهمان فأكثر (شريط بشريحة واحدة عبء بلا فائدة).
+ */
+@Composable
+private fun SubmitterFilterBar(
+    names: List<String>,
+    counts: Map<String, Int>,
+    current: String,
+    onSelect: (String) -> Unit,
+) {
+    if (names.size < 2) return
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Text(
+            "اعرض مساهمات:",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FilterChip(
+                selected = current.isEmpty(),
+                onClick = { onSelect("") },
+                label = { Text("الجميع", fontSize = 12.sp) },
+                modifier = Modifier.heightIn(min = 48.dp),
+            )
+            names.forEach { name ->
+                FilterChip(
+                    selected = current == name,
+                    onClick = { onSelect(if (current == name) "" else name) },
+                    label = { Text("$name (${counts[name] ?: 0})", fontSize = 12.sp) },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                )
+            }
+        }
+    }
+}
+
 /**
  * شريط الحسم الجماعي — بنفس نمط «اعتماد الكل» في شاشة المالك: تحديد
  * متعدّد ثم نشر/اعتماد أو رفض بسبب واحد، مع تقدّم حيّ (المنجز من الإجمالي).
@@ -347,6 +398,9 @@ private fun AudioSubmissionsContent(targetId: String = "") {
     val imageUrls = remember { mutableStateMapOf<String, String>() }
     // الفلترة والحسم الجماعي.
     var filter by remember { mutableStateOf(SubFilter.PENDING) }
+    // مرشِّح المساهم: فارغ = الجميع. المساهمات تأتي دفعاتٍ من شخص واحد،
+    // فحصرها فيه يجعل مراجعة سلسلةٍ كاملة دفعةً واحدة أمراً هيّناً.
+    var submitter by remember { mutableStateOf("") }
     var selectMode by remember { mutableStateOf(false) }
     val selected = remember { mutableStateListOf<String>() }
     var bulkBusy by remember { mutableStateOf(false) }
@@ -367,12 +421,27 @@ private fun AudioSubmissionsContent(targetId: String = "") {
 
     val pendingCount = items.count { it.isPending }
     val decidedCount = items.size - pendingCount
-    val shown = items.filter {
+    val byStatus = items.filter {
         when (filter) {
             SubFilter.PENDING -> it.isPending
             SubFilter.DECIDED -> !it.isPending
             SubFilter.ALL -> true
         }
+    }
+    // أسماء المساهمين الموجودين فعلاً في القائمة المعروضة الآن — لا قائمة
+    // ثابتة ولا حقل كتابة: الشريحة تُنقر كما هي.
+    val submitterNames = byStatus.map { it.submitterName.ifBlank { NO_NAME } }
+        .distinct()
+        .sorted()
+    val submitterCounts = byStatus.groupingBy { it.submitterName.ifBlank { NO_NAME } }
+        .eachCount()
+    // اسم اختير ثم اختفى من القائمة (حُسمت كل مساهماته) لا يُترك مرشِّحاً
+    // خفيّاً يُفرغ الشاشة بلا سبب ظاهر.
+    val activeSubmitter = if (submitter in submitterNames) submitter else ""
+    val shown = if (activeSubmitter.isEmpty()) {
+        byStatus
+    } else {
+        byStatus.filter { it.submitterName.ifBlank { NO_NAME } == activeSubmitter }
     }
     val pendingVisible = shown.count { it.isPending }
     val chosen = shown.filter { it.isPending && selected.contains(it.id) }
@@ -580,6 +649,17 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                 }
             },
         )
+        SubmitterFilterBar(
+            names = submitterNames,
+            counts = submitterCounts,
+            current = activeSubmitter,
+            onSelect = {
+                submitter = it
+                // تغيير المرشِّح يُخفي مساهمات محدَّدة — تُمسح كي لا يبقى
+                // تحديدٌ لا يراه المشرف ثمّ يُحسم من حيث لا يشعر.
+                selected.clear()
+            },
+        )
         BulkDecisionBar(
             selectMode = selectMode,
             selectedCount = chosen.size,
@@ -610,7 +690,10 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    if (items.isEmpty()) {
+                    if (activeSubmitter.isNotEmpty()) {
+                        "لا شيء لـ«$activeSubmitter» ضمن هذه الفلترة —\n" +
+                            "اضغط «الجميع» لعرض الباقي."
+                    } else if (items.isEmpty()) {
                         "لا توجد مساهمات بعد.\nعندما يرسل المستمعون دروساً من " +
                             "«شارك درساً» ستظهر هنا للمراجعة."
                     } else {
@@ -860,6 +943,9 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
     val hasApprovedText = remember { mutableStateMapOf<String, Boolean>() }
     // الفلترة والحسم الجماعي.
     var filter by remember { mutableStateOf(SubFilter.PENDING) }
+    // مرشِّح المساهم: فارغ = الجميع. المساهمات تأتي دفعاتٍ من شخص واحد،
+    // فحصرها فيه يجعل مراجعة سلسلةٍ كاملة دفعةً واحدة أمراً هيّناً.
+    var submitter by remember { mutableStateOf("") }
     var selectMode by remember { mutableStateOf(false) }
     val selected = remember { mutableStateListOf<String>() }
     var bulkBusy by remember { mutableStateOf(false) }
@@ -873,12 +959,27 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
 
     val pendingCount = items.count { it.isPending }
     val decidedCount = items.size - pendingCount
-    val shown = items.filter {
+    val byStatus = items.filter {
         when (filter) {
             SubFilter.PENDING -> it.isPending
             SubFilter.DECIDED -> !it.isPending
             SubFilter.ALL -> true
         }
+    }
+    // أسماء المساهمين الموجودين فعلاً في القائمة المعروضة الآن — لا قائمة
+    // ثابتة ولا حقل كتابة: الشريحة تُنقر كما هي.
+    val submitterNames = byStatus.map { it.submitterName.ifBlank { NO_NAME } }
+        .distinct()
+        .sorted()
+    val submitterCounts = byStatus.groupingBy { it.submitterName.ifBlank { NO_NAME } }
+        .eachCount()
+    // اسم اختير ثم اختفى من القائمة (حُسمت كل مساهماته) لا يُترك مرشِّحاً
+    // خفيّاً يُفرغ الشاشة بلا سبب ظاهر.
+    val activeSubmitter = if (submitter in submitterNames) submitter else ""
+    val shown = if (activeSubmitter.isEmpty()) {
+        byStatus
+    } else {
+        byStatus.filter { it.submitterName.ifBlank { NO_NAME } == activeSubmitter }
     }
     val pendingVisible = shown.count { it.isPending }
     val chosen = shown.filter { it.isPending && selected.contains(it.id) }
@@ -1166,6 +1267,17 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
                 }
             },
         )
+        SubmitterFilterBar(
+            names = submitterNames,
+            counts = submitterCounts,
+            current = activeSubmitter,
+            onSelect = {
+                submitter = it
+                // تغيير المرشِّح يُخفي مساهمات محدَّدة — تُمسح كي لا يبقى
+                // تحديدٌ لا يراه المشرف ثمّ يُحسم من حيث لا يشعر.
+                selected.clear()
+            },
+        )
         BulkDecisionBar(
             selectMode = selectMode,
             selectedCount = chosen.size,
@@ -1196,7 +1308,10 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    if (items.isEmpty()) {
+                    if (activeSubmitter.isNotEmpty()) {
+                        "لا شيء لـ«$activeSubmitter» ضمن هذه الفلترة —\n" +
+                            "اضغط «الجميع» لعرض الباقي."
+                    } else if (items.isEmpty()) {
                         "لا توجد اقتراحات نصوص بعد.\nعندما يرسل المستمعون نص المقطع " +
                             "المشروح (أو صور صفحاته) من شاشة التشغيل ستظهر هنا للمراجعة."
                     } else {

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -148,6 +149,9 @@ fun TranscriptEditorDialog(
     var existed by rememberSaveable { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
     var text by rememberSaveable { mutableStateOf("") }
+    // 🪶 نصّ ما قبل ترتيب الأبيات — محفوظ ليتراجع المشرف بضغطة واحدة،
+    // ومحفوظ عبر إعادة الإنشاء كبقيّة المسوّدة.
+    var poemUndo by rememberSaveable { mutableStateOf<String?>(null) }
     var bookTitle by rememberSaveable { mutableStateOf("") }
     var sourceRef by rememberSaveable { mutableStateOf("") }
     var viewingImage by remember { mutableStateOf<Any?>(null) }
@@ -382,6 +386,53 @@ fun TranscriptEditorDialog(
                         maxLines = 14,
                         enabled = !saving,
                     )
+                    // 🪶 المنظومات: استخراج النص من الصور يقرأ عمود الصدر كلّه
+                    // ثم عمود العجز كلّه، فينفصل كل صدر عن عجزه وينكسر
+                    // المعنى. الزرّ يعيد قرن كل صدر بعجزه. لا يُعرض إلّا
+                    // لنصّ يزيد على ثلاثة أسطر كي لا يزحم الشاشة بلا فائدة.
+                    val poemLines = remember(text) {
+                        text.lines().count { it.isNotBlank() }
+                    }
+                    if (poemLines > 3) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                when (val result = PoemLineFixer.fix(text)) {
+                                    is PoemLineFixer.Result.Problem ->
+                                        snack(result.message)
+                                    is PoemLineFixer.Result.Fixed -> {
+                                        // النصّ القديم يُحفظ للتراجع: الإصلاح
+                                        // اقتراح يراجعه المشرف قبل الحفظ.
+                                        poemUndo = text
+                                        text = result.text
+                                        snack(
+                                            "رُتّب ${versesCountLabel(result.verses)} — " +
+                                                "اقرأها قبل الحفظ.",
+                                        )
+                                    }
+                                }
+                            },
+                            enabled = !saving,
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        ) { Text("هذه منظومة — أصلح ترتيب الأبيات") }
+                        poemUndo?.let { previous ->
+                            Text(
+                                "راجع الأبيات: كل بيت في سطرين (الصدر ثم العجز). " +
+                                    "إن لم يستقم المعنى فتراجع.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            TextButton(
+                                onClick = {
+                                    text = previous
+                                    poemUndo = null
+                                    snack("رجع النصّ كما كان.")
+                                },
+                                enabled = !saving,
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            ) { Text("تراجع عن الترتيب") }
+                        }
+                    }
                     Spacer(Modifier.height(10.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
