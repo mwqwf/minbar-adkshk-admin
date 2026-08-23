@@ -490,8 +490,8 @@ fun formatCallDuration(seconds: Int): String {
     val m = (s % 3600) / 60
     val sec = s % 60
     return if (h > 0) {
-        "%d:%02d:%02d".format(h, m, sec)
+        "%d:%02d:%02d".format(java.util.Locale.ROOT, h, m, sec)
     } else {
-        "%d:%02d".format(m, sec)
+        "%d:%02d".format(java.util.Locale.ROOT, m, sec)
     }
 }

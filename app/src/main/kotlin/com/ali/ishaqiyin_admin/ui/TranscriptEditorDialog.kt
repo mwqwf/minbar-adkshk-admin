@@ -731,7 +731,7 @@ fun TranscriptEditorDialog(
                 onClick = {
                     // النقص يُشرح بعينه — الزر لا يُعطَّل إلا أثناء الحفظ.
                     if (text.trim().length < 10 && images.isEmpty()) {
-                        snack("أدخل نص المقطع (١٠ أحرف على الأقل) أو أرفق صورة صفحة واحدة.")
+                        snack("أدخل نص المقطع (10 أحرف على الأقل) أو أرفق صورة صفحة واحدة.")
                         return@Button
                     }
                     saving = true

@@ -187,9 +187,9 @@ private fun formatClock(ms: Long): String {
     val minutes = (total % 3600) / 60
     val seconds = total % 60
     return if (hours > 0) {
-        "%d:%02d:%02d".format(hours, minutes, seconds)
+        "%d:%02d:%02d".format(java.util.Locale.ROOT, hours, minutes, seconds)
     } else {
-        "%d:%02d".format(minutes, seconds)
+        "%d:%02d".format(java.util.Locale.ROOT, minutes, seconds)
     }
 }
 
@@ -264,7 +264,7 @@ fun PreviewPlayerBar(
             ) {
                 Icon(
                     Icons.Filled.Replay30,
-                    contentDescription = "ترجيع ٣٠ ثانية",
+                    contentDescription = "ترجيع 30 ثانية",
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp),
                 )
@@ -275,7 +275,7 @@ fun PreviewPlayerBar(
             ) {
                 Icon(
                     Icons.Filled.Forward30,
-                    contentDescription = "تقديم ٣٠ ثانية",
+                    contentDescription = "تقديم 30 ثانية",
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp),
                 )

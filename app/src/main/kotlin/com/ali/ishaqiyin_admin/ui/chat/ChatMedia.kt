@@ -928,7 +928,7 @@ private fun seekFraction(x: Float, width: Float, rtl: Boolean): Float {
 
 private fun fmt(ms: Long): String {
     val totalSeconds = (ms / 1000).coerceAtLeast(0)
-    return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
+    return "%d:%02d".format(java.util.Locale.ROOT, totalSeconds / 60, totalSeconds % 60)
 }
 
 private fun statusLine(

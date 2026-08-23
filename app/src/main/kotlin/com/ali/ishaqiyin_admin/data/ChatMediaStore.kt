@@ -97,7 +97,7 @@ object ChatMediaStore {
     private fun localName(att: ChatAttachment): String {
         val digest = MessageDigest.getInstance("SHA-1")
             .digest(keyOf(att).toByteArray())
-            .joinToString("") { "%02x".format(it) }
+            .joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
         val name = att.name
         val dot = name.lastIndexOf('.')
         val ext = if (dot > 0 && name.length - dot <= 6) {

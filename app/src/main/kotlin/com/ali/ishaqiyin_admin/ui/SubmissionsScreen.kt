@@ -781,7 +781,7 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                         Text(
                             "المساهم: ${s.submitterName.ifEmpty { "بدون اسم" }}" +
                                 if (s.fileSize > 0) {
-                                    " • ${"%.1f".format(s.fileSize / (1024.0 * 1024.0))}MB"
+                                    " • ${"%.1f".format(java.util.Locale.ROOT, s.fileSize / (1024.0 * 1024.0))}MB"
                                 } else {
                                     ""
                                 },
@@ -1881,7 +1881,7 @@ private fun EditTranscriptDialog(
                     if (text.trim().length < 10 &&
                         !(keepImages && submission.imagePaths.isNotEmpty())
                     ) {
-                        snack("أدخل نص المقطع (١٠ أحرف على الأقل) أو أبقِ الصور المرفقة.")
+                        snack("أدخل نص المقطع (10 أحرف على الأقل) أو أبقِ الصور المرفقة.")
                         return@Button
                     }
                     onApprove(text.trim(), bookTitle.trim(), sourceRef.trim(), keepImages)

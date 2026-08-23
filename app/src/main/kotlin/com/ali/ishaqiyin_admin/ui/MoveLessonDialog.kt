@@ -139,7 +139,7 @@ fun MoveLessonDialog(
 
                     // الخطوة الأولى: القسم الرئيسيّ.
                     chosenCategory == null -> {
-                        StepLabel("الخطوة ١ من ٢ — اختر القسم الرئيسيّ")
+                        StepLabel("الخطوة 1 من 2 — اختر القسم الرئيسيّ")
                         LazyColumn(
                             Modifier.heightIn(max = 340.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -165,7 +165,7 @@ fun MoveLessonDialog(
 
                     // الخطوة الثانية: القسم الفرعيّ.
                     chosenSub == null -> {
-                        StepLabel("الخطوة ٢ من ٢ — اختر القسم الفرعيّ")
+                        StepLabel("الخطوة 2 من 2 — اختر القسم الفرعيّ")
                         val subs = destinations.filter { it.categoryId == chosenCategory!!.id }
                         LazyColumn(
                             Modifier.heightIn(max = 340.dp),

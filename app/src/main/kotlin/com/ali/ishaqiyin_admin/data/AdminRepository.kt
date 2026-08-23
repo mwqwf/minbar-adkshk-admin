@@ -234,7 +234,7 @@ object AdminRepository {
             it.trim().lowercase().replace(Regex("\\s+"), " ")
         }
         val digest = MessageDigest.getInstance("SHA-1").digest(raw.toByteArray(Charsets.UTF_8))
-        return prefix + digest.joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        return prefix + digest.joinToString("") { byte -> "%02x".format(java.util.Locale.ROOT, byte.toInt() and 0xff) }
     }
 
     /**

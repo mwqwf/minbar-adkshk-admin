@@ -160,7 +160,7 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
     }
 
     val done = !recording && file != null && seconds > 0
-    val timeLabel = "%02d:%02d".format(seconds / 60, seconds % 60)
+    val timeLabel = "%02d:%02d".format(java.util.Locale.ROOT, seconds / 60, seconds % 60)
 
     ModalBottomSheet(
         onDismissRequest = {

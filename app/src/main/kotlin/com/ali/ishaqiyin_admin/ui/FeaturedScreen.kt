@@ -57,10 +57,10 @@ import kotlinx.coroutines.launch
 
 /** خيارات مدّة التمييز المعروضة للمشرف. */
 enum class FeatureDuration(val label: String, val hours: Long?) {
-    H12("١٢ ساعة", 12),
-    H24("٢٤ ساعة", 24),
+    H12("12 ساعة", 12),
+    H24("24 ساعة", 24),
     D2("يومان", 48),
-    D3("٣ أيام", 72),
+    D3("3 أيام", 72),
     W1("أسبوع", 24 * 7),
     Forever("دائم — بلا مدّة", null);
 

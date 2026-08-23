@@ -884,4 +884,4 @@ private fun BarIcon(
 }
 
 private fun timeLabel(seconds: Int): String =
-    "%02d:%02d".format(seconds / 60, seconds % 60)
+    "%02d:%02d".format(java.util.Locale.ROOT, seconds / 60, seconds % 60)
