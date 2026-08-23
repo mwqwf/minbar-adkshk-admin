@@ -173,8 +173,12 @@ class AudioRecorderController {
 
     /** إيقاف مؤقّت (أندرويد 7+) — يعلّق أخذ العيّنات أيضاً فلا تُسجَّل صمتاً. */
     fun pause(): Boolean = runCatching {
+        // ⚠️ `recorder?.pause()` آمنٌ من العدم، فكانت الدالّة تعيد `true` ولو لم
+        // يكن هناك تسجيل جارٍ أصلاً — إشارة نجاح كاذبة تجعل الواجهة تعرض
+        // «موقوف مؤقّتاً» لتسجيل غير موجود. الآن العدم = فشل صريح.
+        val active = recorder ?: return@runCatching false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            recorder?.pause()
+            active.pause()
             stopSampling()
             true
         } else {
@@ -183,8 +187,10 @@ class AudioRecorderController {
     }.getOrDefault(false)
 
     fun resume(): Boolean = runCatching {
+        // نفس علّة [pause]: لا استئناف بلا مسجّل قائم.
+        val active = recorder ?: return@runCatching false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            recorder?.resume()
+            active.resume()
             startSampling()
             true
         } else {

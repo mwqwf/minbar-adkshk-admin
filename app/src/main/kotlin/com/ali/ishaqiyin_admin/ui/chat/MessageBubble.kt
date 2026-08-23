@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
@@ -837,23 +838,35 @@ private fun ReactionsBar(
         if (appeared) 1f else 0.6f,
         label = "reactionScale",
     )
-    Row(
+    // ⚠️ الكبسولة نفسها أقصر من 48dp بكثير: النقر انتقل إلى صندوق 48dp
+    // محاذٍ لركنها (BottomStart) فلا يتزحزح مظهرها قيد أنملة.
+    Box(
         modifier
-            .scale(scale)
-            .shadow(1.dp, CircleShape)
-            .background(ChatColors.surface, CircleShape)
-            .border(1.dp, if (mine != null) ChatColors.accentDark else bubbleColor, CircleShape)
-            .clickable { onReactionsTap(msg) }
-            .padding(horizontal = 6.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clickable { onReactionsTap(msg) },
+        contentAlignment = Alignment.BottomStart,
     ) {
-        counts.forEach { (emoji, count) ->
-            Text(emoji, fontSize = 13.sp)
-            if (count > 1) {
-                Spacer(Modifier.width(2.dp))
-                Text("$count", fontSize = 12.sp, color = ChatColors.metaText)
+        Row(
+            Modifier
+                .scale(scale)
+                .shadow(1.dp, CircleShape)
+                .background(ChatColors.surface, CircleShape)
+                .border(
+                    1.dp,
+                    if (mine != null) ChatColors.accentDark else bubbleColor,
+                    CircleShape,
+                )
+                .padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            counts.forEach { (emoji, count) ->
+                Text(emoji, fontSize = 13.sp)
+                if (count > 1) {
+                    Spacer(Modifier.width(2.dp))
+                    Text("$count", fontSize = 12.sp, color = ChatColors.metaText)
+                }
+                Spacer(Modifier.width(3.dp))
             }
-            Spacer(Modifier.width(3.dp))
         }
     }
 }

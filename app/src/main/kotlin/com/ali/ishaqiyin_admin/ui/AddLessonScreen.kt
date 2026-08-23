@@ -300,14 +300,18 @@ fun AddLessonScreen(onBack: () -> Unit) {
      */
     val busy = queuing || batchRunning
     var merging by remember { mutableStateOf(false) }
-    var message by remember { mutableStateOf("") }
-    var isError by remember { mutableStateOf(false) }
+    // 🛡️ تنجو من تدوير الشاشة: بقيّة حقول النموذج محفوظة، فكان الخطأ أو
+    // رسالة النجاح تختفي وحدها عند التدوير.
+    var message by rememberSaveable { mutableStateOf("") }
+    var isError by rememberSaveable { mutableStateOf(false) }
     var featured by rememberSaveable { mutableStateOf(false) }
     // التمييز صار مؤقّتاً: null مع featured=true يعني «دائم».
     var featuredUntil by rememberSaveable { mutableStateOf<Long?>(null) }
     var featuredLabel by rememberSaveable { mutableStateOf("") }
     var showFeatureSheet by remember { mutableStateOf(false) }
-    var showRecorder by remember { mutableStateOf(false) }
+    // ⛔ كانت remember: التدوير أثناء تسجيل جارٍ يُزيل ورقة التسجيل فيعمل
+    // onDispose { recorder.release() } على تسجيل حيّ ⇒ يضيع بلا رسالة.
+    var showRecorder by rememberSaveable { mutableStateOf(false) }
 
     // «النص المشروح» الاختياري المرافق للدرس — من أحبّ أضافه ومن لم يرد فلا.
     var transcriptOpen by rememberSaveable { mutableStateOf(false) }
@@ -470,7 +474,9 @@ fun AddLessonScreen(onBack: () -> Unit) {
         merging = false
         message = ""
         isError = false
-        val snapshotTitle = title
+        // 🛡️ العنوان يدخل الطابور مقصوصاً: حارس التكرار أعلاه يقارن بـtitle.trim()،
+        // فمسافة لاحقة واحدة كانت تُسقط الحارس فيُنشأ درس مكرّر.
+        val snapshotTitle = title.trim()
         val cat = categories.firstOrNull { it.id == categoryId }
         val sub = subsForCategory.firstOrNull { it.id == subcategoryId }
         val label = listOfNotNull(cat?.name, sub?.name).joinToString(" ← ")
@@ -998,11 +1004,11 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     ) {
                         Text(
                             if (separate) {
-                                "${files.size} ملفّاً = ${lessonsCountLabel(files.size)} " +
-                                    "منفصلاً بالترتيب أدناه (وهو ترتيب ظهورها في " +
+                                "كلّ ملفّ درس مستقلّ: ${filesCountLabel(files.size)} " +
+                                    "بالترتيب أدناه (وهو ترتيب ظهورها في " +
                                     "التطبيق) — والعناوين من أسماء الملفّات."
                             } else {
-                                "ستُدمج ${files.size} ملفات بالترتيب أدناه في درس واحد " +
+                                "ستُدمج ${filesCountLabel(files.size)} بالترتيب أدناه في درس واحد " +
                                     "متصل — استعمل الأسهم لإعادة الترتيب."
                             },
                             fontSize = 13.sp,

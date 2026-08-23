@@ -82,10 +82,14 @@ import com.ali.ishaqiyin_admin.ui.EditTextDialog
 import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.RemoteImage
 import com.ali.ishaqiyin_admin.ui.Routes
+import com.ali.ishaqiyin_admin.ui.arabicCount
+import com.ali.ishaqiyin_admin.ui.messagesCountLabel
 import com.ali.ishaqiyin_admin.util.pickedFileFrom
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -119,7 +123,10 @@ fun GroupInfoScreen(isOwner: Boolean, nav: NavHostController, onBack: () -> Unit
     var confirmClearMedia by remember { mutableStateOf(false) }
     var confirmClearChat by remember { mutableStateOf(false) }
 
-    LaunchedEffect(mediaRefresh) { mediaBytes = ChatMediaStore.totalBytes() }
+    // ⛔ كان يمسح المجلّد على الخيط الرئيسيّ ⇒ تجمّد وربّما ANR.
+    LaunchedEffect(mediaRefresh) {
+        mediaBytes = withContext(Dispatchers.IO) { ChatMediaStore.totalBytes() }
+    }
 
     val groupPhotoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent(),
@@ -183,7 +190,7 @@ fun GroupInfoScreen(isOwner: Boolean, nav: NavHostController, onBack: () -> Unit
                 busy = true
                 scope.launch {
                     runCatching { ChatRepository.clearForMe() }
-                        .onSuccess { snack("مُسحت المحادثة عندك ($it رسالة).") }
+                        .onSuccess { snack("مُسحت المحادثة عندك (${messagesCountLabel(it)}).") }
                         .onFailure { snack("تعذّر المسح: ${it.message ?: it}") }
                     busy = false
                 }
@@ -201,9 +208,12 @@ fun GroupInfoScreen(isOwner: Boolean, nav: NavHostController, onBack: () -> Unit
             onDismiss = { confirmClearMedia = false },
             onConfirm = {
                 confirmClearMedia = false
-                ChatMediaStore.clearAll()
-                mediaRefresh++
-                snack("مُسحت الوسائط المحفوظة.")
+                // ⛔ حذف مئات الملفّات على الخيط الرئيسيّ كان يجمّد الواجهة.
+                scope.launch {
+                    withContext(Dispatchers.IO) { ChatMediaStore.clearAll() }
+                    mediaRefresh++
+                    snack("مُسحت الوسائط المحفوظة.")
+                }
             },
         )
     }
@@ -211,13 +221,16 @@ fun GroupInfoScreen(isOwner: Boolean, nav: NavHostController, onBack: () -> Unit
     // «متصل الآن» نافذة زمنيّة: بلا نبضة ثانية تبقى معروضة حتى إعادة
     // التركيب التالية فلا تزول في وقتها.
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(1000)
+    val online = members.count { now - it.lastActiveAtMs < ONLINE_WINDOW_MS }
+    // 🔋 نفس علّة شاشة الدردشة: نبضة دائمة كلّ ثانية بلا داعٍ. هنا لا يُعرض
+    // إلّا «متصل الآن» فلا حاجة لدقّة الثانية — خمس ثوانٍ تكفي، ولا نبض
+    // أصلاً حين لا أحد متّصلاً.
+    LaunchedEffect(online > 0) {
+        while (online > 0) {
+            delay(5_000)
             now = System.currentTimeMillis()
         }
     }
-    val online = members.count { now - it.lastActiveAtMs < ONLINE_WINDOW_MS }
     val me = members.firstOrNull { it.uid == myUid }
 
     AdminScaffold(title = "معلومات المجموعة", onBack = onBack) { padding ->
@@ -264,7 +277,7 @@ fun GroupInfoScreen(isOwner: Boolean, nav: NavHostController, onBack: () -> Unit
                     Text(meta.name, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "${members.size} عضو • $online متصل الآن" +
+                        "${arabicCount(members.size, "عضو واحد", "عضوان", "أعضاء", "عضواً")} • $online متصل الآن" +
                             if (meta.locked) " • 🔒 مقفلة" else "",
                         fontSize = 12.sp,
                         color = ChatColors.textMuted,

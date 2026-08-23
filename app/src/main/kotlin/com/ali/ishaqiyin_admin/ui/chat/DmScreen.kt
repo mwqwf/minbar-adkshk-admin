@@ -102,6 +102,7 @@ import com.ali.ishaqiyin_admin.ui.ClipboardImageSuggestion
 import com.ali.ishaqiyin_admin.ui.ConfirmDialog
 import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.adminFieldColors
+import com.ali.ishaqiyin_admin.ui.messagesCountLabel
 import com.ali.ishaqiyin_admin.util.PickedFile
 import com.ali.ishaqiyin_admin.util.pickedFileFrom
 import com.google.firebase.auth.FirebaseAuth
@@ -285,15 +286,18 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         }
     }
 
+    // 🎧 نفس شرط الهويّة المستعمَل لـonCompleted أدناه.
+    val audioHost = remember { Any() }
     DisposableEffect(threadId) {
         ChatNotifications.openDmThreadId = threadId
         PendingGroupQuote.value = null
+        SharedAudioPlayer.claimHost(audioHost)
         onDispose {
             // ⚠️ بشرط الهويّة: محادثة أخرى قد تكون سجّلت معرّفها قبل إتلافنا.
             if (ChatNotifications.openDmThreadId == threadId) {
                 ChatNotifications.openDmThreadId = ""
             }
-            SharedAudioPlayer.release()
+            SharedAudioPlayer.releaseIfHost(audioHost)
         }
     }
 
@@ -534,7 +538,7 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                 confirmClearChat = false
                 scope.launch {
                     runCatching { DmRepository.clearForMe(threadId) }
-                        .onSuccess { snack("مُسحت المحادثة عندك ($it رسالة).") }
+                        .onSuccess { snack("مُسحت المحادثة عندك (${messagesCountLabel(it)}).") }
                         .onFailure { snack("تعذّر المسح: ${it.arabicReason()}") }
                 }
             },

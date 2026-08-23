@@ -93,6 +93,8 @@ fun AdminTranscriptImagesEditor(
         mutableStateListOf<Uri>()
     }
     var cropActive by remember { mutableStateOf(false) }
+    // 🛡️ حذف الصورة لا تراجع فيه (وقد تكون الصفحة الوحيدة المصوَّرة) — يُؤكَّد.
+    var confirmRemove by remember { mutableIntStateOf(-1) }
 
     fun cropOptions(uri: Uri) = CropImageContractOptions(
         uri,
@@ -147,6 +149,21 @@ fun AdminTranscriptImagesEditor(
         if (uris.size > remaining) {
             onError("الحد الأقصى ${TranscriptsRepository.MAX_IMAGES} صور.")
         }
+    }
+
+    if (confirmRemove >= 0) {
+        val index = confirmRemove
+        ConfirmDialog(
+            title = "إزالة الصورة؟",
+            body = "ستُزال صورة الصفحة ${index + 1} من هذا النص. لا يمكن التراجع.",
+            confirmLabel = "إزالة",
+            confirmColor = MaterialTheme.colorScheme.error,
+            onDismiss = { confirmRemove = -1 },
+            onConfirm = {
+                confirmRemove = -1
+                if (index in images.indices) images.removeAt(index)
+            },
+        )
     }
 
     fun crop(index: Int) {
@@ -209,20 +226,28 @@ fun AdminTranscriptImagesEditor(
                                 fontWeight = FontWeight.Bold,
                             )
                         }
-                        IconButton(
-                            onClick = { images.removeAt(i) },
-                            enabled = enabled,
-                            modifier = Modifier
-                                .size(22.dp)
+                        // ⚠️ هدف اللمس كان 22dp (جمهور اللوحة كبار سنّ):
+                        // صُندوق 48dp للّمس، والدائرة تبقى 22dp في ركنها.
+                        Box(
+                            Modifier
                                 .align(Alignment.TopEnd)
-                                .background(Color.Black.copy(alpha = 0.55f), CircleShape),
+                                .size(48.dp)
+                                .clickable(enabled = enabled) { confirmRemove = i },
+                            contentAlignment = Alignment.TopEnd,
                         ) {
-                            Icon(
-                                Icons.Filled.Close,
-                                contentDescription = "إزالة",
-                                tint = Color.White,
-                                modifier = Modifier.size(13.dp),
-                            )
+                            Box(
+                                Modifier
+                                    .size(22.dp)
+                                    .background(Color.Black.copy(alpha = 0.55f), CircleShape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "إزالة",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(13.dp),
+                                )
+                            }
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -233,7 +258,8 @@ fun AdminTranscriptImagesEditor(
                                 images.add(i - 1, item)
                             },
                             enabled = enabled && i > 0,
-                            modifier = Modifier.size(28.dp),
+                            // منطقة لمس 48dp — حجم الأيقونة (16dp) لم يتغيّر.
+                            modifier = Modifier.size(48.dp),
                         ) {
                             Icon(
                                 Icons.Filled.ArrowForward,
@@ -244,7 +270,8 @@ fun AdminTranscriptImagesEditor(
                         IconButton(
                             onClick = { crop(i) },
                             enabled = enabled,
-                            modifier = Modifier.size(28.dp),
+                            // منطقة لمس 48dp — حجم الأيقونة (16dp) لم يتغيّر.
+                            modifier = Modifier.size(48.dp),
                         ) {
                             Icon(
                                 Icons.Filled.Crop,
@@ -259,7 +286,8 @@ fun AdminTranscriptImagesEditor(
                                 images.add(i + 1, item)
                             },
                             enabled = enabled && i < images.lastIndex,
-                            modifier = Modifier.size(28.dp),
+                            // منطقة لمس 48dp — حجم الأيقونة (16dp) لم يتغيّر.
+                            modifier = Modifier.size(48.dp),
                         ) {
                             Icon(
                                 Icons.Filled.ArrowBack,

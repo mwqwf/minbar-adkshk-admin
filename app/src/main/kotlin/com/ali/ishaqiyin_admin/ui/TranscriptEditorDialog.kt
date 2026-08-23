@@ -152,6 +152,8 @@ fun TranscriptEditorDialog(
     var sourceRef by rememberSaveable { mutableStateOf("") }
     var viewingImage by remember { mutableStateOf<Any?>(null) }
     var cropIndex by rememberSaveable { mutableIntStateOf(-1) }
+    // 🛡️ إزالة صورة صفحة لا تراجع فيها — تُؤكَّد كما يُؤكَّد حذف النص كلّه.
+    var confirmRemoveImage by remember { mutableIntStateOf(-1) }
     val images = rememberSaveable(saver = editorImagesSaver) {
         mutableStateListOf<EditorImage>()
     }
@@ -292,6 +294,21 @@ fun TranscriptEditorDialog(
         }
     }
 
+    if (confirmRemoveImage >= 0) {
+        val index = confirmRemoveImage
+        ConfirmDialog(
+            title = "إزالة الصورة؟",
+            body = "ستُزال صورة الصفحة ${index + 1} من هذا النص. لا يمكن التراجع.",
+            confirmLabel = "إزالة",
+            confirmColor = MaterialTheme.colorScheme.error,
+            onDismiss = { confirmRemoveImage = -1 },
+            onConfirm = {
+                confirmRemoveImage = -1
+                if (index in images.indices) images.removeAt(index)
+            },
+        )
+    }
+
     if (confirmRemove) {
         ConfirmDialog(
             title = "حذف النص المشروح؟",
@@ -430,23 +447,33 @@ fun TranscriptEditorDialog(
                                                 fontWeight = FontWeight.Bold,
                                             )
                                         }
-                                        IconButton(
-                                            onClick = { images.removeAt(i) },
-                                            enabled = !saving,
-                                            modifier = Modifier
-                                                .size(22.dp)
+                                        // ⚠️ هدف اللمس كان 22dp: صندوق 48dp
+                                        // للّمس والدائرة تبقى 22dp في ركنها.
+                                        Box(
+                                            Modifier
                                                 .align(Alignment.TopEnd)
-                                                .background(
-                                                    Color.Black.copy(alpha = 0.55f),
-                                                    CircleShape,
-                                                ),
+                                                .size(48.dp)
+                                                .clickable(enabled = !saving) {
+                                                    confirmRemoveImage = i
+                                                },
+                                            contentAlignment = Alignment.TopEnd,
                                         ) {
-                                            Icon(
-                                                Icons.Filled.Close,
-                                                contentDescription = "إزالة الصورة",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(13.dp),
-                                            )
+                                            Box(
+                                                Modifier
+                                                    .size(22.dp)
+                                                    .background(
+                                                        Color.Black.copy(alpha = 0.55f),
+                                                        CircleShape,
+                                                    ),
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                Icon(
+                                                    Icons.Filled.Close,
+                                                    contentDescription = "إزالة الصورة",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(13.dp),
+                                                )
+                                            }
                                         }
                                     }
                                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -456,7 +483,8 @@ fun TranscriptEditorDialog(
                                                 images.add(i - 1, item)
                                             },
                                             enabled = !saving && i > 0,
-                                            modifier = Modifier.size(26.dp),
+                                            // لمس 48dp — الأيقونة تبقى 15dp.
+                                            modifier = Modifier.size(48.dp),
                                         ) {
                                             Icon(
                                                 Icons.Filled.ArrowForward,
@@ -467,7 +495,8 @@ fun TranscriptEditorDialog(
                                         IconButton(
                                             onClick = { crop(i) },
                                             enabled = !saving,
-                                            modifier = Modifier.size(26.dp),
+                                            // لمس 48dp — الأيقونة تبقى 15dp.
+                                            modifier = Modifier.size(48.dp),
                                         ) {
                                             Icon(
                                                 Icons.Filled.Crop,
@@ -486,7 +515,8 @@ fun TranscriptEditorDialog(
                                                 images.add(i + 1, item)
                                             },
                                             enabled = !saving && i < images.lastIndex,
-                                            modifier = Modifier.size(26.dp),
+                                            // لمس 48dp — الأيقونة تبقى 15dp.
+                                            modifier = Modifier.size(48.dp),
                                         ) {
                                             Icon(
                                                 Icons.Filled.ArrowBack,

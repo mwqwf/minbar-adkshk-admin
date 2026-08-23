@@ -4,10 +4,14 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
 /** تنبيه إداري واحد كما يُعرض في «تنبيهاتك». */
@@ -62,6 +66,12 @@ object AdminAlertsFeed {
     /** سقف ما يُنزَّل من المجموعة — أكثر من هذا لا يُعرض بحكم [TTL_MS]. */
     private const val ALERTS_LIMIT = 200L
 
+    /** دفعات صغيرة كي لا يُسقط عنصرٌ واحد مرفوض بقيّة التمييز. */
+    private const val MARK_BATCH_SIZE = 50
+    private const val MARK_ALL_CAP = 400
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     val myEmail: String
         get() = AuthService.currentUser?.email.orEmpty().trim().lowercase()
 
@@ -103,10 +113,18 @@ object AdminAlertsFeed {
         }
         if (me.isEmpty()) return flowOf(emptyList())
 
+        // ⛔ فرع المشرف كان بلا `orderBy`: مع `limit(200)` يُرجِع Firestore أوّل
+        // 200 وثيقة بترتيب المعرّف (عشوائيّ فعليّاً) لا الأحدث، ثمّ يُسقطها
+        // فلتر الـ24 ساعة كلّها ⇒ المشرف لا يرى تنبيهاته أبداً. الترتيب
+        // التنازليّ يجعل المقتطع هو الأحدث كما في فرع المالك تماماً.
         val personal = db.collection("admin_alerts")
-            .whereEqualTo("email", me).limit(ALERTS_LIMIT).querySnapshots()
+            .whereEqualTo("email", me)
+            .orderBy("createdAtMs", Query.Direction.DESCENDING)
+            .limit(ALERTS_LIMIT).querySnapshots()
         val general = db.collection("admin_alerts")
-            .whereEqualTo("email", "").limit(ALERTS_LIMIT).querySnapshots()
+            .whereEqualTo("email", "")
+            .orderBy("createdAtMs", Query.Direction.DESCENDING)
+            .limit(ALERTS_LIMIT).querySnapshots()
         return personal.combine(general) { a, b ->
             val merged = LinkedHashMap<String, DocumentSnapshot>()
             (a.documents + b.documents).forEach { merged[it.id] = it }
@@ -126,22 +144,42 @@ object AdminAlertsFeed {
         }
     }
 
-    /** تمييز كلّ الظاهر مقروءاً. */
-    fun markAllRead(alerts: List<AdminAlert>) {
+    /**
+     * تمييز كلّ الظاهر مقروءاً.
+     *
+     * ⚠️ كان `runCatching { batch.commit() }` لا يلتقط شيئاً: `commit()` يعيد
+     * `Task` وفشلُه غير متزامن، فيسقط التمييز كلّه بصمت وتعود التنبيهات
+     * كما كانت بعد أوّل مزامنة. والدفعة ذرّيّة أيضاً: عنصر واحد ترفضه
+     * القواعد كان يُسقط الباقي. الآن تُقسَّم دفعات صغيرة، وتُنتظر نتيجة كلّ
+     * دفعة فعلاً، ويُبلَّغ المستدعي بالحصيلة عبر [onResult].
+     */
+    fun markAllRead(alerts: List<AdminAlert>, onResult: (Boolean) -> Unit = {}) {
         val e = myEmail
-        if (e.isEmpty()) return
-        val batch = db.batch()
-        var n = 0
-        for (alert in alerts.filter { !it.isReadBy(e) }) {
-            batch.update(
-                db.collection("admin_alerts").document(alert.id),
-                "readBy",
-                FieldValue.arrayUnion(e),
-            )
-            n++
-            if (n >= 400) break // حدّ دفعة Firestore.
+        if (e.isEmpty()) {
+            onResult(false)
+            return
         }
-        if (n > 0) runCatching { batch.commit() }
+        val targets = alerts.filter { !it.isReadBy(e) }.take(MARK_ALL_CAP)
+        if (targets.isEmpty()) {
+            onResult(true)
+            return
+        }
+        scope.launch {
+            var allOk = true
+            targets.chunked(MARK_BATCH_SIZE).forEach { chunk ->
+                val batch = db.batch()
+                chunk.forEach { alert ->
+                    batch.update(
+                        db.collection("admin_alerts").document(alert.id),
+                        "readBy",
+                        FieldValue.arrayUnion(e),
+                    )
+                }
+                val ok = runCatching { batch.commit().await() }.isSuccess
+                if (!ok) allOk = false
+            }
+            onResult(allOk)
+        }
     }
 
     /**

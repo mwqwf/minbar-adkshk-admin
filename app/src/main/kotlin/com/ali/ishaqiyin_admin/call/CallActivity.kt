@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.addCallback
 import androidx.activity.compose.setContent
 import androidx.core.view.WindowCompat
 import androidx.activity.result.contract.ActivityResultContracts
@@ -71,6 +72,21 @@ class CallActivity : ComponentActivity() {
             isAppearanceLightNavigationBars = false
         }
         showOverLockScreen()
+        // ⛔ الرجوع من شاشة الرنين بلا رفض كان يُنهي النشاط والحالة تبقى
+        // `Ringing` (أي `busy`)، ولا تُعاد الشاشة لأنّ المعرّف صار في
+        // openedIncomingIds ⇒ المستقبِل عالق «مشغولاً» بلا واجهة ولا يقدر
+        // على مكالمة. الرجوع الآن يرفض المكالمة كزرّ «رفض» تماماً.
+        onBackPressedDispatcher.addCallback(this) {
+            val current = CallEngine.state.value
+            if (current.incoming &&
+                current.phase == CallPhase.Ringing &&
+                current.callId.isNotEmpty()
+            ) {
+                AdminCallNotifications.cancelIncoming(this@CallActivity)
+                CallEngine.declineIncoming(current.callId)
+            }
+            finish()
+        }
         handle(intent)
         setContent {
             MinbarAdminTheme {

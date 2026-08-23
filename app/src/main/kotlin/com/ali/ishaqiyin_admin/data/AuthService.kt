@@ -1,6 +1,7 @@
 package com.ali.ishaqiyin_admin.data
 
 import android.content.Context
+import android.util.Log
 import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
@@ -18,6 +19,7 @@ import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Source
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -79,7 +81,9 @@ object AuthService {
     /** يعيد رسالة خطأ أو null عند النجاح/الإلغاء. */
     suspend fun signInWithGoogle(context: Context): String? {
         if (!AppConfig.googleSignInConfigured) {
-            return "تسجيل الدخول بـ Google غير مُهيّأ بعد (يلزم Web client id لمشروع mxqp-8d1e8)."
+            // ⚠️ كانت الرسالة تسرّب مصطلحاً تقنيّاً ومعرّف المشروع إلى شاشة
+            // يراها المشرف — لا يفيده ولا يعرف ما يصنع به.
+            return "تسجيل الدخول بـ Google غير مُهيّأ في هذه النسخة. راجع المطوّر."
         }
         return try {
             val option = GetSignInWithGoogleOption
@@ -110,22 +114,26 @@ object AuthService {
             // الرفع، وما لم تُسجَّل في Firebase يرفض Google إصدار رمز الهويّة.
             // الرسالة الخام هنا مبهمة («Developer console is not set up
             // correctly» أو رقم خطأ)، فنُسمّي السبب صراحةً.
+            // ⚠️ كان النصّ الخام الإنجليزيّ يُلحق بالرسالة العربيّة — لا يفهمه
+            // المشرف ويكشف تفاصيل داخليّة. صار يُسجَّل في السجلّ فقط.
             val raw = e.message ?: e.type
+            Log.w("AuthService", "google sign-in failed: $raw")
             val looksLikeSignatureMismatch = raw.contains("10", ignoreCase = true) ||
                 raw.contains("developer", ignoreCase = true) ||
                 raw.contains("console", ignoreCase = true) ||
                 raw.contains("no credentials", ignoreCase = true)
             if (looksLikeSignatureMismatch) {
-                "تعذّر تسجيل الدخول: بصمة توقيع هذه النسخة غير مسجَّلة في " +
-                    "إعدادات المشروع. إن كانت النسخة من المتجر فأضِف بصمة " +
-                    "«توقيع التطبيق» من Play Console إلى Firebase. ($raw)"
+                "تعذّر تسجيل الدخول: هذه النسخة من التطبيق غير معتمدة لدى " +
+                    "خدمة الدخول. حمّل النسخة الرسميّة من المتجر، وإن تكرّر " +
+                    "العطل فراجع المطوّر."
             } else {
-                "فشل تسجيل الدخول بـ Google: $raw"
+                "تعذّر تسجيل الدخول بـ Google. تحقّق من الاتصال ثم أعد المحاولة."
             }
         } catch (e: FirebaseAuthException) {
             authMessage(e.errorCode)
         } catch (e: Exception) {
-            "فشل تسجيل الدخول بـ Google: ${e.message ?: e}"
+            // ⚠️ `e.message` نصّ إنجليزيّ خام كان يصل المشرف كما هو.
+            "تعذّر تسجيل الدخول بـ Google. تحقّق من الاتصال ثم أعد المحاولة."
         }
     }
 
@@ -178,6 +186,11 @@ object AuthService {
             // مصرَّح له بالفعل — حدّث وقت آخر دخول (لا يُفشل تسجيل الدخول إن تعذّر).
             runCatching { AdminRepository.touchLastSignedIn(email) }
             return AccessState.Supervisor
+        } catch (e: CancellationException) {
+            // ⚠️ `catch (Exception)` كان يبتلع إلغاء الكوروتين (خروج المستخدم من
+            // الشاشة أثناء التحقّق) ويترجمه إلى «تعذّر الاتصال بالخادم» — عطلٌ
+            // وهميّ يراه المشرف. الإلغاء يُعاد رميه كما في [sendBroadcast].
+            throw e
         } catch (_: Exception) {
             throw AccessVerificationException(
                 "تعذّر الاتصال بالخادم للتحقق من الدور والحظر. لم تُمنح أيّ صلاحية مؤقتة.",
@@ -255,6 +268,10 @@ object AuthService {
         } catch (_: TimeoutCancellationException) {
             // انتهاء مهلة requestResponse = فشل عادي لا تعليق للشاشة.
             OwnerCodeResult(ok = false, reason = "send_failed")
+        } catch (e: CancellationException) {
+            // إلغاء الكوروتين ليس فشلَ خادم — يُعاد رميه (مهلة `withTimeout`
+            // تُلتقط قبله صراحةً فلا تتأثّر).
+            throw e
         } catch (_: Exception) {
             OwnerCodeResult(ok = false, reason = "send_failed")
         }
@@ -279,6 +296,9 @@ object AuthService {
         } catch (_: TimeoutCancellationException) {
             // انتهاء مهلة requestResponse = فشل عادي لا تعليق للشاشة.
             OwnerCodeResult(ok = false, reason = "server")
+        } catch (e: CancellationException) {
+            // كما في [sendOwnerCode]: الإلغاء يُعاد رميه ولا يُترجم إلى فشل خادم.
+            throw e
         } catch (_: Exception) {
             OwnerCodeResult(ok = false, reason = "server")
         }

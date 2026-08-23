@@ -45,7 +45,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
@@ -76,6 +75,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ali.ishaqiyin_admin.util.AudioRecorderController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -386,6 +386,10 @@ class VoiceRecorderState internal constructor(
     }
 
     internal fun release() {
+        // ⛔ إنهاءٌ جارٍ على IO: كان release() ينفَّذ فوقه (بخلاف discard()
+        // الذي يفحصه صراحةً) فيُلغى المسجّل قيد الإنهاء وتضيع الرسالة
+        // الصوتيّة عند مغادرة الشاشة لحظة الإرسال.
+        if (finishing) return
         stopPreviewPlayback()
         if (recordingNow) {
             // تسجيل جارٍ عند مغادرة الشاشة ⇒ يُلغى ويُحذف ملفّه.
@@ -416,13 +420,20 @@ fun rememberVoiceRecorderState(
     onSend: (file: File, durationMs: Long, waveform: List<Int>?) -> Unit,
 ): VoiceRecorderState {
     val context = LocalContext.current
-    val state = remember(prefix) {
-        VoiceRecorderState(
-            recorder = AudioRecorderController(),
-            appContext = context.applicationContext,
-            prefix = prefix,
+    // ⛔ كانت remember فقط: تدوير الشاشة أثناء تسجيل مقفول أو أثناء المعاينة
+    // يُتلف الحالة ويُشغّل onDispose { release() } فيُلغى التسجيل ويُحذف ملفّ
+    // المعاينة. حملُها في ViewModel يُبقيها حيّة عبر إعادة إنشاء النشاط،
+    // والتحرير يقع في onCleared عند مغادرة الوجهة فعلاً.
+    val holder: VoiceRecorderHolder = viewModel(key = "voice_$prefix") {
+        VoiceRecorderHolder(
+            VoiceRecorderState(
+                recorder = AudioRecorderController(),
+                appContext = context.applicationContext,
+                prefix = prefix,
+            ),
         )
     }
+    val state = holder.state
 
     // إذن الميكروفون خطر: يُطلب وقت التشغيل، ولا يبدأ أيّ تسجيل قبل منحه.
     val micPermission = rememberLauncherForActivityResult(
@@ -450,10 +461,19 @@ fun rememberVoiceRecorderState(
         }
     }
 
-    DisposableEffect(state) {
-        onDispose { state.release() }
-    }
+    // ⚠️ لا DisposableEffect { release() } هنا: التحرير صار في
+    // VoiceRecorderHolder.onCleared حتى لا يقع على مجرّد تدوير شاشة.
     return state
+}
+
+/**
+ * حاملٌ يُبقي [VoiceRecorderState] حيّاً عبر إعادة إنشاء النشاط (التدوير)،
+ * ويحرّرها مرّة واحدة عند مغادرة الوجهة فعلاً.
+ */
+class VoiceRecorderHolder(val state: VoiceRecorderState) : androidx.lifecycle.ViewModel() {
+    override fun onCleared() {
+        state.release()
+    }
 }
 
 /**
@@ -839,7 +859,12 @@ private fun SeekWave(values: List<Int>, progress: Float, modifier: Modifier = Mo
     }
 }
 
-/** زرّ دائريّ مضغوط داخل شريط التسجيل (أضيق من IconButton القياسيّ). */
+/**
+ * زرّ دائريّ داخل شريط التسجيل.
+ *
+ * ⚠️ كان 36dp — أصغر من الحدّ الأدنى 48dp، وجمهور اللوحة كبار سنّ. مساحة
+ * اللمس صارت 48dp والدائرة المرئيّة تبقى 36dp فلا يتغيّر المظهر.
+ */
 @Composable
 private fun BarIcon(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -849,7 +874,7 @@ private fun BarIcon(
 ) {
     Box(
         Modifier
-            .size(36.dp)
+            .size(48.dp)
             .clip(CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,

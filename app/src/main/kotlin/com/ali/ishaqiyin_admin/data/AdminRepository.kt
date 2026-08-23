@@ -3,6 +3,7 @@ package com.ali.ishaqiyin_admin.data
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.Dispatchers
@@ -50,8 +51,20 @@ object AdminRepository {
         }
     }
 
-    suspend fun fetchLessons(): List<Lesson> {
-        val snap = db.collection("lessons").get().await()
+    /**
+     * ⚠️ كانت تجلب مجموعة `lessons` **كاملةً** بلا حدّ من عدّة شاشات — قراءة
+     * تنمو بنموّ المحتوى وتُحمّل الشبكة والذاكرة بلا داعٍ. [limit] اختياريّ
+     * حفاظاً على توافق المستدعين الحاليّين؛ ومَن يعرض قائمة محدودة ينبغي أن
+     * يمرّره. مع [limit] يقع الفرز على الخادم (`createdAtMs` تنازليّاً) كي
+     * يكون المقتطع هو الأحدث فعلاً لا وثائق عشوائيّة بترتيب المعرّف.
+     */
+    suspend fun fetchLessons(limit: Long? = null): List<Lesson> {
+        val base = db.collection("lessons")
+        val snap = if (limit != null && limit > 0) {
+            base.orderBy("createdAtMs", Query.Direction.DESCENDING).limit(limit).get().await()
+        } else {
+            base.get().await()
+        }
         return withContext(Dispatchers.Default) {
             snap.documents
                 .map { Lesson.fromDoc(it.id, it.dataMap()) }
@@ -152,6 +165,10 @@ object AdminRepository {
     /** حظر مؤقّت/نهائي أو إلغاء الحظر — نظير أزرار صفحة المشرفين في نبراس. */
     suspend fun setDashAdminBlocked(email: String, blocked: Boolean, mode: String = "temporary") {
         val id = email.trim().lowercase()
+        // 🛡️ حارس البريد الفارغ (نظير [getDashAdmin]): `document("")` يرمي
+        // IllegalArgumentException **متزامناً** فلا يلتقطه `runCatching` الذي
+        // يلفّ `await()` عند المستدعي ⇒ انهيار اللوحة بدل رسالة.
+        if (id.isEmpty()) return
         db.collection(DASH_COL).document(id).update(
             mapOf(
                 "blocked" to blocked,
@@ -163,6 +180,8 @@ object AdminRepository {
 
     suspend fun removeDashAdmin(email: String) {
         val id = email.trim().lowercase()
+        // نفس حارس [setDashAdminBlocked]: بريد فارغ ⇒ استثناء متزامن ⇒ انهيار.
+        if (id.isEmpty()) return
         db.collection(DASH_COL).document(id).delete().await()
     }
 

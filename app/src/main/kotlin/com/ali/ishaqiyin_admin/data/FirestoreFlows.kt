@@ -3,6 +3,7 @@ package com.ali.ishaqiyin_admin.data
 import android.util.Log
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.QuerySnapshot
@@ -10,6 +11,8 @@ import kotlinx.coroutines.channels.ProducerScope
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import java.util.Collections
@@ -17,6 +20,14 @@ import java.util.Collections
 private const val TAG = "FirestoreFlows"
 private const val RELISTEN_MIN_MS = 2_000L
 private const val RELISTEN_MAX_MS = 30_000L
+
+/**
+ * ⛔ سقف محاولات رفض الصلاحيّة: `PERMISSION_DENIED` المتكرّر ليس عطلاً عابراً
+ * بل حالة دائمة (مشرف حُظر أو أُلغي اعتماده واللوحة مفتوحة)، وكانت إعادة
+ * الربط تدور كل 30 ثانية إلى الأبد — استنزاف بطارية وبيانات بلا تعافٍ ممكن.
+ * بعد هذا العدد يتوقّف التكرار وتُرفع راية [FirestoreListenerState.permissionDenied].
+ */
+private const val PERMISSION_DENIED_MAX_RETRIES = 2
 
 /*
  * تسليم خطأ إلى مستمع Firestore عمليّة **نهائيّة**: يزيل الـSDK الهدف ولا يصل
@@ -28,6 +39,31 @@ private const val RELISTEN_MAX_MS = 30_000L
  * فور عودة الصلاحيّة أو الشبكة.
  */
 
+/**
+ * 🚩 إبلاغ الطبقة الأعلى بسحب الصلاحية بلا إسقاط التطبيق.
+ *
+ * ⛔ لا يجوز `close(error)`: تسليم الاستثناء إلى الجامعين يُسقط اللوحة (وهي
+ * العلّة التي عولجت أصلاً بإعادة الربط، ولا جامعَ واحد في المشروع يلفّ تدفّقه
+ * بـ`catch`). لذا يُوقَف التكرار وتُرفع رايةٌ يمكن للواجهة مراقبتها فتعرض
+ * [PERMISSION_DENIED_MESSAGE] بدل التجمّد الصامت.
+ */
+object FirestoreListenerState {
+    const val PERMISSION_DENIED_MESSAGE =
+        "لم تعد تملك صلاحية عرض هذه البيانات. سجّل الخروج ثم الدخول، أو راجع المالك."
+
+    private val _permissionDenied = MutableStateFlow(false)
+    val permissionDenied: StateFlow<Boolean> = _permissionDenied
+
+    internal fun markPermissionDenied() {
+        _permissionDenied.value = true
+    }
+
+    /** تُنادى بعد إعادة الدخول أو استعادة الاعتماد. */
+    fun clear() {
+        _permissionDenied.value = false
+    }
+}
+
 /** يربط مستمعاً يعيد ربط نفسه بعد أيّ خطأ، ويُرجع أداة تنظيف كلّ التسجيلات. */
 private fun <T> ProducerScope<T>.reattachingListener(
     label: String,
@@ -35,6 +71,7 @@ private fun <T> ProducerScope<T>.reattachingListener(
 ): () -> Unit {
     val registrations = Collections.synchronizedList(mutableListOf<ListenerRegistration>())
     var backoffMs = RELISTEN_MIN_MS
+    var deniedCount = 0
 
     fun detachAll() {
         val dead = synchronized(registrations) {
@@ -48,6 +85,17 @@ private fun <T> ProducerScope<T>.reattachingListener(
     fun attach() {
         registrations += listen { value, error ->
             if (error != null) {
+                val denied = (error as? FirebaseFirestoreException)?.code ==
+                    FirebaseFirestoreException.Code.PERMISSION_DENIED
+                if (denied) deniedCount++ else deniedCount = 0
+                if (denied && deniedCount > PERMISSION_DENIED_MAX_RETRIES) {
+                    // رفضٌ دائم: لا فائدة من محاولة أخرى — نُبلّغ الطبقة الأعلى
+                    // بدل الدوران أبداً على حساب البطارية والبيانات.
+                    Log.w(TAG, "رفض دائم لصلاحية مستمع $label — إيقاف إعادة الربط", error)
+                    detachAll()
+                    FirestoreListenerState.markPermissionDenied()
+                    return@listen
+                }
                 Log.w(TAG, "خطأ في مستمع $label — إعادة الربط بعد ${backoffMs}ms", error)
                 detachAll()
                 val wait = backoffMs

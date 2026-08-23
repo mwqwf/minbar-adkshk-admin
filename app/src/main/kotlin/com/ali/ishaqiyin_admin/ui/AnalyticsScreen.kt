@@ -247,7 +247,7 @@ fun AnalyticsScreen(
                         rank = i + 1,
                         email = email,
                         member = memberFor(members, email),
-                        trailing = "$count درساً · $views استماع",
+                        trailing = "${lessonsCountLabel(count)} · $views استماع",
                     )
                 }
             }

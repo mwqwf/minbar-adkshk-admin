@@ -144,7 +144,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
     if (emptying) {
         ConfirmDialog(
             title = "تفريغ السلة كاملةً؟",
-            body = "⚠️ سيُحذف ${items.size} درساً وملفاتها الصوتية نهائياً " +
+            body = "⚠️ سيُحذف ${lessonsCountLabel(items.size)} وملفاتها الصوتية نهائياً " +
                 "ولا يمكن استعادة أي منها بعدها أبداً.\n\nهذا الإجراء للمالك فقط.",
             confirmLabel = "تفريغ نهائي",
             onDismiss = { emptying = false },
@@ -154,7 +154,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                 player.stop()
                 run("") {
                     val purged = TrashRepository.emptyAll()
-                    snack("فُرّغت السلة — حُذف $purged درساً نهائياً.")
+                    snack("فُرّغت السلة — حُذف ${lessonsCountLabel(purged)} نهائياً.")
                 }
             },
         )
@@ -273,7 +273,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                                     .padding(horizontal = 8.dp, vertical = 3.dp),
                             ) {
                                 Text(
-                                    "${item.daysLeft} يوماً",
+                                    arabicCount(item.daysLeft, "يوم واحد", "يومان", "أيام", "يوماً"),
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = deadline,

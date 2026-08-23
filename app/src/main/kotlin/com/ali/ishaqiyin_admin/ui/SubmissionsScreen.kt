@@ -226,7 +226,7 @@ private fun BulkDecisionBar(
                         if (selectMode) {
                             "اختير $selectedCount من $pendingVisible معلّقة"
                         } else {
-                            "$pendingVisible مساهمة بانتظار قرارك"
+                            "${arabicCount(pendingVisible, "مساهمة واحدة", "مساهمتان", "مساهمات", "مساهمة")} بانتظار قرارك"
                         },
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
@@ -382,13 +382,19 @@ private fun AudioSubmissionsContent(targetId: String = "") {
     val listState = rememberLazyListState()
     var highlighted by remember { mutableStateOf("") }
     var seeked by remember { mutableStateOf(false) }
-    LaunchedEffect(targetId, shown.size) {
+    // ⛔ كان shown.size ضمن المفاتيح: أيّ لقطة Firestore جديدة خلال مدّة
+    // التمييز تُعيد تشغيل الأثر فيرتدّ عند `seeked` قبل تصفير highlighted
+    // ⇒ يبقى التمييز إلى نهاية عمر الشاشة. فُصل التصفير في أثر مستقلّ.
+    LaunchedEffect(targetId, shown.isNotEmpty()) {
         if (targetId.isEmpty() || seeked) return@LaunchedEffect
         val index = shown.indexOfFirst { it.id == targetId }
         if (index < 0) return@LaunchedEffect
         seeked = true
         listState.animateScrollToItem(index)
         highlighted = targetId
+    }
+    LaunchedEffect(highlighted) {
+        if (highlighted.isEmpty()) return@LaunchedEffect
         delay(HIGHLIGHT_MS)
         highlighted = ""
     }
@@ -403,6 +409,10 @@ private fun AudioSubmissionsContent(targetId: String = "") {
             try {
                 action()
                 if (doneMsg.isNotEmpty()) snack(doneMsg)
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                // ⛔ الإلغاء ليس خطأً: ابتلاعه كان يعرض رسالة فشل عند مجرّد
+                // مغادرة الشاشة. يُعاد رميه كما في AddLessonScreen.
+                throw cancel
             } catch (e: Exception) {
                 snack(e.arabicReason())
             }
@@ -416,9 +426,9 @@ private fun AudioSubmissionsContent(targetId: String = "") {
         bulkBusy = false
         snack(
             if (failed > 0) {
-                "$label $done مساهمة، وأخفقت $failed — أعد المحاولة عليها."
+                "$label ${arabicCount(done, "مساهمة واحدة", "مساهمتين", "مساهمات", "مساهمة")}، وأخفقت $failed — أعد المحاولة عليها."
             } else {
-                "$label $done مساهمة دفعة واحدة. ✅"
+                "$label ${arabicCount(done, "مساهمة واحدة", "مساهمتين", "مساهمات", "مساهمة")} دفعة واحدة. ✅"
             },
         )
     }
@@ -502,7 +512,7 @@ private fun AudioSubmissionsContent(targetId: String = "") {
         val targets = chosen.toList()
         ConfirmDialog(
             title = "نشر المحدَّد؟",
-            body = "سيُنشر ${targets.size} درساً دفعة واحدة كما هي (بلا تعديل " +
+            body = "سيُنشر ${lessonsCountLabel(targets.size)} دفعة واحدة كما هي (بلا تعديل " +
                 "عنوان أو قسم)، ويصل كل مساهم إشعار شكر.",
             confirmLabel = "نشر المحدَّد",
             onDismiss = { confirmBulkPublish = false },
@@ -876,13 +886,19 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
     val listState = rememberLazyListState()
     var highlighted by remember { mutableStateOf("") }
     var seeked by remember { mutableStateOf(false) }
-    LaunchedEffect(targetId, shown.size) {
+    // ⛔ كان shown.size ضمن المفاتيح: أيّ لقطة Firestore جديدة خلال مدّة
+    // التمييز تُعيد تشغيل الأثر فيرتدّ عند `seeked` قبل تصفير highlighted
+    // ⇒ يبقى التمييز إلى نهاية عمر الشاشة. فُصل التصفير في أثر مستقلّ.
+    LaunchedEffect(targetId, shown.isNotEmpty()) {
         if (targetId.isEmpty() || seeked) return@LaunchedEffect
         val index = shown.indexOfFirst { it.id == targetId }
         if (index < 0) return@LaunchedEffect
         seeked = true
         listState.animateScrollToItem(index)
         highlighted = targetId
+    }
+    LaunchedEffect(highlighted) {
+        if (highlighted.isEmpty()) return@LaunchedEffect
         delay(HIGHLIGHT_MS)
         highlighted = ""
     }
@@ -909,6 +925,10 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
                 action()
                 after()
                 if (doneMsg.isNotEmpty()) snack(doneMsg)
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                // ⛔ الإلغاء ليس خطأً: ابتلاعه كان يعرض رسالة فشل عند مجرّد
+                // مغادرة الشاشة. يُعاد رميه كما في AddLessonScreen.
+                throw cancel
             } catch (e: Exception) {
                 snack(e.arabicReason())
             }
@@ -922,9 +942,9 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
         bulkBusy = false
         val extra = buildString {
             if (failed > 0) append("، وأخفقت $failed")
-            if (skipped > 0) append("، وتُخطّي $skipped لأن درسها حُسم في الدفعة نفسها")
+            if (skipped > 0) append("، وتُخُطّي $skipped لأن درسها حُسم في الدفعة نفسها")
         }
-        snack("$label $done اقتراحاً$extra.")
+        snack("$label ${arabicCount(done, "اقتراحاً واحداً", "اقتراحين", "اقتراحات", "اقتراحاً")}$extra.")
     }
 
     /**
@@ -1045,13 +1065,16 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
         ConfirmDialog(
             title = "اعتماد المحدَّد؟",
             body = buildString {
-                append("سيُعتمد ${targets.size} اقتراحاً كما هو ويصل كل مساهم إشعار شكر.")
+                append(
+                    "سيُعتمد ${arabicCount(targets.size, "اقتراح واحد", "اقتراحان", "اقتراحات", "اقتراحاً")} " +
+                        "كما هو ويصل كل مساهم إشعار شكر.",
+                )
                 if (replaced > 0) {
                     append("\n\n⚠️ $replaced منها لدروس لها نص معتمد سابق سيُستبدل.")
                 }
                 if (duplicated > 0) {
                     append(
-                        "\n\n⚠️ $duplicated اقتراحاً يخصّ درساً محدَّداً مرّتين — " +
+                        "\n\n⚠️ ${arabicCount(duplicated, "اقتراح واحد", "اقتراحان", "اقتراحات", "اقتراحاً")} يخصّ درساً محدَّداً مرّتين — " +
                             "سيُعتمد الأوّل وحده ويُتخطّى الباقي كي لا يُمحى ما اعتُمد للتوّ.",
                     )
                 }

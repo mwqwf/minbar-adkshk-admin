@@ -95,8 +95,11 @@ fun SupervisorsScreen(onBack: () -> Unit) {
         loading = false
     }
 
-    val myEmail = AuthService.currentUser?.email.orEmpty().lowercase()
-    fun canActOn(a: DashAdmin): Boolean = !a.isOwner && a.email != myEmail
+    // ⛔ كان myEmail وحده مُصغَّراً بينما a.email يُقارَن خاماً، فبريد فيه حرف
+    // كبير يُسقط المقارنة ويجعل المالك قادراً على حظر/حذف حسابه نفسه.
+    val myEmail = AuthService.currentUser?.email.orEmpty().trim().lowercase()
+    fun canActOn(a: DashAdmin): Boolean =
+        !a.isOwner && a.email.trim().lowercase() != myEmail
 
     val scheme = MaterialTheme.colorScheme
     val dark = isAdminDarkTheme()
@@ -118,15 +121,29 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                 pending = null
                 busyEmail = action.admin.email
                 scope.launch {
-                    try {
+                    // ⛔ كانا في try واحد: فشل إزالة العضويّة كان يُظهر «تعذّر
+                    // التعديل» بعد نجاح الحظر، فيظنّ المالك أنّ الحظر لم يقع
+                    // ويعيده، والمحظور باقٍ في مجموعة الدردشة. رسالتان دقيقتان.
+                    val blocked = try {
                         AdminRepository.setDashAdminBlocked(
                             action.admin.email,
                             true,
                             mode = action.mode,
                         )
-                        ChatRepository.removeMemberByEmail(action.admin.email)
+                        true
                     } catch (e: Exception) {
-                        snack("تعذّر التعديل: ${e.arabicReason()}")
+                        snack("تعذّر الحظر: ${e.arabicReason()}")
+                        false
+                    }
+                    if (blocked) {
+                        try {
+                            ChatRepository.removeMemberByEmail(action.admin.email)
+                        } catch (e: Exception) {
+                            snack(
+                                "تمّ الحظر، لكن تعذّرت إزالته من مجموعة الدردشة: " +
+                                    e.arabicReason(),
+                            )
+                        }
                     }
                     busyEmail = null
                     reload++
@@ -146,11 +163,23 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                 pending = null
                 busyEmail = action.admin.email
                 scope.launch {
-                    try {
+                    // نفس العلّة: فصل الحذف عن إزالة العضويّة برسالتين دقيقتين.
+                    val removed = try {
                         AdminRepository.removeDashAdmin(action.admin.email)
-                        ChatRepository.removeMemberByEmail(action.admin.email)
+                        true
                     } catch (e: Exception) {
                         snack("تعذّر الحذف: ${e.arabicReason()}")
+                        false
+                    }
+                    if (removed) {
+                        try {
+                            ChatRepository.removeMemberByEmail(action.admin.email)
+                        } catch (e: Exception) {
+                            snack(
+                                "تمّ الحذف، لكن تعذّرت إزالته من مجموعة الدردشة: " +
+                                    e.arabicReason(),
+                            )
+                        }
                     }
                     busyEmail = null
                     reload++

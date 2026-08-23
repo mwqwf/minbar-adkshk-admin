@@ -146,7 +146,7 @@ fun FeaturedScreen(onBack: () -> Unit) {
         val batch = expired
         ConfirmDialog(
             title = "تنظيف المنتهية؟",
-            body = "سيُزال التمييز عن ${batch.size} درساً انتهت مدّتها، فتسقط " +
+            body = "سيُزال التمييز عن ${lessonsCountLabel(batch.size)} انتهت مدّتها، فتسقط " +
                 "من مختارات المنبر في التطبيق العام. الدروس نفسها لا تُحذف.",
             confirmLabel = "نظّف ${batch.size}",
             confirmColor = adminOrange,
@@ -246,7 +246,7 @@ fun FeaturedScreen(onBack: () -> Unit) {
                         Spacer(Modifier.size(10.dp))
                         Column {
                             Text(
-                                "${active.size} درساً في مختارات المنبر",
+                                "${lessonsCountLabel(active.size)} في مختارات المنبر",
                                 color = bannerInk,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp,

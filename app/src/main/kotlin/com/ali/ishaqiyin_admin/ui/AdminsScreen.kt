@@ -194,8 +194,12 @@ private fun PendingOwnerCodeCards() {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var confirmCancel by remember { mutableStateOf<PendingOwnerCode?>(null) }
 
-    LaunchedEffect(Unit) {
-        while (true) {
+    // 🔋 كانت حلقة دائمة تُبطل التركيب 60 مرّة/دقيقة حتى بلا رمز واحد
+    // معلَّق. الآن تعمل فقط ما دام هناك رمز لم تنتهِ مدّته (العدّاد بالثواني
+    // فتبقى الفترة ثانية واحدة ما دام يعمل).
+    val counting = codes.any { it.expiresAtMs > now }
+    LaunchedEffect(counting) {
+        while (counting) {
             delay(1000)
             now = System.currentTimeMillis()
         }

@@ -668,16 +668,21 @@ class LessonUploadWorker(
                 Log.i(TAG, "pause() kept session=$session")
                 if (cont.isActive) cont.resumeWithException(UploadPausedException())
             }
+            // 🛡️ حارس `isActive` في المستمعين الثلاثة لا في مستمع الإيقاف وحده:
+            // المستمعات تعمل على المنفّذ نفسه لكنّ Firebase قد يطلق أكثر من
+            // مخرج للمهمّة الواحدة (إيقافٌ ثم اكتمالُ ما تبقّى مثلاً)، فيُستأنف
+            // المتّصل مرّتين ⇒ IllegalStateException غير ملتقَط على خيط الرفع
+            // ⇒ انهيار اللوحة أثناء الرفع.
             task.addOnSuccessListener(listenerExecutor) {
                 UploadQueue.endTransfer()
-                cont.resume(Unit)
+                if (cont.isActive) cont.resume(Unit)
             }
             task.addOnFailureListener(listenerExecutor) {
                 // الفشل قد يقع بين إنشاء الجلسة وأوّل نبضة — تُلتقط هنا فلا
                 // يعود الرفع من الصفر لمجرّد أنّ النبضة الأولى لم تصل.
                 runCatching { keepSession(task.snapshot.uploadSessionUri) }
                 UploadQueue.endTransfer()
-                cont.resumeWithException(it)
+                if (cont.isActive) cont.resumeWithException(it)
             }
             // ⛔ `pause()` لا `cancel()`: `cancel()` يرسل
             // `ResumableUploadCancelRequest` إلى الخادم فيمحو الجلسة، فيبقى

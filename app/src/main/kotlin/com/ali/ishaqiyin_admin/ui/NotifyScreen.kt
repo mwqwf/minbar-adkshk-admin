@@ -138,9 +138,9 @@ fun NotifyScreen(onBack: () -> Unit) {
                                 sent == null ->
                                     "تم إرسال الإشعار إلى كل مستخدمي التطبيق."
                                 failed > 0 ->
-                                    "تم الإرسال إلى $sent جهاز، وتعذّر على $failed."
+                                    "تم الإرسال إلى ${arabicCount(sent, "جهاز واحد", "جهازين", "أجهزة", "جهازاً")}، وتعذّر على $failed."
                                 else ->
-                                    "تم الإرسال إلى $sent جهاز."
+                                    "تم الإرسال إلى ${arabicCount(sent, "جهاز واحد", "جهازين", "أجهزة", "جهازاً")}."
                             }
                         } catch (e: CancellationException) {
                             sending = false

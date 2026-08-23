@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import com.ali.ishaqiyin_admin.data.guessContentType
 import kotlinx.coroutines.Dispatchers
@@ -18,7 +19,14 @@ data class PickedFile(
     val size: Long,
 )
 
-/** يقرأ الاسم والحجم من ContentResolver (بديل file_picker). */
+/**
+ * يقرأ الاسم والحجم من ContentResolver (بديل file_picker).
+ *
+ * ⚠️ نداء تزامنيّ: `contentResolver.query` يعبر حدود العمليات إلى مزوّد
+ * المحتوى، ومع اختيار خمسين ملفاً دفعةً واحدة كان استدعاؤه على خيط الواجهة
+ * يجمّدها (خطر ANR). استعمل [pickedFileFromIo] من كوروتين حيثما أمكن؛ هذه
+ * النسخة باقية لتوافق المستدعين في `ui/` فقط.
+ */
 fun Context.pickedFileFrom(uri: Uri): PickedFile {
     var name = ""
     var size = 0L
@@ -37,6 +45,15 @@ fun Context.pickedFileFrom(uri: Uri): PickedFile {
     return PickedFile(uri = uri, name = name, size = size)
 }
 
+/** النسخة الآمنة: نفس القراءة لكن على [Dispatchers.IO] بعيداً عن خيط الواجهة. */
+suspend fun Context.pickedFileFromIo(uri: Uri): PickedFile = withContext(Dispatchers.IO) {
+    pickedFileFrom(uri)
+}
+
+/** النسخة الآمنة لقراءة دفعة كاملة: استعلام واحد لكل Uri على خيط خلفيّ. */
+suspend fun Context.pickedFilesFromIo(uris: List<Uri>): List<PickedFile> =
+    withContext(Dispatchers.IO) { uris.map { pickedFileFrom(it) } }
+
 /** ينسخ محتوى Uri إلى ملفّ في cache (يلزم لدمج MP3 الذي يقرأ البايتات). */
 suspend fun Context.copyUriToCache(uri: Uri, name: String): File = withContext(Dispatchers.IO) {
     val dir = File(cacheDir, "picked").apply { mkdirs() }
@@ -50,12 +67,21 @@ suspend fun Context.copyUriToCache(uri: Uri, name: String): File = withContext(D
 
 /** يفتح ملفاً محليّاً بتطبيق النظام المناسب (بديل open_filex). */
 fun Context.openLocalFile(file: File, mimeType: String? = null) {
-    val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-    val intent = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(uri, mimeType ?: guessContentType(file.name))
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+    // 🛡️ `getUriForFile` ترمي IllegalArgumentException لأيّ ملفّ خارج المسارات
+    // المصرَّح بها في `file_paths.xml`، وكانت خارج `runCatching` الذي يلفّ
+    // `startActivity` وحده ⇒ انهيار اللوحة بدل رسالة مفهومة.
+    val opened = runCatching {
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mimeType ?: guessContentType(file.name))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+    }.isSuccess
+    if (!opened) {
+        Toast.makeText(this, "تعذّر فتح الملفّ — لا تطبيق مناسب لهذا النوع.", Toast.LENGTH_SHORT)
+            .show()
     }
-    runCatching { startActivity(intent) }
 }
 
 /** يفتح رابطاً/بريداً/هاتفاً بتطبيق خارجي (بديل url_launcher). */
@@ -68,7 +94,12 @@ fun Context.openExternalUri(uri: Uri): Boolean = try {
     false
 }
 
-/** يستخرج ملفّات الصوت المشتركة من نيّة SEND / SEND_MULTIPLE. */
+/**
+ * يستخرج ملفّات الصوت المشتركة من نيّة SEND / SEND_MULTIPLE.
+ *
+ * ⚠️ تزامنيّة (استعلام ContentResolver لكل Uri) — انظر [pickedFileFrom].
+ * الأفضل [sharedAudioFromIo] من كوروتين.
+ */
 fun Context.sharedAudioFrom(intent: Intent?): List<PickedFile> {
     if (intent == null) return emptyList()
     val uris = when (intent.action) {
@@ -96,3 +127,7 @@ fun Context.sharedAudioFrom(intent: Intent?): List<PickedFile> {
     }
     return uris.map { pickedFileFrom(it) }
 }
+
+/** النسخة الآمنة: نفس الاستخراج لكن على [Dispatchers.IO] بعيداً عن خيط الواجهة. */
+suspend fun Context.sharedAudioFromIo(intent: Intent?): List<PickedFile> =
+    withContext(Dispatchers.IO) { sharedAudioFrom(intent) }

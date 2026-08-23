@@ -51,6 +51,9 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
     var subCategoryId by remember { mutableStateOf<String?>(null) }
     var busyCat by remember { mutableStateOf(false) }
     var busySub by remember { mutableStateOf(false) }
+    // ⛔ كان runCatching بلا onFailure: فشل الجلب يُبتلَع فتبقى القائمتان
+    // فارغتين بلا رسالة، ويمرّ حارس التكرار المبنيّ عليهما ⇒ أقسام مكرّرة.
+    var listsLoaded by remember { mutableStateOf(false) }
 
     suspend fun refreshCategories() {
         runCatching {
@@ -58,6 +61,11 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
             // تُجلب الفرعية أيضاً لمنع تكرار اسم داخل القسم الرئيسي نفسه.
             subcategories = AdminRepository.fetchSubcategories()
         }
+            .onSuccess { listsLoaded = true }
+            .onFailure {
+                listsLoaded = false
+                snack("تعذّر تحميل الأقسام: ${it.arabicReason()}. الإنشاء معطّل حتى ينجح التحميل.")
+            }
     }
 
     LaunchedEffect(Unit) { refreshCategories() }
@@ -125,7 +133,8 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                                 busyCat = false
                             }
                         },
-                        enabled = !busyCat,
+                        // الإنشاء معطّل ما لم تُحمَّل القوائم: حارس التكرار أعمى بدونها.
+                        enabled = !busyCat && listsLoaded,
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
@@ -209,7 +218,7 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                                 busySub = false
                             }
                         },
-                        enabled = !busySub,
+                        enabled = !busySub && listsLoaded,
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,

@@ -3,6 +3,7 @@ package com.ali.ishaqiyin_admin.data
 import com.google.firebase.firestore.AggregateSource
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
 import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -72,12 +73,22 @@ object TrashRepository {
 
     // فكّ الترميز والفرز خارج الخيط الرئيسي: وثيقة كل درس محذوف تحمل نسخته
     // كاملةً بنصّه المشروح، وكانت تُفكّ في سياق الجامع (Main) فتُقطّع الحركة.
+    /** سقف ما يُنزَّل ويُبثّ حيّاً من السلة دفعةً واحدة. */
+    private const val WATCH_LIMIT = 100L
+
+    // ⚠️ كان مستمعاً حيّاً على `deleted_lessons` **كاملةً** بلا حدّ، وكل وثيقة
+    // تحمل الدرس بنصّه المشروح كاملاً — تنزيلٌ يكبر بلا سقف مع كل حذف،
+    // ويُعاد فكّ ترميزه مع كل لقطة. الحدّ مع ترتيب خادميّ بالأحدث يُبقي
+    // الشاشة معبّرة وخفيفة معاً.
     fun watchAll(): Flow<List<TrashedLesson>> =
-        db.collection(COLLECTION).querySnapshots().map { snap ->
-            snap.documents
-                .map { TrashedLesson.fromDoc(it) }
-                .sortedByDescending { it.deletedAtMs }
-        }.flowOn(Dispatchers.Default)
+        db.collection(COLLECTION)
+            .orderBy("deletedAtMs", Query.Direction.DESCENDING)
+            .limit(WATCH_LIMIT)
+            .querySnapshots().map { snap ->
+                snap.documents
+                    .map { TrashedLesson.fromDoc(it) }
+                    .sortedByDescending { it.deletedAtMs }
+            }.flowOn(Dispatchers.Default)
 
     /**
      * عدد ما في السلة — استعلام **عدّ خادميّ** خفيف لا يجلب الوثائق.

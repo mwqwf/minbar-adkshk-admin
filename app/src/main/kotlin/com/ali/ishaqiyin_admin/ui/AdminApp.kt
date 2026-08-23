@@ -520,7 +520,7 @@ private fun ShareDestinationSheets(nav: NavHostController) {
     val label = if (incoming.size == 1) {
         incoming.first().name
     } else {
-        "${incoming.size} ملفّات"
+        filesCountLabel(incoming.size)
     }
 
     // ⚠️ النسخ إلى الكاش قبل الرفع مقصود: إذن قراءة الـUri الوارد مع

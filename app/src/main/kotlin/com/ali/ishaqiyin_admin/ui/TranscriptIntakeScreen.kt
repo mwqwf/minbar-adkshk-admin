@@ -108,7 +108,7 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
         Column(Modifier.padding(padding).fillMaxSize()) {
             Text(
                 if (payload.images.isNotEmpty()) {
-                    "وصلت ${payload.images.size} صورة من المشاركة — اختر الدرس " +
+                    "وصلت ${imagesCountLabel(payload.images.size)} من المشاركة — اختر الدرس " +
                         "الذي تشرح صفحاته هذه الصور."
                 } else if (payload.text.isNotBlank()) {
                     "وصل نص من المشاركة — اختر الدرس الذي يشرحه."

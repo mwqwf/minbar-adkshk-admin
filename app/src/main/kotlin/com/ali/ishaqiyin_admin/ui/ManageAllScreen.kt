@@ -86,6 +86,10 @@ fun ManageAllScreen(onBack: () -> Unit) {
     // المجموعتين معه قراءات مدفوعة بلا فائدة.
     var reloadLessons by remember { mutableIntStateOf(0) }
     var pending by remember { mutableStateOf<PendingAction?>(null) }
+    // ⛔ فشل الجلب كان يترك القوائم فارغة، فيحسب حوار الحذف التعاقبيّ «0 قسماً
+    // و0 درساً» ويطمئنّ المشرف بينما الخادم يمحو كلّ المحتوى. هذا العلم يمنع
+    // التأكيد ما لم يكن آخر جلب ناجحاً.
+    var scopeKnown by remember { mutableStateOf(false) }
 
     LaunchedEffect(reload) {
         loading = true
@@ -93,7 +97,12 @@ fun ManageAllScreen(onBack: () -> Unit) {
             categories = AdminRepository.fetchCategories()
             subcategories = AdminRepository.fetchSubcategories()
             lessons = AdminRepository.fetchLessons()
-        }.onFailure { snack("تعذّر تحميل المحتوى: ${it.arabicReason()}") }
+        }
+            .onSuccess { scopeKnown = true }
+            .onFailure {
+                scopeKnown = false
+                snack("تعذّر تحميل المحتوى: ${it.arabicReason()}")
+            }
         loading = false
     }
 
@@ -101,7 +110,10 @@ fun ManageAllScreen(onBack: () -> Unit) {
         // الصفر هو التركيب الأوّل — الجلب الكامل أعلاه كفيل به.
         if (reloadLessons == 0) return@LaunchedEffect
         runCatching { lessons = AdminRepository.fetchLessons() }
-            .onFailure { snack("تعذّر تحديث الدروس: ${it.arabicReason()}") }
+            .onFailure {
+                scopeKnown = false
+                snack("تعذّر تحديث الدروس: ${it.arabicReason()}")
+            }
         loading = false
     }
 
@@ -237,11 +249,16 @@ fun ManageAllScreen(onBack: () -> Unit) {
             }
             ConfirmDialog(
                 title = "تأكيد الحذف",
-                body = "هل أنت متأكد من حذف \"${action.item.name}\"؟\n\n" +
-                    "سيُحذف ${doomedSubs.size} قسماً فرعياً و$doomedLessons درساً، " +
+                // ⚠️ حين يفشل الجلب تكون الأعداد أدناه صفرية كاذبة، فيُصدَّر التحذير أوّلاً.
+                body = (if (!scopeKnown) "⚠️ تعذّر حساب مدى الحذف — لا تتابع. أعد التحميل ثمّ حاول.\n\n" else "") +
+                    "هل أنت متأكد من حذف \"${action.item.name}\"؟\n\n" +
+                    "سيُحذف ${arabicCount(doomedSubs.size, "قسم فرعيّ واحد", "قسمان فرعيّان", "أقسام فرعيّة", "قسماً فرعيّاً")} " +
+                    "و${lessonsCountLabel(doomedLessons)}، " +
                     "وملفاتها الصوتية من التخزين نهائياً. لا يمكن التراجع.",
                 confirmLabel = "حذف",
                 confirmColor = MaterialTheme.colorScheme.error,
+                // ⛔ الحذف التعاقبيّ لا يُؤكَّد ومداه مجهول.
+                confirmEnabled = scopeKnown,
                 onDismiss = { pending = null },
                 onConfirm = {
                     pending = null
@@ -260,11 +277,16 @@ fun ManageAllScreen(onBack: () -> Unit) {
             val doomedLessons = lessons.count { it.subcategoryId == action.item.id }
             ConfirmDialog(
                 title = "تأكيد الحذف",
-                body = "هل أنت متأكد من حذف \"${action.item.name}\"؟\n\n" +
-                    "سيُحذف $doomedLessons درساً وملفاتها الصوتية من التخزين نهائياً. " +
+                // ⚠️ حين يفشل الجلب تكون الأعداد أدناه صفرية كاذبة، فيُصدَّر التحذير أوّلاً.
+                body = (if (!scopeKnown) "⚠️ تعذّر حساب مدى الحذف — لا تتابع. أعد التحميل ثمّ حاول.\n\n" else "") +
+                    "هل أنت متأكد من حذف \"${action.item.name}\"؟\n\n" +
+                    "سيُحذف ${lessonsCountLabel(doomedLessons)} " +
+                    "وملفاتها الصوتية من التخزين نهائياً. " +
                     "لا يمكن التراجع.",
                 confirmLabel = "حذف",
                 confirmColor = MaterialTheme.colorScheme.error,
+                // ⛔ الحذف التعاقبيّ لا يُؤكَّد ومداه مجهول.
+                confirmEnabled = scopeKnown,
                 onDismiss = { pending = null },
                 onConfirm = {
                     pending = null
@@ -463,7 +485,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                         if (!hasQuery && !hasFilter) {
                             item {
                                 Text(
-                                    "أحدث ${foundLessons.size} درساً — ابحث بأي كلمة أو رقم، " +
+                                    "أحدث ${arabicCount(foundLessons.size, "درس", "درسين", "دروس", "درساً")} — ابحث بأي كلمة أو رقم، " +
                                         "أو اختر قسماً لعرض دروسه (مثال: «3 الفقه»).",
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,

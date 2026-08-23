@@ -122,7 +122,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
         val count = items.size
         ConfirmDialog(
             title = "اعتماد كل المعروض؟",
-            body = "سيُعلَّم $count درساً بأنك راجعتَها وتحقّقتَ منها دفعة واحدة، "
+            body = "سيُعلَّم ${lessonsCountLabel(count)} بأنك راجعتَها وتحقّقتَ منها دفعة واحدة، "
                 + "وتختفي من هذه الشاشة ومن تنبيهاتك. لا يُحذف أيّ درس.",
             confirmLabel = "اعتماد الكل",
             confirmColor = MaterialTheme.colorScheme.primary,
@@ -142,10 +142,10 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                         player.stop()
                         snack(
                             if (result.missingLessons > 0) {
-                                "اعتُمد ${result.verified} درساً " +
+                                "اعتُمد ${lessonsCountLabel(result.verified)} " +
                                     "(${result.missingLessons} منها لدرس محذوف)."
                             } else {
-                                "اعتُمد ${result.verified} درساً دفعة واحدة."
+                                "اعتُمد ${lessonsCountLabel(result.verified)} دفعة واحدة."
                             },
                         )
                     } catch (e: Exception) {
@@ -169,7 +169,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                             val count = OwnerReviewRepository.scanAll()
                             snack(
                                 if (count > 0) {
-                                    "اكتمل الفحص: أضيف $count درساً للمراجعة."
+                                    "اكتمل الفحص: أُضيف ${lessonsCountLabel(count)} للمراجعة."
                                 } else {
                                     "اكتمل الفحص ولم تُكتشف نتائج جديدة."
                                 },
@@ -239,9 +239,9 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                                     // التقدّم تحته — نعرض إجمالي الدفعة بدله.
                                     Text(
                                         if (bulkBusy) {
-                                            "$bulkTotal درساً قيد الاعتماد"
+                                            "${lessonsCountLabel(bulkTotal)} قيد الاعتماد"
                                         } else {
-                                            "${items.size} درساً بانتظار قرارك"
+                                            "${lessonsCountLabel(items.size)} بانتظار قرارك"
                                         },
                                         fontWeight = FontWeight.Bold,
                                     )

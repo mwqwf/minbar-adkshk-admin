@@ -209,8 +209,8 @@ fun RecordSheet(onDismiss: () -> Unit, onRecorded: (File, String) -> Unit) {
             Text(timeLabel, fontSize = 34.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
             Text(
                 when {
-                    recording && paused -> "موقوف مؤقتاً"
-                    recording -> "جارٍ التسجيل..."
+                    recording && paused -> "موقوف مؤقّتاً"
+                    recording -> "جارٍ التسجيل…"
                     done -> "انتهى التسجيل — جاهز للرفع"
                     else -> "اضغط للبدء"
                 },

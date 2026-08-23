@@ -110,7 +110,7 @@ fun FirebaseFirestoreException.arabicReason(): String = when (code) {
     FirebaseFirestoreException.Code.INVALID_ARGUMENT ->
         "البيانات المُرسَلة ناقصة أو غير صالحة. راجعها ثم أعد المحاولة."
     FirebaseFirestoreException.Code.OUT_OF_RANGE ->
-        "قيمة خارج المدى المسموح."
+        "قيمة خارج المدى المسموح به."
     FirebaseFirestoreException.Code.UNIMPLEMENTED ->
         "هذه العملية غير مدعومة."
     else ->
@@ -135,9 +135,9 @@ fun StorageException.arabicReason(): String = when (errorCode) {
     StorageException.ERROR_INVALID_CHECKSUM ->
         "تلِف الملفّ أثناء النقل. أعد المحاولة."
     StorageException.ERROR_CANCELED ->
-        "أُلغيت عملية الملفّ قبل اكتمالها."
+        "أُلغي نقل الملفّ قبل اكتماله."
     else ->
-        "تعذّر إتمام عملية الملفّ في التخزين. أعد المحاولة."
+        "تعذّر إتمام نقل الملفّ إلى التخزين. أعد المحاولة."
 }
 
 /** نطاق الحروف العربية الأساسي U+0600..U+06FF (بلا حروف حرفية في الكود). */

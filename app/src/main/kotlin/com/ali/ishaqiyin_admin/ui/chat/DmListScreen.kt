@@ -57,6 +57,7 @@ import com.ali.ishaqiyin_admin.ui.AdminScaffold
 import com.ali.ishaqiyin_admin.ui.ConfirmDialog
 import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.Routes
+import com.ali.ishaqiyin_admin.ui.messagesCountLabel
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -172,7 +173,7 @@ fun ChatsHomeScreen(nav: NavHostController, onBack: () -> Unit) {
                 confirmPurge = null
                 scope.launch {
                     runCatching { DmRepository.deleteThreadForEveryone(id) }
-                        .onSuccess { snack("مُحيت المحادثة ومحتواها ($it رسالة).") }
+                        .onSuccess { snack("مُحيت المحادثة ومحتواها (${messagesCountLabel(it)}).") }
                         .onFailure { snack("تعذّر المحو: ${it.arabicReason()}") }
                 }
             },

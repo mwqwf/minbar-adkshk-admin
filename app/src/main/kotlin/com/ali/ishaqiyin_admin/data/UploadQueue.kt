@@ -423,7 +423,10 @@ object UploadQueue {
     fun pause() {
         if (_paused.value) return
         _paused.value = true
-        prefs().edit().putBoolean(PAUSED_KEY, true).apply()
+        // ⛔ `commit()` لا `apply()`: الراية معلَن غرضها الصمود لقتل العملية،
+        // و`apply()` كتابة مؤجَّلة — قتلٌ مباشر بعد ضغط «إيقاف مؤقّت» كان
+        // يفقدها فيستأنف الرفع على بيانات الجوّال. تماماً كما فعلت [saveSession].
+        prefs().edit().putBoolean(PAUSED_KEY, true).commit()
         activeTask?.let { runCatching { it.pause() } }
     }
 
@@ -431,7 +434,9 @@ object UploadQueue {
     fun resume() {
         if (!_paused.value) return
         _paused.value = false
-        prefs().edit().putBoolean(PAUSED_KEY, false).apply()
+        // رفع الإيقاف يُثبَّت متزامناً أيضاً كي لا تبقى راية إيقافٍ مرفوعة
+        // على القرص بعد قتل العملية فيمتنع الرفع بلا سبب ظاهر.
+        prefs().edit().putBoolean(PAUSED_KEY, false).commit()
         // ⚠️ كانت تُبقي لقطة التقدّم وتقلب راية الإيقاف وحدها، فيقفز الشريط
         // فوراً إلى «جارٍ الرفع… 43%» ويتجمّد هناك أبداً — قبل أن يُنشئ
         // WorkManager شيئاً. ⛔ لا تُعرض نسبة إلّا من نبضة حقيقيّة.
@@ -808,8 +813,11 @@ object UploadQueue {
 
     // تقنين النبضة المحفوظة: الكتابة مع كلّ نسبة كانت ستعيد كتابة مدوّنة
     // الطابور (بنصوص «النص المشروح» كاملةً) مئة مرّة للملفّ الواحد.
-    private var beatAtMs = 0L
-    private var beatPercent = -1
+    // ⚠️ @Volatile: يُقرآن ويُكتبان من خيط مستمعات الرفع ومن خيوط أخرى، وبلا
+    // حاجز ذاكرة قد يرى خيطٌ قيمةً بائتة فتنطلق نبضة قرصيّة في كلّ تقدّم
+    // (أو تُحبس كلّها) — وهي العلّة نفسها التي عُلِّم بها `lastPercent`.
+    @Volatile private var beatAtMs = 0L
+    @Volatile private var beatPercent = -1
 
     /** بداية نقل عنصر: تُثبَّت الحالة «يُرفع» على القرص قبل أوّل بايت. */
     fun markUploading(id: String, percent: Int) {
@@ -928,7 +936,34 @@ object UploadQueue {
      * مُلغى في هذه الجلسة — يفحصه العامل بعد اكتمال الرفع وقبل إنشاء
      * الدرس، فلا يُنشر ما ألغاه المشرف أثناء رفعه.
      */
-    private val cancelled = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val cancelled = java.util.Collections.synchronizedMap(
+        linkedMapOf<String, Long>(),
+    )
+
+    /**
+     * ⚠️ المجموعة كانت تنمو بلا حدّ: [cancelNow] يضيف دائماً، والمُزيل الوحيد
+     * [consumeCancelled] لا يُنادى إلّا إن بلغ العامل ذلك العنصر بالذات — فكلّ
+     * إلغاء لعنصر لم يبدأ رفعه يترك معرّفاً خالداً في ذاكرة العملية.
+     * الراية لا تلزم إلّا حتى يفحصها العامل عقب اكتمال رفعٍ جارٍ، فمهلةٌ
+     * سخيّة وسقفٌ للعدد يكفيان تماماً.
+     */
+    private const val CANCEL_FLAG_TTL_MS = 60L * 60 * 1000
+    private const val CANCEL_FLAG_MAX = 200
+
+    private fun pruneCancelled() {
+        synchronized(cancelled) {
+            val cutoff = System.currentTimeMillis() - CANCEL_FLAG_TTL_MS
+            val iterator = cancelled.entries.iterator()
+            while (iterator.hasNext()) {
+                if (iterator.next().value < cutoff) iterator.remove()
+            }
+            // LinkedHashMap بترتيب الإدخال: الأقدم أوّلاً.
+            while (cancelled.size > CANCEL_FLAG_MAX) {
+                val oldest = cancelled.keys.firstOrNull() ?: break
+                cancelled.remove(oldest)
+            }
+        }
+    }
 
     /**
      * مقبضا النقل الجاري (يضبطهما العامل عند بدء كلّ عنصر).
@@ -979,9 +1014,9 @@ object UploadQueue {
     /** هل هذا العنصر هو الذي يُنقل الآن فعلاً؟ */
     fun isActive(id: String): Boolean = activeTask?.id == id
 
-    fun isCancelled(id: String): Boolean = cancelled.contains(id)
+    fun isCancelled(id: String): Boolean = cancelled.containsKey(id)
 
-    fun consumeCancelled(id: String): Boolean = cancelled.remove(id)
+    fun consumeCancelled(id: String): Boolean = cancelled.remove(id) != null
 
     /**
      * إلغاء يدويّ من المشرف — يوقف النقل الجاري إن كان هذا العنصر قيد
@@ -999,7 +1034,8 @@ object UploadQueue {
     }
 
     private fun cancelNow(id: String) {
-        cancelled.add(id)
+        cancelled[id] = System.currentTimeMillis()
+        pruneCancelled()
         // حذف اليتيم من التخزين يخصّ العناصر **المركونة** فقط: العنصر النشط
         // يتكفّل العامل بحذف ما رفعه بعد فحص الإلغاء — وحذفه هنا كان يسابق
         // إنشاء الوثيقة فيحذف صوت درس يُنشر فعلاً (درس حيّ برابط ميت).

@@ -138,6 +138,7 @@ import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.RemoteImage
 import com.ali.ishaqiyin_admin.ui.Routes
 import com.ali.ishaqiyin_admin.ui.adminFieldColors
+import com.ali.ishaqiyin_admin.ui.arabicCount
 import com.ali.ishaqiyin_admin.util.PickedFile
 import com.ali.ishaqiyin_admin.util.openExternalUri
 import com.ali.ishaqiyin_admin.util.pickedFileFrom
@@ -275,11 +276,15 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
 
     val canModerate = isOwner || members[myUid]?.isChatModerator == true
 
+    // 🎧 هويّة المضيف: التحرير غير المشروط كان يقطع صوتاً بدأته الوجهة
+    // القادمة (ردّ بشكل خاص) لأنّها تُركَّب قبل إتلاف هذه الشاشة.
+    val audioHost = remember { Any() }
     DisposableEffect(Unit) {
         ChatNotifications.isChatOpen = true
+        SharedAudioPlayer.claimHost(audioHost)
         onDispose {
             ChatNotifications.isChatOpen = false
-            SharedAudioPlayer.release()
+            SharedAudioPlayer.releaseIfHost(audioHost)
         }
     }
 
@@ -974,30 +979,37 @@ private fun GroupHeader(
     // «متصل الآن» و«يكتب…» نوافذ زمنيّة: بلا نبضة ثانية تبقى معروضة حتى
     // إعادة التركيب التالية فلا تزول في وقتها.
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(1000)
-            now = System.currentTimeMillis()
-        }
-    }
     val online = members.count { now - it.lastActiveAtMs < ONLINE_WINDOW_MS }
     val typers = members
         .filter { it.uid != myUid && now - it.typingAtMs < TYPING_WINDOW_MS }
         .map { it.displayName }
+    // 🔋 كانت نبضة دائمة كلّ ثانية تُبطل التركيب 60 مرّة/دقيقة ولو لم يكن
+    // أحد متّصلاً ولا كاتباً. الآن تنبض فقط حين يوجد ما ينقضي فعلاً: ثانيةً
+    // واحدة مع «يكتب…» (يحتاج دقّة الثانية)، وخمساً مع «متصل الآن» وحده.
+    val typingLive = typers.isNotEmpty()
+    val presenceLive = online > 0
+    LaunchedEffect(typingLive, presenceLive) {
+        while (typingLive || presenceLive) {
+            delay(if (typingLive) 1_000L else 5_000L)
+            now = System.currentTimeMillis()
+        }
+    }
     val subtitle: String
     val subtitleColor: Color
     when {
         typers.isNotEmpty() -> {
-            subtitle = if (typers.size == 1) {
-                "${typers.first()} يكتب الآن…"
-            } else {
-                "${typers.take(2).joinToString("، ")} يكتبون الآن…"
+            // ⚠️ «يكتبون» جمعٌ لا يصحّ على اثنين.
+            subtitle = when (typers.size) {
+                1 -> "${typers.first()} يكتب الآن…"
+                2 -> "${typers.joinToString("، ")} يكتبان الآن…"
+                else -> "${typers.take(2).joinToString("، ")} وآخرون يكتبون الآن…"
             }
             subtitleColor = ChatColors.accent
         }
 
         members.isNotEmpty() -> {
-            subtitle = "${members.size} عضو • $online متصل الآن" +
+            subtitle = "${arabicCount(members.size, "عضو واحد", "عضوان", "أعضاء", "عضواً")} • " +
+                "$online متصل الآن" +
                 if (meta.locked) " • 🔒" else ""
             subtitleColor = if (online > 0) ChatColors.online else ChatColors.metaText
         }
@@ -1020,7 +1032,8 @@ private fun GroupHeader(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // حشو مقلَّص كي يقترب العنوان من حافة الشاشة (نمط واتساب).
-            IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
+            // ⚠️ 36dp أصغر من الحدّ الأدنى للّمس — الأيقونة تبقى 20dp.
+            IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "رجوع",

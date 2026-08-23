@@ -289,6 +289,9 @@ fun ConfirmDialog(
     body: String,
     confirmLabel: String,
     confirmColor: Color = MaterialTheme.colorScheme.primary,
+    // ⛔ يُعطَّل حين يتعذّر على المستدعي حساب مدى الفعل (مثل الحذف التعاقبيّ
+    // حين يفشل جلب المحتوى): تأكيدٌ على معلومة ناقصة أسوأ من منع التأكيد.
+    confirmEnabled: Boolean = true,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -299,6 +302,7 @@ fun ConfirmDialog(
         confirmButton = {
             androidx.compose.material3.FilledTonalButton(
                 onClick = onConfirm,
+                enabled = confirmEnabled,
                 colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
                     containerColor = confirmColor,
                     // النصّ الأبيض يسقط فوق الأسطح الفاتحة (كالذهب في الوضع الداكن).

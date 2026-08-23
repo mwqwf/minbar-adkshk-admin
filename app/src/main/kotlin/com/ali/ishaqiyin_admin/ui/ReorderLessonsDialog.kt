@@ -106,6 +106,9 @@ fun ReorderLessonsDialog(
     var saving by remember { mutableStateOf(false) }
     var dirty by remember { mutableStateOf(false) }
     var moveTarget by remember { mutableIntStateOf(-1) }
+    // ⛔ الرجوع كان يهمل dirty فيضيع ترتيب يدويّ لعشرات الدروس بلا سؤال،
+    // مع أنّ الشاشة تعد بأنّ شيئاً لا يُحفظ قبل «حفظ الترتيب».
+    var confirmExit by remember { mutableStateOf(false) }
     val items = remember { mutableStateListOf<Lesson>() }
     val listState = rememberLazyListState()
 
@@ -190,8 +193,25 @@ fun ReorderLessonsDialog(
         )
     }
 
+    // مغادرة آمنة: تسأل حين يوجد ترتيب غير محفوظ فقط.
+    fun requestExit() {
+        if (saving) return
+        if (dirty) confirmExit = true else onDismiss()
+    }
+
+    if (confirmExit) {
+        ConfirmDialog(
+            title = "ترتيب غير محفوظ",
+            body = "غيّرتَ ترتيب الدروس ولم تحفظه. الخروج الآن يُلغي التغييرات.",
+            confirmLabel = "خروج بلا حفظ",
+            confirmColor = MaterialTheme.colorScheme.error,
+            onConfirm = { confirmExit = false; onDismiss() },
+            onDismiss = { confirmExit = false },
+        )
+    }
+
     Dialog(
-        onDismissRequest = { if (!saving) onDismiss() },
+        onDismissRequest = { requestExit() },
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Scaffold(
@@ -209,7 +229,7 @@ fun ReorderLessonsDialog(
                         }
                     },
                     navigationIcon = {
-                        IconButton(onClick = { if (!saving) onDismiss() }) {
+                        IconButton(onClick = { requestExit() }) {
                             Icon(
                                 Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "رجوع",

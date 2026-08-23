@@ -45,14 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** «درس واحد»/«درسان»/«ن دروس» — عربيّة سليمة بلا جدول صيغ. */
-fun lessonsCountLabel(count: Int): String = when {
-    count == 1 -> "درس واحد"
-    count == 2 -> "درسان"
-    count <= 10 -> "$count دروس"
-    else -> "$count درساً"
-}
-
+// ⚠️ lessonsCountLabel نُقلت إلى ArabicPlural.kt (كانت مكرّرة مع arabicCount).
 /**
  * ❓ السؤال الواحد عند اختيار أكثر من ملفّ: درس واحد مدموج، أم درس لكلّ
  * ملفّ؟ ⛔ سؤال واحد لا معالج خطوات: النيّتان لا ثالث لهما، وكلاهما يبقى
@@ -73,7 +66,7 @@ fun MultiFilesIntentDialog(
     val mergeAllowed = count <= mergeLimit
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("اخترتَ $count ملفّات") },
+        title = { Text("اخترتَ ${arabicCount(count, "ملفّاً واحداً", "ملفّين", "ملفّات", "ملفّاً")}") },
         text = {
             Column {
                 Text(

@@ -166,11 +166,15 @@ fun rememberPreviewPlayer(): PreviewPlayerState {
             player.release()
         }
     }
-    // مؤقّت خفيف يعمل فقط ما دام هناك مقطع محمَّل — يغذّي شريط التقدّم.
+    // 🔋 مؤقّت خفيف يعمل ما دام التشغيل **فعليّاً** جارياً: كانت الحلقة
+    // تستمرّ كلّ 400 م.ث والمقطع موقوف مؤقّتاً، فتستنزف البطاريّة بلا فائدة
+    // (الموضع لا يتغيّر أصلاً وهو متوقّف). تحديثةٌ واحدة عند التوقّف تكفي.
     LaunchedEffect(state.playingId, state.playing) {
-        while (state.playingId.isNotEmpty()) {
-            state.refresh()
+        if (state.playingId.isEmpty()) return@LaunchedEffect
+        state.refresh()
+        while (state.playing) {
             delay(400)
+            state.refresh()
         }
     }
     return state
@@ -255,7 +259,8 @@ fun PreviewPlayerBar(
             Spacer(Modifier.weight(1f))
             IconButton(
                 onClick = { state.skip(-SKIP_MS) },
-                modifier = Modifier.size(34.dp),
+                // هدف لمس 48dp (كان 34dp) — الأيقونة تبقى 20dp.
+                modifier = Modifier.size(48.dp),
             ) {
                 Icon(
                     Icons.Filled.Replay30,
@@ -266,7 +271,7 @@ fun PreviewPlayerBar(
             }
             IconButton(
                 onClick = { state.skip(SKIP_MS) },
-                modifier = Modifier.size(34.dp),
+                modifier = Modifier.size(48.dp),
             ) {
                 Icon(
                     Icons.Filled.Forward30,

@@ -56,7 +56,9 @@ object ImageCompressor {
             val scaled = scaleDown(decoded)
             val rotated = applyExifRotation(context, file.uri, scaled)
             val out = File(context.cacheDir, "upload_${System.currentTimeMillis()}.jpg")
-            out.outputStream().use { stream ->
+            // 🛡️ قيمة `compress` المنطقيّة كانت مُهمَلة: فشل الترميز (ذاكرة/
+            // قرص ممتلئ) كان يمرّ صامتاً فيُرفع ملفّ ناقص أو صفريّ مكان الصورة.
+            val compressed = out.outputStream().use { stream ->
                 rotated.compress(Bitmap.CompressFormat.JPEG, QUALITY, stream)
             }
             if (rotated !== decoded) decoded.recycle()
@@ -65,13 +67,17 @@ object ImageCompressor {
             rotated.recycle()
 
             // لا فائدة إن لم يصغر الحجم فعلاً.
-            if (file.size in 1..out.length()) {
+            // ⚠️ الحارس القديم `file.size in 1..out.length()` كان يمرّ سالباً
+            // حين `out.length() == 0` (المدى فارغ)، فيُرفع مرفقٌ صفريّ تالف.
+            // لذا يُشترط الآن نجاح الضغط وحجمٌ موجب صراحةً.
+            val outLength = out.length()
+            if (!compressed || outLength <= 0L || (file.size in 1..outLength)) {
                 out.delete()
                 return@withContext Prepared(file, null)
             }
             val name = file.name.substringBeforeLast('.', file.name) + ".jpg"
             Prepared(
-                PickedFile(uri = Uri.fromFile(out), name = name, size = out.length()),
+                PickedFile(uri = Uri.fromFile(out), name = name, size = outLength),
                 out,
             )
         }.getOrElse { Prepared(file, null) }

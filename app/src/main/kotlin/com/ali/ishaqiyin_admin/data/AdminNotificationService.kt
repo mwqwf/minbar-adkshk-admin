@@ -120,7 +120,7 @@ object AdminNotificationService {
             FirebaseFunctionsException.Code.PERMISSION_DENIED ->
                 "هذا الحساب غير مخوّل لإرسال الإشعارات."
             FirebaseFunctionsException.Code.INVALID_ARGUMENT ->
-                "بيانات الإشعار ناقصة أو غير صالحة. اكتب عنواناً أو نصاً ثم أعد المحاولة."
+                "بيانات الإشعار ناقصة أو غير صالحة. اكتب عنواناً أو نصّاً ثم أعد المحاولة."
             FirebaseFunctionsException.Code.NOT_FOUND,
             FirebaseFunctionsException.Code.UNIMPLEMENTED,
             ->
@@ -140,6 +140,10 @@ object AdminNotificationService {
             val token = FirebaseMessaging.getInstance().token.await()
             if (!token.isNullOrEmpty()) saveToken(user, email, token, isOwner)
             ChatNotifications.syncSubscription()
+        } catch (e: CancellationException) {
+            // ⚠️ `catch (Exception)` كان يبتلع إلغاء الكوروتين (مغادرة الشاشة)
+            // فيُسجَّل كأنّه فشل تسجيل جهاز — كما فُعل صراحةً في [sendBroadcast].
+            throw e
         } catch (e: Exception) {
             // لا نعطّل لوحة الإدارة إن رفض النظام إذن الإشعارات أو انقطعت الشبكة.
             Log.d(TAG, "Admin notifications registration failed: $e")

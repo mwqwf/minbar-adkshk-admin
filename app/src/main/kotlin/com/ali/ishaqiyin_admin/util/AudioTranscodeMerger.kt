@@ -28,6 +28,13 @@ object AudioTranscodeMerger {
     private const val TARGET_CHANNELS = 2
     private const val BIT_RATE = 128_000
     private const val TIMEOUT_US = 10_000L
+
+    /**
+     * ⏱️ سقف زمنيّ لتصريف المرمِّز النهائيّ: كانت حلقة `drainEncoder(untilEos)`
+     * بلا مخرج زمنيّ، فمرمِّزٌ لا يُصدر راية النهاية (عطل عتاد/تعليق) يعلّق
+     * خيط الرفع أبداً بلا رسالة ولا إمكان إلغاء.
+     */
+    private const val DRAIN_TIMEOUT_MS = 120_000L
     private const val BYTES_PER_FRAME = 2 * TARGET_CHANNELS
 
     const val OUTPUT_MIME = "audio/mp4"
@@ -53,32 +60,50 @@ object AudioTranscodeMerger {
         if (output.exists()) output.delete()
 
         val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-        encoder.configure(
-            MediaFormat.createAudioFormat(
-                MediaFormat.MIMETYPE_AUDIO_AAC,
-                TARGET_SAMPLE_RATE,
-                TARGET_CHANNELS,
-            ).apply {
-                setInteger(
-                    MediaFormat.KEY_AAC_PROFILE,
-                    MediaCodecInfo.CodecProfileLevel.AACObjectLC,
-                )
-                setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
-                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 64 * 1024)
-            },
-            null,
-            null,
-            MediaCodec.CONFIGURE_FLAG_ENCODE,
-        )
-        encoder.start()
-        val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        // 🛡️ التهيئة والبدء وإنشاء المازج كانت كلّها خارج `try/finally` الذي
+        // يحرّر المرمِّز؛ فأيّ فشل هنا (عتاد مشغول، مسار خرج غير صالح) كان
+        // يترك مرمِّز عتادٍ محجوزاً حتى يُقتل التطبيق — فيفشل كل دمج بعده.
+        val muxer: MediaMuxer
+        try {
+            encoder.configure(
+                MediaFormat.createAudioFormat(
+                    MediaFormat.MIMETYPE_AUDIO_AAC,
+                    TARGET_SAMPLE_RATE,
+                    TARGET_CHANNELS,
+                ).apply {
+                    setInteger(
+                        MediaFormat.KEY_AAC_PROFILE,
+                        MediaCodecInfo.CodecProfileLevel.AACObjectLC,
+                    )
+                    setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
+                    setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 64 * 1024)
+                },
+                null,
+                null,
+                MediaCodec.CONFIGURE_FLAG_ENCODE,
+            )
+            encoder.start()
+            muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        } catch (failure: Throwable) {
+            runCatching { encoder.release() }
+            runCatching { output.delete() }
+            throw failure
+        }
         var trackIndex = -1
         var muxerStarted = false
         var totalFrames = 0L
         val encoderInfo = MediaCodec.BufferInfo()
 
         fun drainEncoder(untilEos: Boolean) {
+            // ⏱️ حدّ كليّ للحلقة: بلا مهلة كان `untilEos` يدور أبداً إن لم
+            // يُصدر المرمِّز راية النهاية، فيعلّق الرفع بلا رسالة.
+            val deadline = System.currentTimeMillis() + DRAIN_TIMEOUT_MS
             while (true) {
+                if (untilEos && System.currentTimeMillis() > deadline) {
+                    throw UnsupportedAudioException(
+                        "تعذّر إتمام دمج الصوت على هذا الجهاز — حاول بملفات أقل أو أعد المحاولة.",
+                    )
+                }
                 val index = encoder.dequeueOutputBuffer(
                     encoderInfo,
                     if (untilEos) TIMEOUT_US else 0L,
@@ -93,11 +118,14 @@ object AudioTranscodeMerger {
                     }
 
                     index >= 0 -> {
-                        val encoded = encoder.getOutputBuffer(index) ?: continue
+                        // 🛡️ `?: continue` كان يقفز فوق releaseOutputBuffer،
+                        // فتُستنفد صوامع الخرج وتدور الحلقة أبداً. الصومعة
+                        // تُعاد دائماً الآن ولو تعذّرت قراءتها.
+                        val encoded = encoder.getOutputBuffer(index)
                         if (encoderInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
                             encoderInfo.size = 0
                         }
-                        if (encoderInfo.size > 0 && muxerStarted) {
+                        if (encoded != null && encoderInfo.size > 0 && muxerStarted) {
                             encoded.position(encoderInfo.offset)
                             encoded.limit(encoderInfo.offset + encoderInfo.size)
                             muxer.writeSampleData(trackIndex, encoded, encoderInfo)
@@ -117,7 +145,13 @@ object AudioTranscodeMerger {
             while (offset < length) {
                 val inIndex = encoder.dequeueInputBuffer(TIMEOUT_US)
                 if (inIndex >= 0) {
-                    val buffer = encoder.getInputBuffer(inIndex) ?: continue
+                    // نفس علّة صوامع الخرج: `?: continue` كان يحتجز صومعة
+                    // الدخل بلا queueInputBuffer فتنفد الصوامع ويتجمّد الدمج.
+                    val buffer = encoder.getInputBuffer(inIndex)
+                    if (buffer == null) {
+                        encoder.queueInputBuffer(inIndex, 0, 0, 0L, 0)
+                        continue
+                    }
                     buffer.clear()
                     val chunk = minOf(buffer.remaining(), length - offset)
                     buffer.put(data, offset, chunk)
@@ -174,7 +208,11 @@ object AudioTranscodeMerger {
             if (muxerStarted) runCatching { muxer.stop() }
             runCatching { muxer.release() }
         }
-        if (totalFrames == 0L) {
+        // 🛡️ شرط الصلاحية كان `totalFrames` وحده: إن لم يُصدر المرمِّز
+        // INFO_OUTPUT_FORMAT_CHANGED يبقى muxerStarted=false فلا يُستدعى
+        // muxer.stop()، فيخرج MP4 بلا moov — درسٌ لا يعمل عند أحد ويُرفع
+        // على أنّه ناجح. الآن يُرفض الخرج صراحةً في هذه الحال.
+        if (totalFrames == 0L || !muxerStarted) {
             output.delete()
             throw UnsupportedAudioException("تعذّر استخراج صوت من الملفات المختارة.")
         }

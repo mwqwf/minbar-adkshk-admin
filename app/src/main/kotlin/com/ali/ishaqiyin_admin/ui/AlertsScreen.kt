@@ -75,27 +75,37 @@ fun AlertsScreen(
         .collectAsState(initial = emptyList())
     val me = AdminAlertsFeed.myEmail
 
+    // ما مُيّز مقروءاً في هذه الزيارة — يمنع إعادة الكتابة كلّما عاد الصفّ
+    // إلى الظهور بالتمرير (النسخة المعروضة تبقى «غير مقروءة» عمداً).
+    val marked = remember { mutableSetOf<String>() }
+    var markedAll by remember { mutableStateOf(false) }
+
     // لقطة الزيارة: كلّ ما ظهر منذ فتح الشاشة يبقى معروضاً حتى الخروج —
     // ولا تُحدَّث نسخته بعد التمييز، فتظلّ إشارة «غير مقروء» ظاهرة للزائر.
     val session = remember { androidx.compose.runtime.mutableStateMapOf<String, AdminAlert>() }
     LaunchedEffect(live) {
         live.forEach { alert ->
-            if (!session.containsKey(alert.id)) session[alert.id] = alert
+            if (!session.containsKey(alert.id)) {
+                session[alert.id] = alert
+                // ⛔ markedAll لم يكن يُصفَّر عند وصول جديد، فيختفي زرّ «تمييز
+                // الكل مقروءاً» إلى الأبد بعد أوّل ضغطة رغم تراكم غير المقروء.
+                if (!alert.isReadBy(me)) markedAll = false
+            }
         }
     }
     val alerts = session.values.sortedByDescending { it.createdAtMs }
-
-    // ما مُيّز مقروءاً في هذه الزيارة — يمنع إعادة الكتابة كلّما عاد الصفّ
-    // إلى الظهور بالتمرير (النسخة المعروضة تبقى «غير مقروءة» عمداً).
-    val marked = remember { mutableSetOf<String>() }
-    var markedAll by remember { mutableStateOf(false) }
 
     /** الحذف يمحو الوثيقة نفسها لا علامة قراءتي — لذا يُعلَن فشله. */
     fun deleteNow(alert: AdminAlert) {
         session.remove(alert.id)
         scope.launch {
             runCatching { AdminAlertsFeed.delete(alert) }
-                .onFailure { snack("تعذّر حذف التنبيه: ${it.arabicReason()}") }
+                // ⛔ كان الصفّ يُزال محليّاً بلا إعادة عند الفشل، فيختفي عن
+                // الشاشة وهو باقٍ في القاعدة ⇒ تنبيه «مُعالَج» لم يُحذف.
+                .onFailure {
+                    session[alert.id] = alert
+                    snack("تعذّر حذف التنبيه: ${it.arabicReason()}")
+                }
         }
     }
 

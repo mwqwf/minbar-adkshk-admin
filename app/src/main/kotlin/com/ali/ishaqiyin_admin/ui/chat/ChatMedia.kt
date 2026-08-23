@@ -333,6 +333,28 @@ object SharedAudioPlayer {
         stop()
         runCatching { player?.release() }
         player = null
+        host = null
+    }
+
+    /**
+     * الشاشة المضيفة الحاليّة للمشغّل — رمز هويّة لا أكثر.
+     *
+     * ⛔ سببه: `onDispose { release() }` كان غير مشروط، والانتقال «ردّ بشكل
+     * خاص» يُركّب الوجهة الجديدة **قبل** إتلاف السابقة، فتحرّر الشاشةُ
+     * المغادِرة مشغّلاً بدأته الشاشة القادمة ⇒ ينقطع الصوت.
+     */
+    @Volatile
+    var host: Any? = null
+        private set
+
+    /** تسجيل الشاشة الحاليّة مضيفةً (يُنادى عند دخول شاشة الدردشة). */
+    fun claimHost(owner: Any) {
+        host = owner
+    }
+
+    /** تحرير مشروط بالهويّة — نظير شرط [onCompleted] تماماً. */
+    fun releaseIfHost(owner: Any) {
+        if (host === owner) release()
     }
 
     /**
@@ -701,8 +723,10 @@ private fun AudioControl(
         contentAlignment = Alignment.Center,
     ) {
         if (status.state == MediaState.Downloading) {
+            // ⚠️ هدف اللمس كان 24dp داخل صفّ 48dp: النقر يُوسَّع إلى كامل
+            // الـ48dp والحلقة تبقى 24dp بصريّاً (لا تغيّر في المظهر).
             Box(
-                Modifier.size(24.dp).clickable(onClick = onCancel),
+                Modifier.size(AUDIO_LINE).clickable(onClick = onCancel),
                 contentAlignment = Alignment.Center,
             ) {
                 CircularProgressIndicator(
@@ -720,8 +744,9 @@ private fun AudioControl(
                 )
             }
         } else {
+            // نفس العلّة: 40dp ⇒ 48dp للّمس، والأيقونة تبقى 24dp.
             Box(
-                Modifier.size(40.dp).clickable(onClick = onClick),
+                Modifier.size(AUDIO_LINE).clickable(onClick = onClick),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(

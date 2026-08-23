@@ -141,7 +141,8 @@ fun UploadQueueBanner(modifier: Modifier = Modifier) {
         else -> MaterialTheme.colorScheme.primary
     }
     val attentionText = if (attention > 1) {
-        "$attention دروس متعثّرة في الرفع — افتح للتفاصيل"
+        "${arabicCount(attention, "درس متعثّر", "درسان متعثّران", "دروس متعثّرة", "درساً متعثّراً")} " +
+            "في الرفع — افتح للتفاصيل"
     } else {
         "درس متعثّر في الرفع — افتح للتفاصيل"
     }
@@ -743,7 +744,7 @@ private fun UploadQueueSheet(onDismiss: () -> Unit) {
     if (confirmCancelAll) {
         ConfirmDialog(
             title = "إلغاء كلّ ما في الطابور؟",
-            body = "ستُحذف ${items.size} عناصر من طابور الرفع، وتُحذف معها " +
+            body = "ستُحذف ${arabicCount(items.size, "عنصر واحد", "عنصران", "عناصر", "عنصراً")} من طابور الرفع، وتُحذف معها " +
                 "نسخها المحليّة نهائياً بلا تراجع. لن يُنشر أيّ منها في " +
                 "التطبيق العام. إن كنت تريد التوقّف مؤقّتاً فقط فاستعمل " +
                 "«إيقاف مؤقّت» — فهو يُبقي كلّ شيء.",

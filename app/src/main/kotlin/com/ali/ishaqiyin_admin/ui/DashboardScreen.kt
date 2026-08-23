@@ -347,16 +347,7 @@ private data class TodayTask(
     val onClick: () -> Unit,
 )
 
-/**
- * صياغة عربية سليمة للعدد: مفرد ومثنّى وجمع قلّة (3–10) وجمع كثرة (11+).
- */
-private fun arabicCount(n: Int, one: String, two: String, few: String, many: String): String =
-    when {
-        n == 1 -> one
-        n == 2 -> two
-        n <= 10 -> "$n $few"
-        else -> "$n $many"
-    }
+// ⚠️ arabicCount نُقلت إلى ArabicPlural.kt لتُستعمل في كلّ الشاشات.
 
 /**
  * ✅ «مهامّي اليوم»: ما ينتظر قرار المشرف الآن، مرتّباً بالأولويّة، وكلّ
@@ -490,7 +481,7 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
                         "تنبيه جديد لم تطّلع عليه",
                         "تنبيهان جديدان لم تطّلع عليهما",
                         "تنبيهات جديدة لم تطّلع عليها",
-                        "تنبيهاً جديداً لم تطّلع عليها",
+                        "تنبيهاً جديداً لم تطّلع عليه",
                     ),
                     onClick = { nav.navigate(Routes.ALERTS) },
                 ),
@@ -520,7 +511,7 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
                         "درس في السلة قبل حذفه نهائياً",
                         "درسان في السلة قبل حذفهما نهائياً",
                         "دروس في السلة قبل حذفها نهائياً",
-                        "درساً في السلة قبل حذفها نهائياً",
+                        "درساً في السلة قبل حذفه نهائياً",
                     ),
                     onClick = { nav.navigate(Routes.TRASH) },
                 ),
