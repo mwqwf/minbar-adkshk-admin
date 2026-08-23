@@ -21,6 +21,28 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- ⛔ لا تحذف هذه الكتلة: Play **يستنتج** عتاداً مطلوباً من الأذونات ما لم
+         نُصرّح بخلافه، فيُسقط من قائمة التوافق كل جهاز ينقصه ذلك العتاد.
+         `RECORD_AUDIO` تُوجب ميكروفوناً، و`USE_FINGERPRINT` (تدخل من مكتبة
+         الاعتماد لا من مانيفستنا) تُوجب حسّاس بصمة — وقد أسقطتا التوافق فعلاً
+         عن أجهزة المشرفين في 2026-08-23 حتى رفض Play الإصدار.
+         واللوحة لا تلزمها هذه الحسّاسات أصلاً: التسجيل والمكالمة ميزتان
+         اختياريّتان، والدخول ببريد Google لا ببصمة. فكلّها `required="false"`،
+         والكود يتحقّق من توفّرها عند الاستعمال لا قبله. -->
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.fingerprint" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <uses-feature android:name="android.hardware.wifi" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.screen.portrait" android:required="false" />
+    <uses-feature android:name="android.hardware.screen.landscape" android:required="false" />
+
     <application
         android:name=".AdminApplication"
         android:allowBackup="false"

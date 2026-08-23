@@ -66,8 +66,12 @@ android {
         // ولا إعادة رفع. و«تفريغ السلّة» يلزمه ضغطٌ متّصل ثلاث ثوانٍ. ومعها:
         // «آخر ما جرى»، ومرشِّح باسم المساهم، وزرّ «هذه منظومة» يصلح ترتيب
         // الأبيات، وفحصٌ أسبوعيّ يُنبّه إلى الدروس التي مات صوتها.
-        versionCode = 2014
-        versionName = "1.3.0"
+        // ٢٠١٥ / ١.٣.١: إصلاح توافق الأجهزة. Play كان يستنتج من `RECORD_AUDIO`
+        // و`USE_FINGERPRINT` عتاداً **مطلوباً**، فيُسقط كل جهاز ينقصه ميكروفون
+        // أو حسّاس بصمة — ورفض الإصدار ٢٠١٤ لهذا السبب. صار المانيفست يعلن
+        // كل عتادٍ مُستنتَج `required="false"` صراحةً.
+        versionCode = 2015
+        versionName = "1.3.1"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
