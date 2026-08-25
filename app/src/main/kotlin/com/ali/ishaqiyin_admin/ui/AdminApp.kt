@@ -117,8 +117,18 @@ object Routes {
     const val DM_LIST = "dm_list"
     const val DM = "dm/{threadId}/{otherUid}/{otherName}"
 
+    /** 📬 صندوق «رسائل المستخدمين» ومحادثاته — للمالك وحده. */
+    const val SUPPORT = "support"
+    const val SUPPORT_THREAD = "support/{threadId}/{userUid}/{userName}/{kind}"
+
     fun dm(threadId: String, otherUid: String, otherName: String): String =
         "dm/${Uri.encode(threadId)}/${Uri.encode(otherUid)}/${Uri.encode(otherName)}"
+
+    fun supportThread(threadId: String, userUid: String, userName: String, kind: String): String =
+        "support/${Uri.encode(threadId)}/${Uri.encode(userUid)}/" +
+            // ⚠️ الاسم قد يكون فارغاً، والمقطع الفارغ لا يطابق النمط فيسقط
+            // التنقّل صامتاً — بديلٌ ثابت يضمن مقطعاً غير فارغ دائماً.
+            "${Uri.encode(userName.ifBlank { "مستخدم" })}/${Uri.encode(kind)}"
 }
 
 /**
@@ -225,6 +235,9 @@ object NotificationRoute {
                 return Routes.SUBMISSIONS
             }
 
+            // 📬 إشعار رسالة مستخدم يفتح الصندوق نفسه (لا محادثة بعينها:
+            // الحمولة لا تحمل معرّف صاحبها، والصندوق يرفع غير المقروء أعلاه).
+            "support" -> return Routes.SUPPORT
             "analytics" -> return Routes.ANALYTICS
             "featured" -> return Routes.FEATURED
             "chat" -> return Routes.CHAT
@@ -240,6 +253,8 @@ object NotificationRoute {
                 SubmissionsTarget.set(1, value(KEY_REF, KEY_SUBMISSION))
                 Routes.SUBMISSIONS
             }
+
+            "support" -> Routes.SUPPORT
 
             "admin_chat" -> Routes.CHAT
 
@@ -464,6 +479,41 @@ private fun AdminNavHost(isOwner: Boolean) {
             )
         }
         composable(Routes.SUPERVISORS) { SupervisorsScreen(onBack = { nav.popBackStack() }) }
+        // 📬 صندوق رسائل المستخدمين — حارس مزدوج كشاشة «تذكير التحديث»:
+        // ⛔ قواعد التخزين لا تسمح لغير المالك بقراءة مرفقات الخيوط، فشاشةٌ
+        // يفتحها مشرف تعرض صوتاً لا يعمل وصوراً لا تظهر.
+        composable(Routes.SUPPORT) {
+            if (isOwner) {
+                SupportInboxScreen(
+                    onBack = { nav.popBackStack() },
+                    onOpenThread = { thread ->
+                        nav.navigate(
+                            Routes.supportThread(
+                                threadId = thread.id,
+                                userUid = thread.uid,
+                                userName = thread.name,
+                                kind = thread.kind.key,
+                            ),
+                        )
+                    },
+                )
+            } else {
+                LaunchedEffect(Unit) { nav.popBackStack() }
+            }
+        }
+        composable(Routes.SUPPORT_THREAD) { entry ->
+            if (isOwner) {
+                SupportThreadScreen(
+                    threadId = entry.arguments?.getString("threadId").orEmpty(),
+                    userUid = entry.arguments?.getString("userUid").orEmpty(),
+                    userName = entry.arguments?.getString("userName").orEmpty(),
+                    kindKey = entry.arguments?.getString("kind").orEmpty(),
+                    onBack = { nav.popBackStack() },
+                )
+            } else {
+                LaunchedEffect(Unit) { nav.popBackStack() }
+            }
+        }
         composable(Routes.SUBMISSIONS) { SubmissionsScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.TRANSCRIPT_INTAKE) {
             TranscriptIntakeScreen(onBack = { nav.popBackStack() })

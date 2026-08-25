@@ -81,6 +81,10 @@ fun AdminTranscriptImagesEditor(
     images: SnapshotStateList<Uri>,
     enabled: Boolean,
     onError: (String) -> Unit,
+    // 📸 اقتراح آخر لقطة شاشة يُعرض هنا كي يظهر في كل نموذج يستعمل المحرّر
+    // بلا تكرار الشيفرة. النموذج الذي يعرض البطاقة بنفسه يمرّر false كي
+    // لا تظهر مرّتين في شاشة واحدة.
+    showScreenshotChip: Boolean = true,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -191,6 +195,16 @@ fun AdminTranscriptImagesEditor(
         onImage = { uri -> pendingNew.add(uri) },
         modifier = Modifier.padding(bottom = 8.dp),
     )
+    // 📸 فوق شبكة الصور تماماً كاقتراح الحافظة، وبنفس شرط السقف: اللقطة
+    // تدخل من مسار الإضافة الوحيد (pendingNew ⇒ شاشة القصّ ⇒ الإدراج).
+    if (showScreenshotChip) {
+        RecentScreenshotChip(
+            enabled = enabled &&
+                images.size + pendingNew.size < TranscriptsRepository.MAX_IMAGES,
+            onPick = { uri -> pendingNew.add(uri) },
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+    }
     // شريط «تراجع» مُدرَج في مكانه من النموذج: هذا المحرّر جزء من شاشة
     // أخرى ولا يملك طبقةً عائمة خاصّة به.
     SnackbarHost(undoBar.host)

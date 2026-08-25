@@ -114,6 +114,33 @@ service firebase.storage {
         );
     }
 
+    // 📮 مرفقات قناة التواصل مع المالك: تسجيل صوتي أو صور داخل محادثة.
+    // المستخدم يرفع في مجلّده وحده، والقراءة له وللمالك فقط (لا للمشرفين —
+    // هذه القناة بين المستمع والمالك خاصّةً). الحذف يتمّ خادميّاً في
+    // deleteMySupportThread، ويبقى للمالك وللمرسِل ما لم يُحذف الخيط.
+    function validSupportFile() {
+      return request.resource.size > 0
+        && request.resource.contentType != null
+        && (
+          (request.resource.contentType.matches('image/.*')
+            && request.resource.size <= 10 * 1024 * 1024)
+          || (request.resource.contentType.matches('audio/.*')
+            && request.resource.size <= 25 * 1024 * 1024)
+        );
+    }
+
+    match /support/{uid}/{threadId}/{fileName} {
+      allow read: if isOwner() || (signedIn() && request.auth.uid == uid);
+      // ⚠️ المالك يكتب هنا أيضاً: ردّه على المحادثة قد يكون صوتاً أو صورة،
+      // ومرفقاته تسكن مساحة صاحب الخيط نفسها كي تُحذف معه حذفاً واحداً.
+      // قصرُ الكتابة على `request.auth.uid == uid` كان يمنع المالك من الردّ
+      // بمرفق أصلاً — ومعرّفه لا يساوي معرّف صاحب الخيط بحال.
+      allow create: if validSupportFile()
+        && (isOwner() || (signedIn() && request.auth.uid == uid));
+      allow update: if false;
+      allow delete: if isOwner() || (signedIn() && request.auth.uid == uid);
+    }
+
     // صور النص المشروح المعتمد: عامة للقراءة، ويرفعها المشرفون مباشرة عبر SDK
     // قبل استدعاء upsertLessonTranscript (الخادم يتحقق ويولّد الروابط).
     match /lesson_transcripts/{lessonId}/{fileName} {

@@ -206,6 +206,17 @@ private fun SubmissionsFilterBar(
 private const val NO_NAME = "بدون اسم"
 
 /**
+ * 🏷️ مساهمة وصلت **بلا قسم**.
+ *
+ * التطبيق صار يتيح لمن لا يعرف قسم درسه أن يرسله بلا قسم ويختاره المشرف.
+ * ودرسٌ بلا قسم لا يظهر للمستخدمين أصلاً، فنشره كما هو ضياعٌ صامت —
+ * لذلك يُمنع «نشر كما هي» ويُمنع دخوله في النشر الجماعي حتى يُختار له قسم
+ * من «تعديل ثم نشر».
+ */
+private val LessonSubmission.needsCategory: Boolean
+    get() = categoryId.isBlank() || subcategoryId.isBlank()
+
+/**
  * مرشِّح باسم المساهم.
  *
  * ⚠️ لماذا شرائح لا حقل كتابة: المساهمات تأتي **دفعاتٍ** من شخص واحد يرفع
@@ -264,6 +275,9 @@ private fun BulkDecisionBar(
     busy: Boolean,
     done: Int,
     total: Int,
+    // سطر تنبيه اختياري يُعلن قبل التنفيذ ما لا يدخل في الحسم الجماعي
+    // (المساهمات بلا قسم) — إعلانه أصدق من استثناءٍ صامت.
+    notice: String = "",
     onToggleMode: () -> Unit,
     onSelectAll: () -> Unit,
     onApprove: () -> Unit,
@@ -308,6 +322,10 @@ private fun BulkDecisionBar(
                     Spacer(Modifier.size(4.dp))
                     Text(if (selectMode) "إنهاء التحديد" else "تحديد متعدّد", fontSize = 12.sp)
                 }
+            }
+            if (notice.isNotEmpty()) {
+                Spacer(Modifier.size(6.dp))
+                Text(notice, fontSize = 12.sp, color = adminOrange)
             }
             if (selectMode) {
                 Spacer(Modifier.size(8.dp))
@@ -418,6 +436,9 @@ private fun AudioSubmissionsContent(targetId: String = "") {
     // مرشِّح المساهم: فارغ = الجميع. المساهمات تأتي دفعاتٍ من شخص واحد،
     // فحصرها فيه يجعل مراجعة سلسلةٍ كاملة دفعةً واحدة أمراً هيّناً.
     var submitter by remember { mutableStateOf("") }
+    // شريحة «بلا قسم»: تحصر القائمة فيما ينتظر قسماً — وهي أوّل ما ينبغي
+    // حسمه لأنّ درساً بلا قسم لا يظهر للمستخدمين إطلاقاً.
+    var onlyNeedsCategory by remember { mutableStateOf(false) }
     var selectMode by remember { mutableStateOf(false) }
     val selected = remember { mutableStateListOf<String>() }
     var bulkBusy by remember { mutableStateOf(false) }
@@ -455,13 +476,23 @@ private fun AudioSubmissionsContent(targetId: String = "") {
     // اسم اختير ثم اختفى من القائمة (حُسمت كل مساهماته) لا يُترك مرشِّحاً
     // خفيّاً يُفرغ الشاشة بلا سبب ظاهر.
     val activeSubmitter = if (submitter in submitterNames) submitter else ""
-    val shown = if (activeSubmitter.isEmpty()) {
+    val bySubmitter = if (activeSubmitter.isEmpty()) {
         byStatus
     } else {
         byStatus.filter { it.submitterName.ifBlank { NO_NAME } == activeSubmitter }
     }
-    val pendingVisible = shown.count { it.isPending }
-    val chosen = shown.filter { it.isPending && selected.contains(it.id) }
+    // عدد ما ينتظر قسماً يُحسب قبل شريحة «بلا قسم» كي يبقى ثابتاً على الشريحة
+    // نفسها بعد الضغط عليها (لا يصير «الكل» فجأة).
+    val needsCategoryCount = bySubmitter.count { it.isPending && it.needsCategory }
+    val shown = if (onlyNeedsCategory) {
+        bySubmitter.filter { it.isPending && it.needsCategory }
+    } else {
+        bySubmitter
+    }
+    // ⛔ ما لا قسم له لا يدخل الحسم الجماعي أصلاً: النشر الجماعي ينشر «كما
+    // هو» بلا تعديل قسم، فيمرّ الدرس إلى العدم بلا أن يشعر أحد.
+    val pendingVisible = shown.count { it.isPending && !it.needsCategory }
+    val chosen = shown.filter { it.isPending && !it.needsCategory && selected.contains(it.id) }
     // 🎯 المساهمة التي جاء الإشعار من أجلها: تمرير إليها وتمييز يخبو.
     // بلا هذا كانت الشاشة تُفتح على رأس القائمة فيبحث المشرف يدوياً عنها
     // بين العشرات — ويضيع الغرض من حمل معرّفها في حمولة الإشعار.
@@ -687,6 +718,20 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                 selected.clear()
             },
         )
+        // شريحة «بلا قسم» — لا تظهر إلا حين يوجد ما ينتظر قسماً فعلاً.
+        if (needsCategoryCount > 0 || onlyNeedsCategory) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                FilterChip(
+                    selected = onlyNeedsCategory,
+                    onClick = {
+                        onlyNeedsCategory = !onlyNeedsCategory
+                        selected.clear()
+                    },
+                    label = { Text("بلا قسم ($needsCategoryCount)", fontSize = 12.sp) },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                )
+            }
+        }
         BulkDecisionBar(
             selectMode = selectMode,
             selectedCount = chosen.size,
@@ -695,6 +740,12 @@ private fun AudioSubmissionsContent(targetId: String = "") {
             busy = bulkBusy,
             done = bulkDone,
             total = bulkTotal,
+            notice = if (needsCategoryCount > 0) {
+                "${arabicCount(needsCategoryCount, "مساهمة واحدة", "مساهمتان", "مساهمات", "مساهمة")} " +
+                    "بلا قسم لا تدخل هنا — افتح «تعديل ثم نشر» واختر لها قسماً."
+            } else {
+                ""
+            },
             onToggleMode = {
                 selectMode = !selectMode
                 if (!selectMode) selected.clear()
@@ -703,7 +754,8 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                 if (chosen.size >= pendingVisible) {
                     selected.clear()
                 } else {
-                    shown.filter { it.isPending }.forEach {
+                    // «تحديد كل المعروض» لا يشمل ما بلا قسم.
+                    shown.filter { it.isPending && !it.needsCategory }.forEach {
                         if (!selected.contains(it.id)) selected.add(it.id)
                     }
                 }
@@ -720,6 +772,8 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                     if (activeSubmitter.isNotEmpty()) {
                         "لا شيء لـ«$activeSubmitter» ضمن هذه الفلترة —\n" +
                             "اضغط «الجميع» لعرض الباقي."
+                    } else if (onlyNeedsCategory) {
+                        "لا مساهمة بلا قسم الآن —\nاضغط «بلا قسم» مرّة أخرى لعرض الباقي."
                     } else if (items.isEmpty()) {
                         "لا توجد مساهمات بعد.\nعندما يرسل المستمعون دروساً من " +
                             "«شارك درساً» ستظهر هنا للمراجعة."
@@ -754,7 +808,9 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (selectMode && s.isPending) {
+                            // ما بلا قسم لا مربّع تحديد له: استثناؤه من الحسم
+                            // الجماعي يجب أن يُرى لا أن يُكتشف بعد الضغط.
+                            if (selectMode && s.isPending && !s.needsCategory) {
                                 Checkbox(
                                     checked = selected.contains(s.id),
                                     onCheckedChange = { checked ->
@@ -790,11 +846,22 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                             Column(Modifier.weight(1f)) {
                                 Text(s.title, fontWeight = FontWeight.Bold)
                                 Spacer(Modifier.size(2.dp))
-                                Text(
-                                    "${s.categoryName} ← ${s.subcategoryName}",
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                                // 🏷️ بلا قسم: شارة صريحة تقول للمشرف ما
+                                // المطلوب منه، لا سهمٌ بين فراغين يُقرأ خللاً.
+                                if (s.needsCategory) {
+                                    Text(
+                                        "بلا قسم — اختر له قسماً",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = adminOrange,
+                                    )
+                                } else {
+                                    Text(
+                                        "${s.categoryName} ← ${s.subcategoryName}",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                             StatusChip(s.status)
                         }
@@ -861,6 +928,17 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                         }
                         Spacer(Modifier.size(8.dp))
                         if (s.isPending) {
+                            // ⛔ سبب مكتوب فوق الزرّ المعطّل: زرٌّ باهت بلا
+                            // تفسير يُقرأ عطلاً في اللوحة لا قاعدةً مقصودة.
+                            if (s.needsCategory) {
+                                Text(
+                                    "لا يمكن النشر بلا قسم — الدرس بلا قسم لا يظهر " +
+                                        "للمستخدمين. افتح «تعديل ثم نشر» واختر له قسماً.",
+                                    fontSize = 12.sp,
+                                    color = adminOrange,
+                                )
+                                Spacer(Modifier.size(6.dp))
+                            }
                             Row(
                                 Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -868,7 +946,7 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                             ) {
                                 Button(
                                     onClick = { approvingId = s.id },
-                                    enabled = !busy && !bulkBusy,
+                                    enabled = !busy && !bulkBusy && !s.needsCategory,
                                     shape = RoundedCornerShape(8.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.primary,

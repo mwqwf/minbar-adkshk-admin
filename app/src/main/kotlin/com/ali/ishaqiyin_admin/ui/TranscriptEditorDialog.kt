@@ -499,6 +499,17 @@ fun TranscriptEditorDialog(
                         onImage = { uri -> pendingNew.add(uri) },
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
+                    // 📸 اقتراح آخر لقطة شاشة (≤ دقيقتين) فوق شبكة الصور
+                    // مباشرة: كثيراً ما يصوّر المشرف صفحة الكتاب أو خطأً قبل
+                    // فتح المحرّر. تدخل من مسار الإضافة الوحيد (pendingNew ⇒
+                    // شاشة القصّ ⇒ الإدراج) وتحترم سقف الصور نفسه.
+                    RecentScreenshotChip(
+                        enabled = !saving &&
+                            images.size + pendingNew.size <
+                            TranscriptsRepository.MAX_IMAGES,
+                        onPick = { uri -> pendingNew.add(uri) },
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
                     if (images.isNotEmpty()) {
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             items(images.size) { i ->

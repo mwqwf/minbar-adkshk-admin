@@ -587,6 +587,38 @@ service cloud.firestore {
         && request.resource.data.fcmToken.size() <= 4096;
     }
 
+    // 📮 قناة التواصل مع المالك: محادثة بين المستمع والمالك وحده.
+    // ⚠️ مستقلّة تماماً عن feedback: تلك بلا هويّة (بصمة مجزّأة) بحكم سياسة
+    // الخصوصية، وهذه مربوطة بالمعرّف الخام لأنّ غايتها أن يُردّ على صاحبها.
+    // القراءة لصاحب المحادثة أو المالك فقط، والكتابة عبر الدوالّ حصراً
+    // (createSupportThread / sendSupportMessage / replySupportThread / …).
+    match /support_threads/{threadId} {
+      allow read: if isOwner()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow write: if false;
+
+      match /messages/{messageId} {
+        allow read: if isOwner()
+          || (
+            signedIn()
+            && get(/databases/$(database)/documents/support_threads/$(threadId))
+              .data.uid == request.auth.uid
+          );
+        allow write: if false;
+      }
+    }
+
+    // طلبات الإشراف: للمالك وحده قراءةً، والكتابة والحسم عبر الدوالّ.
+    match /supervision_requests/{requestId} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    // منع مستخدم من فتح محادثات جديدة — بيانات داخلية بحتة.
+    match /support_blocks/{uid} {
+      allow read, write: if false;
+    }
+
     // 🗑️ سلة المحذوفات: الدروس المحذوفة تبقى 30 يوماً قابلة للاستعادة.
     // القراءة للمشرفين، والكتابة عبر الدوال حصراً (النقل/الاستعادة/الحذف
     // النهائي كلها معاملات خادمية).

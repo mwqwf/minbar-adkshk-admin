@@ -1148,6 +1148,15 @@ exports.deleteMyData = functions.runWith({ timeoutSeconds: 120, memory: "512MB" 
         for (const path of paths) await deleteFileIfExists(path).catch(() => {});
       },
     );
+    // 📮 محادثات التواصل مع المالك: تُحذف كاملةً (رسائلها ومرفقاتها وطلب
+    // الإشراف المرتبط بها) لأنها — بخلاف البلاغات — مربوطة بالهويّة صراحةً.
+    const supportThreadsSnap = await db.collection(SUPPORT_THREADS_COLLECTION)
+      .where("uid", "==", uid)
+      .get();
+    for (const doc of supportThreadsSnap.docs) {
+      await deleteSupportThreadDeep(uid, doc.ref);
+    }
+    await db.collection(SUPPORT_BLOCKS_COLLECTION).doc(uid).delete().catch(() => {});
     // إخفاء هوية المساهم في النصوص المعتمدة المنشورة (كما في الدروس).
     const transcriptsSnap = await db.collection("lesson_transcripts")
       .where("contributorUid", "==", uid)
@@ -1185,7 +1194,14 @@ exports.deleteMyData = functions.runWith({ timeoutSeconds: 120, memory: "512MB" 
     });
     return {
       ok: true,
-      deleted: { submissions, transcriptSubmissions, feedback, rates, notifications },
+      deleted: {
+        submissions,
+        transcriptSubmissions,
+        feedback,
+        rates,
+        notifications,
+        supportThreads: supportThreadsSnap.size,
+      },
       anonymizedLessons,
       anonymizedTranscripts: transcriptsSnap.size,
     };
@@ -4815,3 +4831,539 @@ exports.updateMyTranscriptSubmission = functions.https.onCall(async (data, conte
   await ref.update(update);
   return { ok: true, id: submissionId };
 });
+
+// ─── 📮 قناة التواصل مع المالك (support_threads) ─────────────────────
+//
+// قناة مستقلّة تماماً عن `feedback` ولا تمسّها: البلاغات تُخزَّن ببصمة
+// مجزّأة بلا هويّة (سياسة الخصوصية المنشورة)، أمّا هذه القناة فتحتاج
+// المعرّف الخام صراحةً لأنّ غايتها أن يردّ المالك على صاحب الرسالة.
+// كل الكتابة تمرّ بهذه الدوالّ؛ قواعد Firestore تمنع كتابة العميل.
+const SUPPORT_THREADS_COLLECTION = "support_threads";
+const SUPERVISION_REQUESTS_COLLECTION = "supervision_requests";
+const SUPPORT_BLOCKS_COLLECTION = "support_blocks";
+const SUPPORT_KINDS = ["suggestion", "bug", "lesson_help", "idea", "supervision"];
+const MAX_SUPPORT_TEXT = 1000;
+const MAX_SUPPORT_NAME = 40;
+const MAX_SUPPORT_IMAGES = 4;
+const MAX_SUPPORT_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_SUPPORT_AUDIO_BYTES = 25 * 1024 * 1024;
+const MAX_DEVICE_INFO_KEYS = 8;
+
+function supportPreview(text, audioPath, imagePaths) {
+  const clean = cleanString(text, 120);
+  if (clean) return clean;
+  if (audioPath) return "رسالة صوتية";
+  if (Array.isArray(imagePaths) && imagePaths.length) return "صورة مرفقة";
+  return "رسالة";
+}
+
+// معلومات الجهاز اختياريّة بالكامل: العميل هو من يقرّر إرسالها، وتُخزَّن
+// كما وصلت بعد تنظيف بسيط (نصوص فقط، مفاتيح محدودة) لتظهر للمالك.
+function cleanDeviceInfo(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entries = Object.entries(value).slice(0, MAX_DEVICE_INFO_KEYS);
+  const out = {};
+  entries.forEach(([key, item]) => {
+    if (item === undefined || item === null) return;
+    const name = cleanString(key, 40);
+    if (!name) return;
+    out[name] = cleanString(String(item), 120);
+  });
+  return Object.keys(out).length ? out : null;
+}
+
+// المرفقات كلّها تحت `support/{uid}/{threadId}/` حصراً، ويُتحقَّق من وجودها
+// ونوعها وحجمها فعليّاً في التخزين (نفس نهج المساهمات واقتراحات النصوص).
+async function validateSupportAttachments(uid, threadId, audioPath, imagePaths) {
+  const prefix = `support/${uid}/${threadId}/`;
+  const audio = cleanString(audioPath, 700);
+  if (audio) {
+    if (!audio.startsWith(prefix) || audio.includes("..")) {
+      throw new functions.https.HttpsError("permission-denied", "مسار الملف الصوتي غير صالح.");
+    }
+    let metadata;
+    try {
+      [metadata] = await bucket.file(audio).getMetadata();
+    } catch (_) {
+      throw new functions.https.HttpsError("not-found", "الملف الصوتي غير موجود. أعد رفعه.");
+    }
+    const size = Number(metadata.size || 0);
+    const contentType = String(metadata.contentType || "");
+    if (size <= 0 || size > MAX_SUPPORT_AUDIO_BYTES || !contentType.startsWith("audio/")) {
+      throw new functions.https.HttpsError("invalid-argument", "الملف الصوتي غير صالح أو حجمه كبير.");
+    }
+  }
+  const list = Array.isArray(imagePaths) ? imagePaths.slice(0, MAX_SUPPORT_IMAGES) : [];
+  const images = [];
+  for (const raw of list) {
+    const path = cleanString(raw, 700);
+    if (!path || !path.startsWith(prefix) || path.includes("..")) {
+      throw new functions.https.HttpsError("permission-denied", "مسار صورة غير صالح.");
+    }
+    let metadata;
+    try {
+      [metadata] = await bucket.file(path).getMetadata();
+    } catch (_) {
+      throw new functions.https.HttpsError("not-found", "صورة مرفقة غير موجودة. أعد رفعها.");
+    }
+    const size = Number(metadata.size || 0);
+    const contentType = String(metadata.contentType || "");
+    if (size <= 0 || size > MAX_SUPPORT_IMAGE_BYTES || !contentType.startsWith("image/")) {
+      throw new functions.https.HttpsError("invalid-argument", "صورة مرفقة غير صالحة أو حجمها كبير.");
+    }
+    if (!images.includes(path)) images.push(path);
+  }
+  return { audio, images };
+}
+
+const SUPPORT_KIND_LABELS = {
+  suggestion: "اقتراح",
+  bug: "بلاغ خلل",
+  lesson_help: "استفسار عن درس",
+  idea: "فكرة",
+  supervision: "طلب إشراف",
+};
+
+async function loadSupportThread(threadId) {
+  const id = requireString(threadId, "threadId", 1, 180);
+  const ref = db.collection(SUPPORT_THREADS_COLLECTION).doc(id);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new functions.https.HttpsError("not-found", "المحادثة غير موجودة.");
+  }
+  return { ref, value: snap.data() || {} };
+}
+
+exports.createSupportThread = functions.https.onCall(async (data, context) => {
+  assertAppCheck(context);
+  const uid = assertSignedIn(context);
+  const kind = requireString(data && data.kind, "kind", 1, 40);
+  if (!SUPPORT_KINDS.includes(kind)) {
+    throw new functions.https.HttpsError("invalid-argument", "نوع الرسالة غير معروف. اختر نوعاً من القائمة.");
+  }
+  const blockSnap = await db.collection(SUPPORT_BLOCKS_COLLECTION).doc(uid).get();
+  if (blockSnap.exists && (blockSnap.data() || {}).blocked === true) {
+    throw new functions.https.HttpsError("permission-denied", "لا يمكنك إرسال رسائل جديدة في الوقت الحالي.");
+  }
+  const text = cleanString(data && data.text, MAX_SUPPORT_TEXT);
+  const displayName = cleanString(data && data.displayName, MAX_SUPPORT_NAME);
+  const fcmToken = cleanString(data && data.fcmToken, 4096);
+  const deviceInfo = cleanDeviceInfo(data && data.deviceInfo);
+  const rawImages = Array.isArray(data && data.imagePaths) ? data.imagePaths : [];
+  const rawAudio = cleanString(data && data.audioPath, 700);
+  if (!text && !rawAudio && !rawImages.length) {
+    throw new functions.https.HttpsError("invalid-argument", "اكتب رسالتك أو أرفق تسجيلاً أو صورة.");
+  }
+  // معرّف الخيط يأتي من العميل ليتمكّن من رفع المرفقات قبل الاستدعاء
+  // (نفس نهج createSubmission)، وإلا وُلِّد هنا للرسائل النصّية.
+  const requestedId = cleanString(data && data.threadId, 180);
+  if (requestedId && !/^[A-Za-z0-9_-]+$/.test(requestedId)) {
+    throw new functions.https.HttpsError("invalid-argument", "معرّف المحادثة غير صالح.");
+  }
+  const ref = requestedId
+    ? db.collection(SUPPORT_THREADS_COLLECTION).doc(requestedId)
+    : db.collection(SUPPORT_THREADS_COLLECTION).doc();
+  const existing = await ref.get();
+  if (existing.exists) {
+    throw new functions.https.HttpsError("already-exists", "هذه المحادثة موجودة مسبقاً.");
+  }
+  const { audio, images } = await validateSupportAttachments(
+    uid,
+    ref.id,
+    rawAudio,
+    rawImages,
+  );
+  const about = cleanString(data && data.about, MAX_SUPPORT_TEXT);
+  const relation = cleanString(data && data.relation, MAX_SUPPORT_TEXT);
+  const wants = cleanString(data && data.wants, MAX_SUPPORT_TEXT);
+  if (kind === "supervision" && !text && !about) {
+    throw new functions.https.HttpsError("invalid-argument", "عرّف بنفسك في طلب الإشراف.");
+  }
+  // خيط جديد واحد كل ٢٤ ساعة لكل مستخدم.
+  await consumeRateLimit({
+    uid,
+    action: "support-thread",
+    limit: 1,
+    windowMs: 24 * 60 * 60 * 1000,
+    minIntervalMs: 5 * 1000,
+  });
+  const now = Date.now();
+  const preview = supportPreview(text, audio, images);
+  const thread = {
+    uid,
+    displayName,
+    kind,
+    status: "new",
+    createdAtMs: now,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastMessageAtMs: now,
+    lastMessagePreview: preview,
+    ownerUnread: 1,
+    userUnread: 0,
+    ownerReplied: false,
+    messageCount: 1,
+    closed: false,
+    blocked: false,
+    fcmToken,
+  };
+  const message = {
+    senderUid: uid,
+    fromOwner: false,
+    text,
+    audioPath: audio,
+    imagePaths: images,
+    createdAtMs: now,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  if (deviceInfo) {
+    message.deviceInfo = deviceInfo;
+    thread.deviceInfo = deviceInfo;
+  }
+  let supervisionRequestId = "";
+  const messageRef = ref.collection("messages").doc();
+  const batch = db.batch();
+  if (kind === "supervision") {
+    const requestRef = db.collection(SUPERVISION_REQUESTS_COLLECTION).doc();
+    supervisionRequestId = requestRef.id;
+    thread.supervisionRequestId = supervisionRequestId;
+    batch.set(requestRef, {
+      uid,
+      displayName,
+      about: about || text,
+      relation,
+      wants,
+      status: "pending",
+      createdAtMs: now,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      threadId: ref.id,
+    });
+  }
+  batch.set(ref, thread);
+  batch.set(messageRef, message);
+  await batch.commit();
+  const label = SUPPORT_KIND_LABELS[kind] || "رسالة";
+  const who = displayName || "مستمع";
+  const alertTitle = kind === "supervision"
+    ? "طلب إشراف جديد"
+    : `رسالة جديدة من مستمع (${label})`;
+  const alertBody = `${who}: ${preview}`;
+  await Promise.all([
+    writeAdminAlert(OWNER_EMAIL, alertTitle, alertBody, {
+      type: "support",
+      threadId: ref.id,
+      refId: ref.id,
+      kind,
+    }),
+    pushToAdmins(alertTitle, alertBody, {
+      type: "support",
+      threadId: ref.id,
+      refId: ref.id,
+      kind,
+      route: "support",
+    }, true),
+  ]);
+  return { ok: true, threadId: ref.id, messageId: messageRef.id, supervisionRequestId };
+});
+
+exports.sendSupportMessage = functions.https.onCall(async (data, context) => {
+  assertAppCheck(context);
+  const uid = assertSignedIn(context);
+  const { ref, value } = await loadSupportThread(data && data.threadId);
+  if (value.uid !== uid) {
+    throw new functions.https.HttpsError("permission-denied", "هذه المحادثة ليست لك.");
+  }
+  if (value.blocked === true) {
+    throw new functions.https.HttpsError("permission-denied", "لا يمكنك إرسال رسائل في هذه المحادثة.");
+  }
+  if (value.closed === true) {
+    throw new functions.https.HttpsError("failed-precondition", "أُغلقت هذه المحادثة. ابدأ محادثة جديدة إن احتجت.");
+  }
+  // لا متابعة قبل ردّ المالك: يبقى الخيط برسالة واحدة حتى يفتحه بردّه.
+  let ownerReplied = value.ownerReplied === true;
+  if (!ownerReplied) {
+    const answered = await ref.collection("messages")
+      .where("fromOwner", "==", true)
+      .limit(1)
+      .get();
+    ownerReplied = !answered.empty;
+  }
+  if (!ownerReplied) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "رسالتك وصلت. انتظر الردّ قبل إرسال رسالة أخرى.",
+    );
+  }
+  const text = cleanString(data && data.text, MAX_SUPPORT_TEXT);
+  const rawImages = Array.isArray(data && data.imagePaths) ? data.imagePaths : [];
+  const rawAudio = cleanString(data && data.audioPath, 700);
+  if (!text && !rawAudio && !rawImages.length) {
+    throw new functions.https.HttpsError("invalid-argument", "اكتب رسالتك أو أرفق تسجيلاً أو صورة.");
+  }
+  const { audio, images } = await validateSupportAttachments(uid, ref.id, rawAudio, rawImages);
+  await consumeRateLimit({
+    uid,
+    action: "support-message",
+    limit: 10,
+    windowMs: 60 * 60 * 1000,
+    minIntervalMs: 5 * 1000,
+  });
+  const now = Date.now();
+  const preview = supportPreview(text, audio, images);
+  const messageRef = ref.collection("messages").doc();
+  const fcmToken = cleanString(data && data.fcmToken, 4096);
+  const batch = db.batch();
+  batch.set(messageRef, {
+    senderUid: uid,
+    fromOwner: false,
+    text,
+    audioPath: audio,
+    imagePaths: images,
+    createdAtMs: now,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  const update = {
+    status: "user_replied",
+    lastMessageAtMs: now,
+    lastMessagePreview: preview,
+    ownerUnread: admin.firestore.FieldValue.increment(1),
+    messageCount: admin.firestore.FieldValue.increment(1),
+  };
+  if (fcmToken) update.fcmToken = fcmToken;
+  batch.update(ref, update);
+  await batch.commit();
+  const who = cleanString(value.displayName, MAX_SUPPORT_NAME) || "مستمع";
+  const alertTitle = "ردّ جديد في محادثة مستمع";
+  const alertBody = `${who}: ${preview}`;
+  await Promise.all([
+    writeAdminAlert(OWNER_EMAIL, alertTitle, alertBody, {
+      type: "support",
+      threadId: ref.id,
+      refId: ref.id,
+      kind: cleanString(value.kind, 40),
+    }),
+    pushToAdmins(alertTitle, alertBody, {
+      type: "support",
+      threadId: ref.id,
+      refId: ref.id,
+      kind: cleanString(value.kind, 40),
+      route: "support",
+    }, true),
+  ]);
+  return { ok: true, messageId: messageRef.id };
+});
+
+// إشعار صاحب الخيط بردّ المالك: صندوق داخل التطبيق + دفع لرمز جهازه،
+// بنفس مسار إشعار نتيجة المساهمة تماماً.
+async function notifySupportUser(threadId, thread, title, body, extra) {
+  const uid = cleanString(thread.uid, 180);
+  const token = cleanString(thread.fcmToken, 4096);
+  const payload = Object.assign({
+    type: "support",
+    threadId,
+    id: threadId,
+    refId: threadId,
+    route: "support-thread",
+  }, extra || {});
+  await Promise.all([
+    writeUserNotification(uid, title, body, payload),
+    pushToToken(token, title, body, payload),
+  ]);
+}
+
+async function appendOwnerSupportMessage(ref, ownerUid, payload) {
+  const now = Date.now();
+  const preview = supportPreview(payload.text, payload.audioPath, payload.imagePaths);
+  const messageRef = ref.collection("messages").doc();
+  const batch = db.batch();
+  batch.set(messageRef, {
+    senderUid: ownerUid,
+    fromOwner: true,
+    text: cleanString(payload.text, MAX_SUPPORT_TEXT),
+    audioPath: cleanString(payload.audioPath, 700),
+    imagePaths: Array.isArray(payload.imagePaths) ? payload.imagePaths : [],
+    createdAtMs: now,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  batch.update(ref, {
+    status: "answered",
+    ownerReplied: true,
+    ownerUnread: 0,
+    userUnread: admin.firestore.FieldValue.increment(1),
+    lastMessageAtMs: now,
+    lastMessagePreview: preview,
+    messageCount: admin.firestore.FieldValue.increment(1),
+  });
+  await batch.commit();
+  return { messageRef, preview };
+}
+
+exports.replySupportThread = functions.https.onCall(async (data, context) => {
+  const ownerEmail = await assertOwner(context);
+  const ownerUid = context.auth.uid;
+  const { ref, value } = await loadSupportThread(data && data.threadId);
+  const text = cleanString(data && data.text, MAX_SUPPORT_TEXT);
+  const audioPath = cleanString(data && data.audioPath, 700);
+  const imagePaths = (Array.isArray(data && data.imagePaths) ? data.imagePaths : [])
+    .slice(0, MAX_SUPPORT_IMAGES)
+    .map((item) => cleanString(item, 700))
+    .filter(Boolean);
+  if (!text && !audioPath && !imagePaths.length) {
+    throw new functions.https.HttpsError("invalid-argument", "اكتب ردّك أو أرفق تسجيلاً أو صورة.");
+  }
+  const { messageRef, preview } = await appendOwnerSupportMessage(ref, ownerUid, {
+    text,
+    audioPath,
+    imagePaths,
+  });
+  await Promise.all([
+    clearAdminAlerts("support", ref.id),
+    notifySupportUser(ref.id, value, "وصلك ردّ على رسالتك", preview, { result: "reply" }),
+    auditOwnerAction(ownerEmail, "support-reply", ref.id, { kind: cleanString(value.kind, 40) }),
+  ]);
+  return { ok: true, messageId: messageRef.id };
+});
+
+exports.closeSupportThread = functions.https.onCall(async (data, context) => {
+  const ownerEmail = await assertOwner(context);
+  const { ref, value } = await loadSupportThread(data && data.threadId);
+  await ref.update({
+    closed: true,
+    status: "closed",
+    ownerUnread: 0,
+    closedAtMs: Date.now(),
+    closedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  await Promise.all([
+    clearAdminAlerts("support", ref.id),
+    notifySupportUser(ref.id, value, "أُغلقت محادثتك", "شكراً لتواصلك.", { result: "closed" }),
+    auditOwnerAction(ownerEmail, "support-close", ref.id, {}),
+  ]);
+  return { ok: true };
+});
+
+/**
+ * تصفير شارة «غير مقروء» عند فتح المالك للمحادثة.
+ *
+ * ⚠️ لماذا دالّة ولا كتابة مباشرة من اللوحة؟ لأنّ قواعد `support_threads`
+ * تمنع الكتابة على العميل مطلقاً (`write: if false`) — حتى المالك. فمحاولة
+ * اللوحة كتابة `ownerUnread` بنفسها كانت تُرفض بصمت، فتبقى الشارة معلّقة
+ * على محادثةٍ قُرئت فعلاً ولا يفهم المالك سبب بقائها.
+ */
+exports.markSupportThreadRead = functions.https.onCall(async (data, context) => {
+  await assertOwner(context);
+  const { ref } = await loadSupportThread(data && data.threadId);
+  await ref.update({ ownerUnread: 0 });
+  await clearAdminAlerts("support", ref.id);
+  return { ok: true };
+});
+
+exports.blockSupportUser = functions.https.onCall(async (data, context) => {
+  const ownerEmail = await assertOwner(context);
+  const uid = requireString(data && data.uid, "uid", 1, 180);
+  const blocked = data && data.blocked === true;
+  await db.collection(SUPPORT_BLOCKS_COLLECTION).doc(uid).set({
+    uid,
+    blocked,
+    updatedAtMs: Date.now(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  const snap = await db.collection(SUPPORT_THREADS_COLLECTION)
+    .where("uid", "==", uid)
+    .get();
+  for (let offset = 0; offset < snap.docs.length; offset += 400) {
+    const batch = db.batch();
+    snap.docs.slice(offset, offset + 400)
+      .forEach((doc) => batch.update(doc.ref, { blocked }));
+    await batch.commit();
+  }
+  await auditOwnerAction(ownerEmail, blocked ? "support-block" : "support-unblock", uid, {
+    threads: snap.size,
+  });
+  return { ok: true, blocked, threads: snap.size };
+});
+
+exports.decideSupervisionRequest = functions.https.onCall(async (data, context) => {
+  const ownerEmail = await assertOwner(context);
+  const ownerUid = context.auth.uid;
+  const requestId = requireString(data && data.requestId, "requestId", 1, 180);
+  const decision = requireString(data && data.decision, "decision", 1, 40);
+  if (!["approved", "rejected"].includes(decision)) {
+    throw new functions.https.HttpsError("invalid-argument", "القرار غير معروف. اختر القبول أو الرفض.");
+  }
+  const note = cleanString(data && data.note, MAX_SUPPORT_TEXT);
+  const requestRef = db.collection(SUPERVISION_REQUESTS_COLLECTION).doc(requestId);
+  const snap = await requestRef.get();
+  if (!snap.exists) {
+    throw new functions.https.HttpsError("not-found", "الطلب غير موجود.");
+  }
+  const value = snap.data() || {};
+  if (value.status !== "pending") {
+    throw new functions.https.HttpsError("failed-precondition", "هذا الطلب محسوم من قبل.");
+  }
+  await requestRef.update({
+    status: decision,
+    note,
+    decidedAtMs: Date.now(),
+    decidedAt: admin.firestore.FieldValue.serverTimestamp(),
+    decidedByEmail: ownerEmail,
+  });
+  // ⛔ لا وثيقة مشرف تُنشأ هنا: الاعتماد الفعليّ يبقى بيد المالك في شاشة
+  // المشرفين. هذه الدالّة تغيّر حالة الطلب وتكتب رسالة في الخيط فقط.
+  const baseText = decision === "approved"
+    ? "قُبل طلب الإشراف. سنتابع معك الخطوة التالية."
+    : "لم يُقبل طلب الإشراف حالياً. شكراً لاهتمامك.";
+  const text = note ? `${baseText}\n${note}` : baseText;
+  const threadId = cleanString(value.threadId, 180);
+  if (threadId) {
+    const threadRef = db.collection(SUPPORT_THREADS_COLLECTION).doc(threadId);
+    const threadSnap = await threadRef.get();
+    if (threadSnap.exists) {
+      const thread = threadSnap.data() || {};
+      await appendOwnerSupportMessage(threadRef, ownerUid, {
+        text,
+        audioPath: "",
+        imagePaths: [],
+      });
+      await Promise.all([
+        clearAdminAlerts("support", threadId),
+        notifySupportUser(threadId, thread, "نتيجة طلب الإشراف", baseText, {
+          result: decision,
+          requestId,
+        }),
+      ]);
+    }
+  }
+  await auditOwnerAction(ownerEmail, "supervision-decision", requestId, { decision });
+  return { ok: true, requestId, decision };
+});
+
+// حذف خيط واحد بكل رسائله وملفّاته وطلب الإشراف المرتبط به.
+async function deleteSupportThreadDeep(uid, threadRef) {
+  const threadId = threadRef.id;
+  await deleteQuery(threadRef.collection("messages"));
+  await deleteQuery(
+    db.collection(SUPERVISION_REQUESTS_COLLECTION)
+      .where("uid", "==", uid)
+      .where("threadId", "==", threadId),
+  );
+  try {
+    await bucket.deleteFiles({ prefix: `support/${uid}/${threadId}/` });
+  } catch (error) {
+    console.error("support storage cleanup failed", threadId, error);
+  }
+  await clearAdminAlerts("support", threadId);
+  await threadRef.delete();
+}
+
+exports.deleteMySupportThread = functions
+  .runWith({ timeoutSeconds: 120, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    assertAppCheck(context);
+    const uid = assertSignedIn(context);
+    const { ref, value } = await loadSupportThread(data && data.threadId);
+    if (value.uid !== uid) {
+      throw new functions.https.HttpsError("permission-denied", "هذه المحادثة ليست لك.");
+    }
+    await deleteSupportThreadDeep(uid, ref);
+    return { ok: true, threadId: ref.id };
+  });

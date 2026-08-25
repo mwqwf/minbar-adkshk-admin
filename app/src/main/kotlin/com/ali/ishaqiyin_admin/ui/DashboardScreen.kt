@@ -85,6 +85,7 @@ import com.ali.ishaqiyin_admin.data.SuspiciousLessonReview
 import com.ali.ishaqiyin_admin.data.TranscriptsRepository
 import com.ali.ishaqiyin_admin.data.TrashRepository
 import com.ali.ishaqiyin_admin.data.SubmissionsRepository
+import com.ali.ishaqiyin_admin.data.SupportRepository
 import com.ali.ishaqiyin_admin.data.UploadQueue
 import com.ali.ishaqiyin_admin.data.needsAttention
 import com.ali.ishaqiyin_admin.ui.chat.ProfileDialog
@@ -152,6 +153,15 @@ internal object DashboardBadges {
 
     fun pendingTranscripts(): StateFlow<Int> =
         shared("transcripts", 0) { TranscriptsRepository.watchPendingCount() }
+
+    /**
+     * 📬 رسائل المستخدمين غير المقروءة — **للمالك وحده** تدفّقٌ حقيقيّ:
+     * قواعد الخيوط تخصّه، فربط مستمع لغيره رفضُ صلاحيّة متكرّر بلا فائدة.
+     */
+    fun supportUnread(isOwner: Boolean): StateFlow<Int> =
+        shared("support:$isOwner", 0) {
+            if (isOwner) SupportRepository.watchUnreadCount() else flowOf(0)
+        }
 
     // ⛔ watchCount تدفّق يبثّ قيمة واحدة ثم يكتمل: مشاركته بمهلة الـ30 ثانية
     // كانت تُبقي عدّاً قديماً بعد تفريغ السلة والعودة السريعة إلى اللوحة
@@ -392,6 +402,7 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
     val suspicious by DashboardBadges.suspicious(isOwner).collectAsState()
     val trashCount by DashboardBadges.trash().collectAsState()
     val featured by DashboardBadges.featured().collectAsState()
+    val supportUnread by DashboardBadges.supportUnread(isOwner).collectAsState()
     val queue by UploadQueue.items.collectAsState()
     // ⛔ كانت `loadCache` (قراءة SharedPreferences + فكّ JSON للقطة التحليلات)
     // تُنفَّذ داخل `remember` أثناء التركيب على خيط الواجهة — الآن على IO
@@ -444,6 +455,23 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
                         "درساً مشبوهاً تنتظر مراجعتك",
                     ),
                     onClick = { nav.navigate(Routes.OWNER_REVIEW) },
+                ),
+            )
+        }
+        // 📬 رسالة مستخدم تنتظر ردّاً: إنسانٌ ينتظر جواباً، فتسبق ما ينتظر
+        // مراجعةً. (بلا استعلام جديد — نفس تدفّق شارة اللوحة.)
+        if (supportUnread > 0) {
+            add(
+                TodayTask(
+                    icon = Icons.Filled.Forum,
+                    text = arabicCount(
+                        supportUnread,
+                        "رسالة جديدة من مستخدم",
+                        "رسالتان جديدتان من مستخدمين",
+                        "رسائل جديدة من المستخدمين",
+                        "رسالة جديدة من المستخدمين",
+                    ),
+                    onClick = { nav.navigate(Routes.SUPPORT) },
                 ),
             )
         }
@@ -679,6 +707,7 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
         it.featuredUntilMs == null || it.featuredUntilMs > System.currentTimeMillis()
     }
     val suspicious by DashboardBadges.suspicious(isOwner).collectAsState()
+    val supportUnread by DashboardBadges.supportUnread(isOwner).collectAsState()
     val c = gridColors()
 
     data class ActionSpec(
@@ -769,8 +798,8 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
         add(
             ActionSpec(
                 Icons.Filled.VerifiedUser, c.teal, "الإدارة",
-                if (isOwner) "المشرفون والمراجعة وتذكير التحديث" else "صلاحيتك وحسابك",
-                suspicious.size, "",
+                if (isOwner) "الرسائل والمشرفون والمراجعة" else "صلاحيتك وحسابك",
+                suspicious.size + supportUnread, "",
                 entries = buildList {
                     add(
                         ActionSpec(
@@ -788,8 +817,17 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
                             "من عدّل ماذا ومتى", 0, ROUTE_RECENT_CHANGES,
                         ),
                     )
-                    // لغير المالك لا يُنشأ شيء من هذين، فلا يظهر له أثر.
+                    // لغير المالك لا يُنشأ شيء من هذه، فلا يظهر له أثر.
                     if (isOwner) {
+                        // 📬 صندوق رسائل المستخدمين — أوّل أبواب «الإدارة»
+                        // لأنّ خلفه إنساناً ينتظر جواباً.
+                        add(
+                            ActionSpec(
+                                Icons.Filled.Forum, c.green, "رسائل المستخدمين",
+                                "اقتراحات وبلاغات وطلبات إشراف",
+                                supportUnread, Routes.SUPPORT,
+                            ),
+                        )
                         add(
                             ActionSpec(
                                 Icons.Filled.GppMaybe, c.danger, "الدروس المشبوهة",

@@ -2,10 +2,12 @@ package com.ali.ishaqiyin_admin.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -102,6 +104,22 @@ class PreviewPlayerState internal constructor(private val player: ExoPlayer) {
 
     /** ترجيع/تقديم بمقدار ثابت (±٣٠ ثانية). */
     fun skip(deltaMs: Long) = seekTo(positionMs + deltaMs)
+
+    /**
+     * 🎯 قفز إلى **نسبة** من المقطع (0 = البداية، 0.5 = الوسط…).
+     *
+     * ⚠️ الغرض توفير بيانات المشرف: المشغّل يبثّ ولا ينزّل الدرس كاملاً،
+     * و`seekTo` على مصدر متدرّج يطلب من الخادم البايتات **من الموضع الجديد
+     * وحده** (طلب مدى)، فلا يُعاد التحميل من الصفر. لذلك يُقاس الحكم على
+     * ثلاث نقاط بثوانٍ معدودة بدل تنزيل درسٍ كامل ليُرفض بعد دقيقة.
+     *
+     * لا يعمل قبل معرفة المدّة — والزرّ نفسه معطَّل حتى تصل.
+     */
+    fun seekFraction(fraction: Float) {
+        val total = durationMs
+        if (total <= 0L) return
+        seekTo((total * fraction.coerceIn(0f, 1f)).toLong())
+    }
 
     /** تدوير السرعة بين 1× و1.5× و2×. */
     fun cycleSpeed() {
@@ -296,5 +314,38 @@ fun PreviewPlayerBar(
                     .padding(horizontal = 10.dp, vertical = 5.dp),
             )
         }
+        // 🎯 ثلاث نقاط تكفي للحكم: أوّل الدرس (صحّة الصوت والمقدّمة)، ووسطه
+        // (المتن)، وقبل آخره (ألصق الخاتمة). أقلّ ما يُحمَّل وأسرع ما يُقرَّر.
+        Row(
+            Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            JumpChip("البداية", duration > 0) { state.seekFraction(0f) }
+            Spacer(Modifier.size(6.dp))
+            JumpChip("الوسط", duration > 0) { state.seekFraction(0.5f) }
+            Spacer(Modifier.size(6.dp))
+            // 0.9 لا 1.0: النهاية التامّة تُنهي المقطع بلا صوت يُسمع.
+            JumpChip("قبل النهاية", duration > 0) { state.seekFraction(0.9f) }
+        }
+    }
+}
+
+/** كبسولة قفز واحدة — هدف لمسها 48dp كبقيّة أزرار الشريط. */
+@Composable
+private fun JumpChip(label: String, enabled: Boolean, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val tint = if (enabled) scheme.primary else scheme.onSurfaceVariant
+    Box(
+        Modifier
+            .heightIn(min = 48.dp)
+            .background(
+                if (enabled) tint.copy(alpha = 0.12f) else Color.Transparent,
+                RoundedCornerShape(999.dp),
+            )
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = tint)
     }
 }
