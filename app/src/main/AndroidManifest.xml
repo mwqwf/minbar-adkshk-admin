@@ -21,15 +21,11 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- «إرفاق آخر لقطة شاشة» في دردشة الإدارة (المجموعة والخاصّ): قراءة
-         الصور تُطلب كسولاً — عند أوّل نقرة على البطاقة فقط، لا عند الإقلاع
-         ولا عند فتح الشاشة. VISUAL_USER_SELECTED تدعم «الوصول الجزئي
-         للصور» في أندرويد 14+، وREAD_EXTERNAL_STORAGE قبل أندرويد 13 فقط. -->
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+    <!-- ⛔ لا تُعِد أذونات الصور (READ_MEDIA_IMAGES /
+         READ_MEDIA_VISUAL_USER_SELECTED / READ_EXTERNAL_STORAGE): Play يوجب
+         على كلّ تطبيق يطلبها إقرار «الوظيفة الأساسيّة للصور والفيديوهات»
+         وقد رفض إصدار اللوحة بسببها. كلّ ما نحتاجه هو اختيار صورة واحدة،
+         ومنتقي الصور (PickVisualMedia) يفعلها بلا أيّ إذن وعلى كلّ إصدار. -->
 
     <!-- ⛔ لا تحذف هذه الكتلة: Play **يستنتج** عتاداً مطلوباً من الأذونات ما لم
          نُصرّح بخلافه، فيُسقط من قائمة التوافق كل جهاز ينقصه ذلك العتاد.
@@ -77,8 +73,9 @@
 
             <!-- «المشاركة إلى إدارة منبر»: استقبال ملفّات من التطبيقات الأخرى،
                  ثمّ تعرض اللوحة ورقة خيارات (درس صوتي / مجموعة الإدارة /
-                 محادثة خاصّة). الصوت أوّلاً، ومعه الصور والفيديو لأنّ الإرسال
-                 إلى الدردشة لا يقتصر على الصوت.
+                 محادثة خاصّة). الصوت أوّلاً، ومعه الصور لأنّ الإرسال
+                 إلى الدردشة لا يقتصر على الصوت. ⛔ لا `video/*`: إرسال
+                 الفيديو أُلغي بقرار صريح (العرض وحده باقٍ للرسائل القديمة).
                  ⚠️ لا `*/*` هنا: كان يجعل اللوحة هدف مشاركة لكلّ نصّ ورابط،
                  ومشاركة النصّ بلا EXTRA_STREAM تفتح اللوحة بلا ورقة ولا
                  تفسير. الأنواع المحدّدة تمنع ذلك من أصله. -->
@@ -87,7 +84,6 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="audio/*" />
                 <data android:mimeType="image/*" />
-                <data android:mimeType="video/*" />
             </intent-filter>
             <!-- نصّ مشارَك: وجهته «النص المشروح» لدرس (اختيار الدرس ثم المحرر)
                  — صار له مسار معالجة صريح فلا يفتح اللوحة بلا تفسير. -->
@@ -101,7 +97,6 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="audio/*" />
                 <data android:mimeType="image/*" />
-                <data android:mimeType="video/*" />
             </intent-filter>
         </activity>
 

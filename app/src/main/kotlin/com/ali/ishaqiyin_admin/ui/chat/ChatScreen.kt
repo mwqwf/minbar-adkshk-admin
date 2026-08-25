@@ -60,7 +60,6 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -132,6 +131,7 @@ import com.ali.ishaqiyin_admin.data.chatTypeLabel
 import com.ali.ishaqiyin_admin.data.chatTypeToString
 import com.ali.ishaqiyin_admin.data.formatBytes
 import com.ali.ishaqiyin_admin.data.guessContentType
+import com.ali.ishaqiyin_admin.data.isVideoMime
 import com.ali.ishaqiyin_admin.ui.ClipboardImageSuggestion
 import com.ali.ishaqiyin_admin.ui.RecentScreenshotChip
 import com.ali.ishaqiyin_admin.ui.CountBadge
@@ -470,6 +470,17 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
     // ── الأوراق المنسدلة ───────────────────────────────────
     pendingUpload?.let { file ->
         val contentType = guessContentType(file.name)
+        // ⛔ الفيديو ملغى: منتقي الصور ImageOnly يمنعه، لكنّ خيار «ملفّ»
+        // (*/*) يبلغه — فالحارس هنا هو المانع الأخير قبل الرفع.
+        if (isVideoMime(contentType)) {
+            // التصفير والتنبيه في أثر جانبيّ لا في التركيب نفسه: الكتابة
+            // على الحالة أثناء التركيب تُعيده بلا نهاية.
+            LaunchedEffect(file) {
+                pendingUpload = null
+                snack("إرسال الفيديو غير مدعوم في الدردشة.")
+            }
+            return@let
+        }
         CaptionDialog(
             file = file,
             type = chatTypeForMime(contentType),
@@ -1920,8 +1931,9 @@ fun AttachMenuSheet(onDismiss: () -> Unit, onPick: (String) -> Unit) {
             Modifier.fillMaxWidth().padding(vertical = 20.dp, horizontal = 12.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
+            // ⛔ لا خيار «فيديو»: إرسال الفيديو أُلغي بقرار صريح من صاحب
+            // المشروع (وعرضُ الفيديو باقٍ للرسائل القديمة وحدها).
             AttachOption(Icons.Filled.Image, "صورة", ChatColors.accent) { onPick("image/*") }
-            AttachOption(Icons.Filled.Videocam, "فيديو", ChatColors.amber) { onPick("video/*") }
             AttachOption(Icons.Filled.MusicNote, "صوت", Color(0xFF2563EB)) { onPick("audio/*") }
             AttachOption(Icons.AutoMirrored.Filled.InsertDriveFile, "ملفّ", Color(0xFF7C3AED)) { onPick("*/*") }
         }

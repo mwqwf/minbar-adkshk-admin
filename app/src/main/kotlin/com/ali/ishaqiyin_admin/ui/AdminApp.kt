@@ -78,6 +78,7 @@ import com.ali.ishaqiyin_admin.data.ChatUploadTarget
 import com.ali.ishaqiyin_admin.data.ChatUploader
 import com.ali.ishaqiyin_admin.data.DmRepository
 import com.ali.ishaqiyin_admin.data.chatTypeForMime
+import com.ali.ishaqiyin_admin.data.isVideoMime
 import com.ali.ishaqiyin_admin.ui.chat.ChatScreen
 import com.ali.ishaqiyin_admin.ui.chat.ChatsHomeScreen
 import com.ali.ishaqiyin_admin.ui.chat.DmScreen
@@ -584,10 +585,15 @@ private fun ShareDestinationSheets(nav: NavHostController) {
             context = context,
             files = files,
             onReady = { prepared ->
-                prepared.forEach { item ->
-                    // نوع المحتوى يُقرأ من الوارد الأصلي: اسم النسخة هو نفسه
-                    // والـContentResolver لا يفيد مع `file://`.
-                    val contentType = context.shareContentType(item.source)
+                // نوع المحتوى يُقرأ من الوارد الأصلي: اسم النسخة هو نفسه
+                // والـContentResolver لا يفيد مع `file://`.
+                val typed = prepared.map { it to context.shareContentType(it.source) }
+                // ⛔ الفيديو ملغى: مرشِّح المشاركة لم يعد يعلن `video/*`، لكن
+                // قد يصل ملفّ فيديو بنوع معلَن آخر — فيُسقط هنا صراحةً مع
+                // إخبار المستخدم (لا إسقاط صامت).
+                val (videos, sendable) = typed.partition { isVideoMime(it.second) }
+                videos.forEach { (item, _) -> runCatching { item.cached.delete() } }
+                sendable.forEach { (item, contentType) ->
                     ChatUploader.enqueue(
                         target = target,
                         file = item.file,
@@ -598,10 +604,17 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                 }
                 ShareIntake.consumeIncoming(files)
                 snack(
-                    if (prepared.size < files.size) {
-                        "تعذّر تجهيز بعض الملفّات — يُرسَل ${prepared.size} من ${files.size}."
-                    } else {
-                        notice
+                    when {
+                        sendable.isEmpty() && videos.isNotEmpty() ->
+                            "إرسال الفيديو غير مدعوم في الدردشة."
+
+                        videos.isNotEmpty() ->
+                            "أُرسل ${sendable.size} من ${files.size} — الفيديو غير مدعوم."
+
+                        sendable.size < files.size ->
+                            "تعذّر تجهيز بعض الملفّات — يُرسَل ${sendable.size} من ${files.size}."
+
+                        else -> notice
                     },
                 )
                 runCatching { onSent() }

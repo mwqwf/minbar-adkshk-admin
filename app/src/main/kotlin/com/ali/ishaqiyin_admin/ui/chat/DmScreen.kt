@@ -98,6 +98,7 @@ import com.ali.ishaqiyin_admin.data.arabicReason
 import com.ali.ishaqiyin_admin.data.chatTypeForMime
 import com.ali.ishaqiyin_admin.data.chatTypeLabel
 import com.ali.ishaqiyin_admin.data.guessContentType
+import com.ali.ishaqiyin_admin.data.isVideoMime
 import com.ali.ishaqiyin_admin.ui.ClipboardImageSuggestion
 import com.ali.ishaqiyin_admin.ui.RecentScreenshotChip
 import com.ali.ishaqiyin_admin.ui.ConfirmDialog
@@ -407,6 +408,12 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
         val file = pendingUpload ?: return@LaunchedEffect
         pendingUpload = null
         val contentType = guessContentType(file.name)
+        // ⛔ الفيديو ملغى: منتقي الصور ImageOnly يمنعه، لكنّ خيار «ملفّ»
+        // (*/*) يبلغه — فالحارس هنا هو المانع الأخير قبل الرفع.
+        if (isVideoMime(contentType)) {
+            snack("إرسال الفيديو غير مدعوم في الدردشة.")
+            return@LaunchedEffect
+        }
         sendAttachment(file, chatTypeForMime(contentType), contentType)
     }
 

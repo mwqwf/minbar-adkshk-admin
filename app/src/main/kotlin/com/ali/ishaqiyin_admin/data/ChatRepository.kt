@@ -979,6 +979,13 @@ fun guessContentType(filename: String): String =
         else -> "application/octet-stream"
     }
 
+/**
+ * ⛔ الفيديو ملغى في الإرسال بقرار صريح من صاحب المشروع: لا اختياره ولا
+ * رفعه. النوع [ChatMessageType.Video] وجداول امتداداته باقية **للعرض فقط**
+ * كي لا تنكسر رسائل الفيديو القديمة الموجودة في القاعدة.
+ */
+fun isVideoMime(contentType: String): Boolean = contentType.startsWith("video/")
+
 /** نوع الرسالة الملائم لمرفق بحسب MIME. */
 fun chatTypeForMime(contentType: String): ChatMessageType = when {
     contentType.startsWith("image/") -> ChatMessageType.Image
