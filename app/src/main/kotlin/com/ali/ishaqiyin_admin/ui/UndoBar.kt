@@ -46,9 +46,21 @@ class UndoBarController(val host: SnackbarHostState) {
     /**
      * [onUndo] يُستدعى إن ضغط المشرف «تراجع» (إعادة الحالة كما كانت)،
      * و[onCommit] يُستدعى بعد انقضاء المهلة (تنفيذ الفعل فعلاً).
+     *
+     * ⚠️ [onCommit] معلَّقة وتُنفَّذ **هنا** في [undoScope] الدائم لا في نطاق
+     * الشاشة: المستدعون كانوا يلفّون الكتابة بـ`scope.launch` على نطاق
+     * شاشتهم، ومغادرتها قبل انقضاء المهلة تُلغي النطاق — و`launch` على نطاق
+     * مُلغى لا ينفّذ شيئاً، فيرى المشرف «حُذف» ولا يُكتب شيء في القاعدة.
+     * فلا تلفّ ما تمرّره بأيّ scope — اكتب العمل المعلَّق مباشرةً.
      */
-    fun show(message: String, onUndo: () -> Unit, onCommit: () -> Unit = {}) {
+    fun show(message: String, onUndo: () -> Unit, onCommit: suspend () -> Unit = {}) {
         undoScope.launch {
+            // شريط قائم = فعل سابق ينتظر مهلته: يُسقَط فيُحسم فوراً. بدون
+            // هذا كان الشريط الجديد ينتظر في طابور Snackbar بينما مهلته
+            // (withTimeoutOrNull) تُحسب من الآن — ففعلان متتاليان يفقد
+            // الثاني نافذة تراجعه كلّها تقريباً. بعد الإسقاط يُعرض الجديد
+            // فوراً فتغطّي المهلة زمن ظهوره الفعليّ.
+            host.currentSnackbarData?.dismiss()
             val result = withTimeoutOrNull(UNDO_WINDOW_MS + 500) {
                 host.showSnackbar(
                     message = message,

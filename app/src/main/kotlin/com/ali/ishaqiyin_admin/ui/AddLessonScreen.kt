@@ -70,6 +70,7 @@ import com.ali.ishaqiyin_admin.data.AppPrefs
 import com.ali.ishaqiyin_admin.data.AuthService
 import com.ali.ishaqiyin_admin.data.Category
 import com.ali.ishaqiyin_admin.data.LessonUploadWorker
+import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.ali.ishaqiyin_admin.data.PendingUpload
 import com.ali.ishaqiyin_admin.data.Subcategory
 import com.ali.ishaqiyin_admin.data.UploadQueue
@@ -80,7 +81,7 @@ import com.ali.ishaqiyin_admin.util.Mp3FormatException
 import com.ali.ishaqiyin_admin.util.PickedFile
 import com.ali.ishaqiyin_admin.util.copyUriToCache
 import com.ali.ishaqiyin_admin.util.lessonTitleFromFileName
-import com.ali.ishaqiyin_admin.util.pickedFileFrom
+import com.ali.ishaqiyin_admin.util.pickedFilesFromIo
 import com.ali.ishaqiyin_admin.util.smartTitleFromFileName
 import com.ali.ishaqiyin_admin.util.sortedByNaturalName
 import kotlinx.coroutines.Dispatchers
@@ -322,22 +323,36 @@ fun AddLessonScreen(onBack: () -> Unit) {
         mutableStateListOf<Uri>()
     }
 
-    LaunchedEffect(Unit) {
+    // ⛔ كان runCatching بلا onFailure: فشل الجلب على شبكة ضعيفة يترك
+    // القائمتين المنسدلتين فارغتين بلا تفسير ولا مخرج، ورسالة النقص عند
+    // «رفع» تقول «اختر القسم الرئيسي» وكأنّ الخطأ من المشرف لا من الشبكة.
+    var sectionsLoaded by remember { mutableStateOf(false) }
+    var sectionsFailed by remember { mutableStateOf(false) }
+    var sectionsRetry by remember { mutableStateOf(0) }
+    val netOnline by NetworkMonitor.online.collectAsState()
+    // يُعاد الجلب بزرّ «إعادة تحميل الأقسام» وعند عودة الشبكة تلقائياً.
+    LaunchedEffect(sectionsRetry, netOnline) {
+        if (sectionsLoaded) return@LaunchedEffect
         runCatching {
             categories = AdminRepository.fetchCategories()
             subcategories = AdminRepository.fetchSubcategories()
-        }
-        // إعادة اختيار آخر قسم استُعمل — أغلب الدروس تُضاف إلى القسم نفسه
-        // تباعاً. الشرط يمنع تجاوز اختيار مستعاد بعد تدوير الشاشة.
-        if (categoryId == null) {
-            val savedCategory = AppPrefs.lastAddCategoryId
-                ?.takeIf { saved -> categories.any { it.id == saved } }
-            if (savedCategory != null) {
-                categoryId = savedCategory
-                subcategoryId = AppPrefs.lastAddSubcategoryId?.takeIf { saved ->
-                    subcategories.any { it.id == saved && it.categoryId == savedCategory }
+        }.onSuccess {
+            sectionsLoaded = true
+            sectionsFailed = false
+            // إعادة اختيار آخر قسم استُعمل — أغلب الدروس تُضاف إلى القسم نفسه
+            // تباعاً. الشرط يمنع تجاوز اختيار مستعاد بعد تدوير الشاشة.
+            if (categoryId == null) {
+                val savedCategory = AppPrefs.lastAddCategoryId
+                    ?.takeIf { saved -> categories.any { it.id == saved } }
+                if (savedCategory != null) {
+                    categoryId = savedCategory
+                    subcategoryId = AppPrefs.lastAddSubcategoryId?.takeIf { saved ->
+                        subcategories.any { it.id == saved && it.categoryId == savedCategory }
+                    }
                 }
             }
+        }.onFailure {
+            sectionsFailed = true
         }
     }
 
@@ -353,11 +368,17 @@ fun AddLessonScreen(onBack: () -> Unit) {
             ShareIntake.pending.collect { queue ->
                 val shared = queue.firstOrNull() ?: return@collect
                 val duplicate = files.any { it.uri.toString() == shared.uri.toString() }
+                // ⛔ السقف يُحسب **هنا** لا من addLimit الملتقَط: هذا الإغلاق
+                // يعيش من أوّل تركيب (LaunchedEffect(Unit)) فكان يحمل سقف
+                // الدفعة 50 إلى الأبد — حتى بعد اختيار «دمج» بسقفه 10، فتُقبل
+                // ملفّات مشارَكة فوق سقف الدمج ويفشل «رفع» بعدها بلا إنذار.
+                // (قراءة multiMode هنا حيّة لأنّها حالة Snapshot مفوَّضة.)
+                val cap = if (multiMode == MODE_MERGE) AudioMerger.maxFiles else BATCH_MAX_FILES
                 when {
                     duplicate -> Unit
                     // لا بوابة صيغة بعد اليوم: الدمج يقبل أي صيغ (إعادة ترميز
                     // AAC/M4A عند الحاجة) — فقط حدّ العدد يبقى.
-                    files.size >= addLimit -> {
+                    files.size >= cap -> {
                         message = if (multiMode == MODE_MERGE) {
                             "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد " +
                                 "— لم يُضف «${shared.name}»."
@@ -384,41 +405,47 @@ fun AddLessonScreen(onBack: () -> Unit) {
         ActivityResultContracts.GetMultipleContents(),
     ) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        val picked = uris.map { context.pickedFileFrom(it) }
-        val existing = files.map { it.uri.toString() }.toSet()
-        // ⛔ فرز طبيعيّ بأرقام الأسماء للمضاف حديثاً وحده: منتقي النظام يعيد
-        // «الدرس 10» قبل «الدرس 9»، وترتيب الرفع هو ترتيب ظهور الدروس في
-        // التطبيق. وقصْره على الجديد يحفظ أيّ ترتيب رتّبه المشرف يدويّاً قبله.
-        val fresh = picked
-            .filter { it.uri.toString() !in existing }
-            .sortedByNaturalName { it.name }
-        val combined = files + fresh
+        scope.launch {
+            // ⚠️ قراءة اسم/حجم كلّ ملفّ استعلامُ ContentResolver عابر للعمليات:
+            // كانت متزامنة على خيط الواجهة لكلّ ملفّ (حتى 50 في حلقة واحدة)،
+            // فمجلّد من بطاقة SD بطيئة يجمّد الشاشة وقد يُظهر حوار ANR —
+            // pickedFilesFromIo تنجز القراءة كلّها على Dispatchers.IO.
+            val picked = context.pickedFilesFromIo(uris)
+            val existing = files.map { it.uri.toString() }.toSet()
+            // ⛔ فرز طبيعيّ بأرقام الأسماء للمضاف حديثاً وحده: منتقي النظام يعيد
+            // «الدرس 10» قبل «الدرس 9»، وترتيب الرفع هو ترتيب ظهور الدروس في
+            // التطبيق. وقصْره على الجديد يحفظ أيّ ترتيب رتّبه المشرف يدويّاً قبله.
+            val fresh = picked
+                .filter { it.uri.toString() !in existing }
+                .sortedByNaturalName { it.name }
+            val combined = files + fresh
 
-        // قيد «MP3 فقط» أُلغي: الدمج يقبل أي صيغ (لصق مباشر إن كانت كلها
-        // MP3، وإلا فكّ وإعادة ترميز AAC/M4A) — لا عبء تحويل على المشرف.
-        // ⛔ ونيّة «دمج» محفوظة لا تصمد لاختيار مجلّد: تجاوزُ سقفِ الدمج
-        // يُسقطها فيُطرح السؤال من جديد. بلا ذلك كانت خمسون ملفّاً تُدمج في
-        // درس واحد صامتاً، وقصُّها عند عشرة كان سيبتلع أربعين بلا اختيار.
-        if (multiMode == MODE_MERGE && combined.size > AudioMerger.maxFiles) multiMode = ""
-        // السقف سقفُ النيّة القائمة بعد ذلك (سقف الدمج للدمج، وسقف الدفعة لما
-        // سواه) — وهو نفسه ما يَعِد به نصّ الزرّ، فلا يُقصّ ما لم يُعلَن قصّه.
-        val cap = if (multiMode == MODE_MERGE) AudioMerger.maxFiles else BATCH_MAX_FILES
-        if (combined.size > cap) {
-            message = "الحدّ الأقصى $cap ملفّاً في الدفعة — أُبقي أوّلها."
-            isError = true
-        } else {
-            message = ""
-            isError = false
+            // قيد «MP3 فقط» أُلغي: الدمج يقبل أي صيغ (لصق مباشر إن كانت كلها
+            // MP3، وإلا فكّ وإعادة ترميز AAC/M4A) — لا عبء تحويل على المشرف.
+            // ⛔ ونيّة «دمج» محفوظة لا تصمد لاختيار مجلّد: تجاوزُ سقفِ الدمج
+            // يُسقطها فيُطرح السؤال من جديد. بلا ذلك كانت خمسون ملفّاً تُدمج في
+            // درس واحد صامتاً، وقصُّها عند عشرة كان سيبتلع أربعين بلا اختيار.
+            if (multiMode == MODE_MERGE && combined.size > AudioMerger.maxFiles) multiMode = ""
+            // السقف سقفُ النيّة القائمة بعد ذلك (سقف الدمج للدمج، وسقف الدفعة لما
+            // سواه) — وهو نفسه ما يَعِد به نصّ الزرّ، فلا يُقصّ ما لم يُعلَن قصّه.
+            val cap = if (multiMode == MODE_MERGE) AudioMerger.maxFiles else BATCH_MAX_FILES
+            if (combined.size > cap) {
+                message = "الحدّ الأقصى $cap ملفّاً في الدفعة — أُبقي أوّلها."
+                isError = true
+            } else {
+                message = ""
+                isError = false
+            }
+            files.clear()
+            files.addAll(combined.take(cap))
+            if (title.isBlank() && files.isNotEmpty()) {
+                // عنوان مقترح ذكيّ — يزيل الترقيم وبصمات المواقع وأنماط
+                // المسجّلات؛ الاسم الآليّ البحت يُترك فارغاً ليكتبه المشرف.
+                title = smartTitleFromFileName(files.first().name)
+            }
+            // ❓ سؤال واحد صريح لا استنتاج: أكثر من ملفّ يحتمل نيّتين لا ثالث لهما.
+            askIntentIfNeeded()
         }
-        files.clear()
-        files.addAll(combined.take(cap))
-        if (title.isBlank() && files.isNotEmpty()) {
-            // عنوان مقترح ذكيّ — يزيل الترقيم وبصمات المواقع وأنماط
-            // المسجّلات؛ الاسم الآليّ البحت يُترك فارغاً ليكتبه المشرف.
-            title = smartTitleFromFileName(files.first().name)
-        }
-        // ❓ سؤال واحد صريح لا استنتاج: أكثر من ملفّ يحتمل نيّتين لا ثالث لهما.
-        askIntentIfNeeded()
     }
 
     val subsForCategory = subcategories.filter { it.categoryId == categoryId }
@@ -827,7 +854,9 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         append(" ⚠️ تعذّرت قراءة: ${failed.joinToString("، ")}")
                     }
                 }
-                isError = failed.isNotEmpty() || added == 0
+                // «كلّها مكرّرة» رسالة اطمئنان مقصودة (انظر أعلاه) — تلوينها
+                // أحمر كان يناقض نصّها فيُفهم فشلاً ويُعاد الرفع بلا داعٍ.
+                isError = failed.isNotEmpty() || (added == 0 && skipped == 0)
                 if (added > 0) snack("أُضيف ${lessonsCountLabel(added)} إلى طابور الرفع")
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 // الإدراج تمّ داخل NonCancellable — لا رسالة خطأ لمغادرة الشاشة.
@@ -1044,6 +1073,23 @@ fun AddLessonScreen(onBack: () -> Unit) {
 
             item {
                 Spacer(Modifier.height(14.dp))
+                // فشل الجلب يُقال صراحةً مع زرّ إعادة — لا قائمتان فارغتان
+                // صامتتان يتّهم المشرف نفسه أمامهما.
+                if (sectionsFailed && categories.isEmpty()) {
+                    Text(
+                        "تعذّر تحميل الأقسام — تحقّق من الإنترنت.",
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 13.sp,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedButton(
+                        onClick = { sectionsRetry++ },
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                    ) {
+                        Text("إعادة تحميل الأقسام")
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
                 AdminDropdown(
                     label = "القسم الرئيسي",
                     items = categories,

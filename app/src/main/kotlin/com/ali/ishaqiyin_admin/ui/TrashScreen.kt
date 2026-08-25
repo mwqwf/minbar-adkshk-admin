@@ -53,6 +53,8 @@ import com.ali.ishaqiyin_admin.data.Category
 import com.ali.ishaqiyin_admin.data.Subcategory
 import com.ali.ishaqiyin_admin.data.TrashRepository
 import com.ali.ishaqiyin_admin.data.TrashedLesson
+import com.ali.ishaqiyin_admin.data.arabicReason
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -114,8 +116,13 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
             try {
                 action()
                 if (doneMsg.isNotEmpty()) snack(doneMsg)
-            } catch (_: Exception) {
-                snack("تعذّر تنفيذ العملية. حاول مجدداً.")
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                // ⛔ الإلغاء ليس خطأً: ابتلاعه كان يعرض «تعذّر تنفيذ العمليّة»
+                // كاذبةً على مضيف التطبيق بعد مغادرة الشاشة أثناء استعادة أو
+                // حذف نجح على الخادم غالباً. يُعاد رميه كما في SubmissionsScreen.
+                throw cancel
+            } catch (e: Exception) {
+                snack("تعذّر تنفيذ العملية: ${e.arabicReason()}")
             }
             busy = false
         }
@@ -185,19 +192,39 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
     if (emptying) {
         // ⚠️ الفعل الوحيد في اللوحة بلا مصدر استرجاع (لا سلّة للسلّة) —
         // فلا يكفيه زرّ «نعم»: ضغطٌ متّصل ثلاث ثوانٍ يمتلئ أمام العين.
+        //
+        // ⛔ العدد المعروض عدٌّ خادميّ كامل لا `items.size` المحدود ببثّ
+        // الـ100: كان المالك يوافق على رقم أقلّ ممّا سيُحذف فعلاً في فعل لا
+        // رجوع فيه. و«كاملةً» أُسقطت من العنوان — التفريغ للدروس وحدها ولا
+        // يمسّ تبويب «الأقسام».
+        var total by remember { mutableStateOf(-1) }
+        LaunchedEffect(Unit) {
+            total = runCatching { TrashRepository.watchCount().first() }
+                .getOrDefault(items.size)
+        }
         AlertDialog(
             onDismissRequest = { emptying = false },
-            title = { Text("تفريغ السلة كاملةً؟") },
+            title = { Text("تفريغ سلة الدروس؟") },
             text = {
                 Column {
                     Text(
-                        "⚠️ سيُحذف ${lessonsCountLabel(items.size)} وملفاتها الصوتية " +
-                            "نهائياً ولا يمكن استعادة أي منها بعدها أبداً.\n\n" +
-                            "هذا الإجراء للمالك فقط.",
+                        if (total < 0) {
+                            "جارٍ عدّ ما في السلة…"
+                        } else {
+                            // صياغة محايدة للعدد: «درس واحد وملفاتها» كانت
+                            // لحناً (ضمير جمع مؤنّث يعود على مفرد مذكّر).
+                            "⚠️ سيُحذف كل ما في تبويب «الدروس» " +
+                                "(${lessonsCountLabel(total)}) مع الملفات الصوتية " +
+                                "نهائياً ولا يمكن استعادة أي منها بعدها أبداً.\n" +
+                                "الأقسام المحذوفة لا يشملها التفريغ.\n\n" +
+                                "هذا الإجراء للمالك فقط."
+                        },
                     )
                     Spacer(Modifier.size(16.dp))
                     HoldToConfirmButton(
                         label = "اضغط مع الاستمرار 3 ثوانٍ للحذف النهائي",
+                        // لا تأكيد قبل وصول العدّ — موافقة على معلومة ناقصة.
+                        enabled = total >= 0,
                         onConfirmed = {
                             emptying = false
                             // كل البطاقات ستزول، فأيّ معاينة جارية تفقد شريطها.
@@ -248,11 +275,21 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                 Tab(
                     selected = tab == 0,
                     onClick = { tab = 0 },
-                    text = { Text("الدروس (${items.size})") },
+                    // البثّ محدود بـ100 (سقف WATCH_LIMIT): بلوغه يعني «مئة
+                    // فأكثر» لا عدّاً كاملاً — تُعلَّم بـ«+» كي لا يناقض
+                    // العدّ الخادميّ على بطاقة اللوحة وحوار التفريغ.
+                    text = {
+                        Text("الدروس (${if (items.size >= 100) "+100" else "${items.size}"})")
+                    },
                 )
                 Tab(
                     selected = tab == 1,
-                    onClick = { tab = 1 },
+                    onClick = {
+                        // بطاقات الدروس تُزال مع تبويبها ومعها شريط التحكّم،
+                        // فكانت معاينةٌ جارية تواصل الصوت بلا زرّ إيقاف ظاهر.
+                        if (tab != 1) player.stop()
+                        tab = 1
+                    },
                     text = { Text("الأقسام (${sections.size})") },
                 )
             }

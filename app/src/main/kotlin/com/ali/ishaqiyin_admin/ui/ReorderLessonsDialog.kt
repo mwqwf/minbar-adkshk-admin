@@ -62,6 +62,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.Lesson
+import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.launch
 
 // مُصرَّف مرّة واحدة: الترتيب الآلي كان يُعيد تصريفه لكلّ عنوان في كلّ مقارنة.
@@ -148,6 +149,10 @@ fun ReorderLessonsDialog(
         var positionText by remember(moveTarget) {
             mutableStateOf("${moveTarget + 1}")
         }
+        // خطأ المدى يُعرض تحت الحقل والحوار يبقى مفتوحاً — كان يُغلق فوراً
+        // ويعرض snack، فيُضطرّ المشرف لإعادة فتح القائمة والحوار والإدخال
+        // من الصفر لمجرّد رقم خارج المدى.
+        var rangeError by remember(moveTarget) { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { moveTarget = -1 },
             title = { Text("نقل إلى الموضع…") },
@@ -164,24 +169,34 @@ fun ReorderLessonsDialog(
                         value = positionText,
                         onValueChange = { text ->
                             positionText = text.filter { it.isDigit() }.take(4)
+                            rangeError = false
                         },
                         label = "الموضع",
                         keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                             keyboardType = KeyboardType.Number,
                         ),
                     )
+                    if (rangeError) {
+                        Spacer(Modifier.size(4.dp))
+                        Text(
+                            "أدخل موضعاً بين 1 و${items.size}.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
                         val target = (positionText.toIntOrNull() ?: 0) - 1
-                        val from = moveTarget
-                        moveTarget = -1
                         if (target in items.indices) {
+                            val from = moveTarget
+                            moveTarget = -1
                             move(from, target)
                         } else {
-                            snack("أدخل موضعاً بين 1 و${items.size}.")
+                            // الرقم يُصحَّح في مكانه — لا يُغلق الحوار.
+                            rangeError = true
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = scheme.primary),
@@ -459,7 +474,10 @@ fun ReorderLessonsDialog(
                                 onSaved()
                                 onDismiss()
                             }.onFailure {
-                                snack(it.message ?: "تعذّر حفظ الترتيب.")
+                                // arabicReason لا it.message الخام: أعطال الشبكة
+                                // كانت تظهر بالإنجليزية (UNAVAILABLE…) لمشرفين
+                                // لا يقرؤون إلا العربية، خلافاً لبقية الشاشات.
+                                snack("تعذّر حفظ الترتيب: ${it.arabicReason()}")
                             }
                             saving = false
                         }

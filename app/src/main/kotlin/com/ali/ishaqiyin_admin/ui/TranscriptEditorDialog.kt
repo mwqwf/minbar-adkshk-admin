@@ -147,6 +147,12 @@ fun TranscriptEditorDialog(
     var saving by remember { mutableStateOf(false) }
     var extracting by remember { mutableStateOf(false) }
     var merging by remember { mutableStateOf(false) }
+    // ⛔ فشل جلب النصّ الحالي يقفل الحفظ حتى ينجح: الحفظ يستبدل الوثيقة
+    // كاملة ويحذف من التخزين كلّ صورة غير مذكورة في القائمة المرسلة —
+    // فحفظٌ فوق نصّ معتمد لم يُجلب كان يمحوه ويحذف صوره نهائياً دون أن
+    // يعلم المشرف بوجوده أصلاً (سناك عابر ثم محرّر يبدو «جديداً»).
+    var loadFailed by remember { mutableStateOf(false) }
+    var loadAttempt by remember { mutableIntStateOf(0) }
     // المسوّدة كلّها محفوظة: تدوير الشاشة (أو تبديل سمة النظام) كان يمحو
     // النص والصور بعد تعبئتهما بلا تنبيه ولا وسيلة استرجاع.
     var existed by rememberSaveable { mutableStateOf(false) }
@@ -167,27 +173,35 @@ fun TranscriptEditorDialog(
         mutableStateListOf<EditorImage>()
     }
 
-    LaunchedEffect(lessonId) {
+    LaunchedEffect(lessonId, loadAttempt) {
         // مسوّدة مستعادة: الجلب من الخادم هنا كان يدهسها بعد إعادة الإنشاء.
         if (text.isNotBlank() || images.isNotEmpty()) {
             loading = false
             return@LaunchedEffect
         }
-        runCatching { TranscriptsRepository.fetchTranscript(lessonId) }
-            .onSuccess { transcript ->
-                if (transcript != null) {
-                    existed = true
-                    text = transcript.text
-                    bookTitle = transcript.bookTitle
-                    sourceRef = transcript.sourceRef
-                    images.clear()
-                    transcript.images.forEach {
-                        images.add(EditorImage(remotePath = it.path, remoteUrl = it.url))
-                    }
-                }
+        loading = true
+        loadFailed = false
+        val fetched = runCatching { TranscriptsRepository.fetchTranscript(lessonId) }
+        fetched.onFailure {
+            // لا محرّر ولا حفظ قبل معرفة المحفوظ — زرّ «إعادة المحاولة»
+            // يظهر مكان المحرّر (انظر جسم الحوار أدناه).
+            loadFailed = true
+            loading = false
+            return@LaunchedEffect
+        }
+        val transcript = fetched.getOrNull()
+        if (transcript != null) {
+            existed = true
+            text = transcript.text
+            bookTitle = transcript.bookTitle
+            sourceRef = transcript.sourceRef
+            images.clear()
+            transcript.images.forEach {
+                images.add(EditorImage(remotePath = it.path, remoteUrl = it.url))
             }
-            .onFailure { snack("تعذّر جلب النص الحالي.") }
-        // حمولة المشاركة الخارجية (نص/صور) تُلحق بعد تحميل الموجود.
+        }
+        // حمولة المشاركة الخارجية (نص/صور) تُلحق بعد تحميل الموجود —
+        // وبعد **نجاح** الجلب فقط، وإلّا حُفظت فوق نصّ معتمد لم يُرَ.
         // الإلحاق لا الاستبدال ولا الإسقاط: كان النص المشارَك يُهمَل بصمت إن
         // كان للدرس نصّ محفوظ، فيضيع على المشرف بلا رسالة ولا وسيلة استرجاع
         // — الآن يُلحق أسفل الموجود تماماً كما يفعل مسار OCR أدناه.
@@ -202,10 +216,20 @@ fun TranscriptEditorDialog(
                 snack("أُلحق النص الوارد أسفل النص المحفوظ — دقّقه قبل الحفظ.")
             }
         }
+        var addedImages = 0
         initialImages.forEach { uri ->
             if (images.size < TranscriptsRepository.MAX_IMAGES) {
                 images.add(EditorImage(local = uri))
+                addedImages++
             }
+        }
+        // ⛔ الفائض على سقف الأربع كان يسقط بصمت — والحمولة المشارَكة
+        // استُهلكت فلا تعود، فيحفظ المشرف ظانّاً أن كلّ صوره دخلت.
+        if (addedImages < initialImages.size) {
+            snack(
+                "وصلت ${imagesCountLabel(initialImages.size)} وأُضيف منها " +
+                    "$addedImages — الحد الأقصى ${TranscriptsRepository.MAX_IMAGES} صور.",
+            )
         }
         loading = false
     }
@@ -328,7 +352,8 @@ fun TranscriptEditorDialog(
                             snack("حُذف النص المشروح.")
                             onDismiss()
                         }
-                        .onFailure { snack("تعذّر الحذف: ${it.message.orEmpty()}") }
+                        // arabicReason: نصّ Firebase الخام إنجليزيّ تقنيّ.
+                        .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
                     saving = false
                 }
             },
@@ -354,6 +379,22 @@ fun TranscriptEditorDialog(
                     Modifier.fillMaxWidth().height(120.dp),
                     contentAlignment = Alignment.Center,
                 ) { CircularProgressIndicator(color = MaterialTheme.colorScheme.primary) }
+            } else if (loadFailed) {
+                // لا محرّر فارغ يوهم أن الدرس بلا نصّ: الحفظ فوقه كان يمحو
+                // نصاً معتمداً ويحذف صوره من التخزين نهائياً.
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "تعذّر جلب النص الحالي — تحقّق من الاتصال.\n" +
+                            "لا يمكن الحفظ قبل معرفة المحفوظ كي لا يُمحى نصّ معتمد.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = { loadAttempt++ },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    ) { Text("إعادة المحاولة") }
+                }
             } else {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text(
@@ -767,12 +808,15 @@ fun TranscriptEditorDialog(
                             snack("حُفظ النص المشروح. ✅")
                             onDismiss()
                         }.onFailure {
-                            snack("تعذّر الحفظ: ${it.message.orEmpty()}")
+                            // arabicReason: `message` الخام إنجليزيّ، وقد يكون
+                            // null فتخرج «تعذّر الحفظ: » مبتورة.
+                            snack("تعذّر الحفظ: ${it.arabicReason()}")
                         }
                         saving = false
                     }
                 },
-                enabled = !loading && !saving,
+                // loadFailed يقفل الحفظ: لا كتابة قبل معرفة المحفوظ.
+                enabled = !loading && !saving && !loadFailed,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                 ),

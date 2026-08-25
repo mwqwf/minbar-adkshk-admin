@@ -2,6 +2,7 @@ package com.ali.ishaqiyin_admin.ui
 
 import android.net.Uri
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -24,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.listSaver
@@ -68,6 +72,11 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
         mutableStateOf<List<com.ali.ishaqiyin_admin.data.Subcategory>>(emptyList())
     }
     var loading by remember { mutableStateOf(true) }
+    // ⛔ فشل الجلب كان مبتلَعاً بلا رسالة: تظهر «لا نتائج» لكلّ بحث كأنّ
+    // الخطأ من كتابة المشرف، بينما القائمة فارغة لعطل شبكيّ — والحمولة
+    // المشارَكة استُهلكت فلا تعود إن غادر محبَطاً.
+    var loadFailed by remember { mutableStateOf(false) }
+    var loadAttempt by remember { mutableIntStateOf(0) }
     var query by remember { mutableStateOf("") }
     // الدرس المختار بمعرّفه: دوران الشاشة كان يغلق المحرر المفتوح عليه.
     var targetId by rememberSaveable { mutableStateOf("") }
@@ -77,11 +86,17 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
         TranscriptIntake.consume() ?: TranscriptIntake.Payload()
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(loadAttempt) {
+        loading = true
+        loadFailed = false
         runCatching {
             lessons = AdminRepository.fetchLessons()
             categories = AdminRepository.fetchCategories()
             subcategories = AdminRepository.fetchSubcategories()
+        }.onFailure {
+            // فشل جلب الأقسام وحده لا يعطّل البحث بالعنوان — لا يُعلَن
+            // الفشل إلّا وقائمة الدروس نفسها فارغة.
+            loadFailed = lessons.isEmpty()
         }
         loading = false
     }
@@ -138,6 +153,26 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
                     Modifier.fillMaxSize().padding(32.dp),
                     contentAlignment = Alignment.Center,
                 ) { Text("جارٍ تحميل الدروس…", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                return@Column
+            }
+            if (loadFailed) {
+                Column(
+                    Modifier.fillMaxSize().padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        "تعذّر تحميل الدروس — تحقّق من الاتصال بالإنترنت.\n" +
+                            "الحمولة المشارَكة محفوظة هنا حتى تغادر الشاشة.",
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = { loadAttempt++ },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text("إعادة المحاولة") }
+                }
                 return@Column
             }
             // بحث عامّ: يقبل رقماً واحداً، وكل كلمة تُطابق العنوان أو القسم

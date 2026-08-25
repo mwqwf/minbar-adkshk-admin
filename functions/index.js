@@ -745,7 +745,8 @@ exports.incrementLessonView = functions.https.onCall(async (data, context) => {
     }
     const lastAt = Number((rateSnap.data() || {}).lastAt || 0);
     if (lastAt && now - lastAt < 30 * 1000) return false;
-    const current = unwrapLegacy(lessonSnap.data());
+    const raw = lessonSnap.data() || {};
+    const current = unwrapLegacy(raw);
     tx.set(perLessonRef, {
       uid,
       action: "lesson-view",
@@ -753,7 +754,15 @@ exports.incrementLessonView = functions.https.onCall(async (data, context) => {
       lastAt: now,
       expiresAt: now + 7 * 24 * 60 * 60 * 1000,
     });
-    tx.update(lessonRef, { views: Number(current.views || 0) + 1 });
+    // ⚠️ التطبيق يقرأ الوثائق القديمة المغلّفة `{data:{...}}` من الخريطة
+    // الداخلية حصراً — الكتابة في الجذر وحده تُجمّد عدّادها الظاهر للأبد.
+    // يُكتب الموضعان معاً للوثيقة المغلّفة (نفس نمط انتهاء التمييز).
+    const nextViews = Number(current.views || 0) + 1;
+    const viewsUpdate = { views: nextViews };
+    if (raw.data && typeof raw.data === "object") {
+      viewsUpdate["data.views"] = nextViews;
+    }
+    tx.update(lessonRef, viewsUpdate);
     return true;
   });
   return { ok: true, counted };
@@ -2538,7 +2547,14 @@ exports.restoreDeletedLesson = functions.https.onCall(async (data, context) => {
     restoredAt: admin.firestore.FieldValue.serverTimestamp(),
     restoredAtMs: Date.now(),
     restoredBy: actor.email,
+    // 🔁 طابع جديد كي تلتقط المزامنةُ التفاضلية الوثيقةَ المستعادة —
+    // إعادتها بطابعها القديم تجعلها غير مرئية للدلتا فيُجبَر كل جهاز شهد
+    // الحذف على جلب المكتبة كاملة.
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }));
+  // 🔁 ومحوُ شاهد الحذف: بقاؤه يُسقط الوثيقة المستعادة عند جهاز تشمل
+  // نافذةُ مزامنته الحذفَ والاستعادةَ معاً («الحذف مقدَّم على التعديل»).
+  batch.delete(db.collection(DELETED_IDS_COLLECTION).doc(`lessons__${lessonId}`));
   if (value.transcript && typeof value.transcript === "object") {
     batch.set(db.collection("lesson_transcripts").doc(lessonId), value.transcript);
     // ويعود معه فهرس بحثه، وإلّا رجع الدرس ونصّه بلا أن يجده أحد بكلمة منه.
@@ -2633,13 +2649,21 @@ exports.reorderSubcategoryLessons = functions
         "أرسل ترتيباً يضم درسين على الأقل.",
       );
     }
-    const [plainSnap, wrappedSnap] = await Promise.all([
+    // ⚠️ أربعة أشكال لا اثنان: اللوحة تعرف أيضاً الشكل الأقدم الذي يخزّن
+    // القسم في خريطة `subcategory._id` المتداخلة (بلا حقل جذري) — حصرُ
+    // الاستعلام بالشكلين الحديثين كان يجعل مطابقة القائمة تفشل دائماً
+    // برسالة «حدّث الشاشة» المضلّلة لهذه الدروس.
+    const [plainSnap, wrappedSnap, legacySnap, wrappedLegacySnap] = await Promise.all([
       db.collection("lessons").where("subcategoryId", "==", subcategoryId).get(),
       db.collection("lessons")
         .where("data.subcategoryId", "==", subcategoryId).get(),
+      db.collection("lessons").where("subcategory._id", "==", subcategoryId).get(),
+      db.collection("lessons")
+        .where("data.subcategory._id", "==", subcategoryId).get(),
     ]);
     const byId = new Map();
-    [...plainSnap.docs, ...wrappedSnap.docs].forEach((doc) => byId.set(doc.id, doc));
+    [...plainSnap.docs, ...wrappedSnap.docs, ...legacySnap.docs, ...wrappedLegacySnap.docs]
+      .forEach((doc) => byId.set(doc.id, doc));
     // الترتيب المرسل يجب أن يطابق دروس القسم تماماً (لا أكثر ولا أقل):
     // قائمة ناقصة تعني أن اللوحة ترى نسخة قديمة — نرفض بدل خلط الترتيب.
     if (orderedIds.length !== byId.size ||
@@ -2678,12 +2702,17 @@ exports.reorderSubcategoryLessons = functions
         createdAtMs: ms,
         reorderedBy: actor.email,
         reorderedAt: admin.firestore.FieldValue.serverTimestamp(),
+        // ⚠️ بلا `updatedAt` لا يصل الترتيب الجديد لأحد: مسبار المزامنة
+        // التفاضلية في التطبيق لا يراقب إلا الأعداد وأحدث `updatedAt` —
+        // وإعادة توزيع طوابع الإنشاء وحدها لا تغيّر أياً منهما.
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       };
       // الوثائق القديمة الملفوفة `{data:{...}}`: التطبيق يقرأ المفتاح
       // الملفوف — يُحدَّث الموضعان معاً.
       const raw = doc.data() || {};
       if (raw.data && typeof raw.data === "object") {
         update["data.createdAt"] = iso;
+        update["data.updatedAt"] = admin.firestore.FieldValue.serverTimestamp();
       }
       batch.update(doc.ref, update);
     });
@@ -2854,12 +2883,42 @@ exports.restoreDeletedSection = functions.https.onCall(async (data, context) => 
       "يوجد قسم آخر بالمعرّف نفسه الآن — احذفه أو غيّره ثم أعد المحاولة.",
     );
   }
+  // 🧷 قسم فرعي بلا رئيسه قسمٌ يتيم لا يظهر في اللوحة ولا في التطبيق
+  // (كلاهما يعرض الفروع تحت رئيسيها): يُتحقّق من وجود الرئيسي أولاً،
+  // وإن كان هو أيضاً في السلة أُرشد المشرف إلى استعادته قبل الفرع.
+  if (kind === "subcategory") {
+    const parentId = cleanString(value.parentCategoryId, 180)
+      || cleanString(unwrapLegacy(payload).categoryId, 180);
+    if (parentId) {
+      const parentSnap = await db.collection("categories").doc(parentId).get();
+      if (!parentSnap.exists) {
+        const parentTrash = await db.collection(SECTION_TRASH_COLLECTION)
+          .doc(sectionTrashId("category", parentId)).get();
+        if (parentTrash.exists) {
+          const parentName = cleanString((parentTrash.data() || {}).name, 180) || parentId;
+          throw new functions.https.HttpsError(
+            "failed-precondition",
+            `القسم الرئيسي «${parentName}» في السلة أيضاً — استعده أولاً ثم أعد استعادة هذا الفرع.`,
+          );
+        }
+        throw new functions.https.HttpsError(
+          "failed-precondition",
+          "القسم الرئيسي لهذا الفرع لم يعد موجوداً — أنشئه من جديد أولاً ثم أعد المحاولة.",
+        );
+      }
+    }
+  }
   const batch = db.batch();
   batch.set(targetRef, Object.assign({}, payload, {
     restoredAt: admin.firestore.FieldValue.serverTimestamp(),
     restoredAtMs: Date.now(),
     restoredBy: actor.email,
+    // 🔁 طابع جديد كي تلتقط المزامنةُ التفاضلية القسمَ المستعاد (انظر
+    // نظيره في restoreDeletedLesson).
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }));
+  // 🔁 ومحوُ شاهد الحذف للسبب نفسه.
+  batch.delete(db.collection(DELETED_IDS_COLLECTION).doc(`${collection}__${docId}`));
   batch.delete(trashRef);
   await batch.commit();
   await auditOwnerAction(actor.email, "restore_section", docId, { kind });
@@ -4408,20 +4467,26 @@ exports.onAdminCallUpdated = functions.firestore
 // ⚠️ الاكتشاف فقط: لا حذف ولا نقل إلى السلّة — القرار بشريّ.
 
 const AUDIO_CHECK_CONCURRENCY = 10;
-const AUDIO_CHECK_TIMEOUT_MS = 12000;
+// ⏱️ 5 ثوانٍ تكفي لطلب HEAD — المهلة الطويلة (12ث) كانت تجعل مضيفاً
+// يبتلع الاتصالات يستهلك عمر الدالة كله قبل فحص المكتبة.
+const AUDIO_CHECK_TIMEOUT_MS = 5000;
 const AUDIO_ALERT_SAMPLE = 5;
 
-/** صياغة العدد بالعربية: «درس واحد»/«درسان»/«٣ دروس»/«١٢ درساً». */
+/** صياغة العدد بالعربية: «درس واحد»/«درسان»/«٣ دروس»/«١٢ درساً»/«١٠٠ درس». */
 function arabicLessonsCount(n) {
   if (n === 1) return "درس واحد";
   if (n === 2) return "درسان";
   if (n <= 10) return `${n} دروس`;
+  // تمييز مضاعفات المئة مفردٌ مجرور: «100 درس» لا «100 درساً».
+  if (n % 100 === 0) return `${n} درس`;
   return `${n} درساً`;
 }
 
 /**
- * طلب HEAD واحد. يرجع true إن ردّ الخادم بنجاح، و false إن ردّ بخطأ
- * دائم (404/403/410)، و null إن كان العطل عابراً (شبكة أو 5xx) فيُعاد.
+ * طلب HEAD واحد. يرجع true إن ردّ الخادم بنجاح، وfalse إن ردّ بخطأ
+ * دائم (404/403/410)، وnull إن كان العطل عابراً (5xx/429 أو مهلة)،
+ * ورمزَ العطل نصّاً إن فشل الاتصال نفسه (زوال نطاق/رفض/شهادة) —
+ * فتكرار الرمز نفسه في محاولتين دليل موتٍ لا عارضِ شبكة.
  */
 async function probeAudioOnce(url) {
   try {
@@ -4434,7 +4499,18 @@ async function probeAudioOnce(url) {
     if (response.status >= 500 || response.status === 429) return null;
     return false;
   } catch (error) {
-    return null;
+    // المهلة وحدها عابرة: خادم بطيء ليس خادماً ميتاً.
+    if (error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      return null;
+    }
+    // fetch يغلّف عطل الشبكة في TypeError وسببه يحمل الرمز الحقيقي
+    // (ENOTFOUND/ECONNREFUSED/CERT_...) — يُعاد الرمز للمقارنة.
+    const cause = error && error.cause;
+    const code = cleanString(
+      (cause && cause.code) || (error && error.code) || (error && error.name),
+      60,
+    );
+    return `err:${code || "network"}`;
   }
 }
 
@@ -4444,9 +4520,14 @@ async function isAudioDead(url) {
   if (first === true) return false;
   const second = await probeAudioOnce(url);
   if (second === true) return false;
-  // بقي الشكّ بعد محاولتين عابرتين: لا نتّهم الرابط.
-  if (first === null && second === null) return false;
-  return true;
+  // رفض HTTP دائم (404/403/410) في أي من المحاولتين: ميت.
+  if (first === false || second === false) return true;
+  // ⚠️ عطل اتصال بالنوع **نفسه** في المحاولتين (NXDOMAIN/رفض/شهادة):
+  // هذا نمط موت الاستضافة القديمة (حادثة 2026-08-12) لا عارضاً شبكياً —
+  // كان يُصنَّف «عابراً» فلا يُكشف المضيف الزائل أبداً.
+  if (typeof first === "string" && first === second) return true;
+  // مهلة أو عطل متقلّب النوع: لا نتّهم الرابط.
+  return false;
 }
 
 exports.weeklyDeadAudioScan = functions
@@ -4454,11 +4535,17 @@ exports.weeklyDeadAudioScan = functions
   .pubsub.schedule("20 4 * * 1")
   .timeZone("Asia/Riyadh")
   .onRun(async () => {
+    // ⏱️ ميزانية زمنية: مهلة المنصة 540ث، وتجاوزها يقتل الدالة **قبل**
+    // كتابة أي تنبيه فيضيع الأسبوع كله بصمت. عند الاقتراب من الحدّ يتوقف
+    // الفحص ويُكتب ما تجمّع بوسم «فحص جزئي».
+    const startedAtMs = Date.now();
+    const SOFT_DEADLINE_MS = 480 * 1000;
+    let partial = false;
     const dead = [];
     let checked = 0;
     let cursor = null;
     // مرور على دفعات بحجم ٣٠٠ وثيقة كي لا تُحمَّل المجموعة كلّها دفعة واحدة.
-    for (;;) {
+    scan: for (;;) {
       let query = db.collection("lessons").orderBy("__name__").limit(300);
       if (cursor) query = query.startAfter(cursor);
       const snap = await query.get();
@@ -4474,6 +4561,10 @@ exports.weeklyDeadAudioScan = functions
 
       // توازٍ محدود (١٠ طلبات معاً) كي لا تُستنزف حصّة الشبكة.
       for (let i = 0; i < targets.length; i += AUDIO_CHECK_CONCURRENCY) {
+        if (Date.now() - startedAtMs > SOFT_DEADLINE_MS) {
+          partial = true;
+          break scan;
+        }
         const slice = targets.slice(i, i + AUDIO_CHECK_CONCURRENCY);
         const results = await Promise.all(slice.map((item) => isAudioDead(item.url)));
         results.forEach((isDead, index) => {
@@ -4486,16 +4577,25 @@ exports.weeklyDeadAudioScan = functions
 
     // الصمت خير من ضجيج أسبوعيّ: لا تنبيه إن لم يفشل شيء.
     if (!dead.length) {
-      console.log("weeklyDeadAudioScan: كل الروابط تعمل", { checked });
+      if (partial) {
+        console.warn("weeklyDeadAudioScan: فحص جزئي بلا أعطال (نفدت المهلة)", { checked });
+      } else {
+        console.log("weeklyDeadAudioScan: كل الروابط تعمل", { checked });
+      }
       return null;
     }
 
     // الأسماء تُراجَع والأرقام لا تُراجَع — فتُذكر أسماء أوّل خمسة صراحةً.
+    // ⚠️ كل عنوان يُقصّ إلى 60 حرفاً: عناوين بطولها الكامل (حتى 300 حرف)
+    // كانت تتجاوز سقف متن التنبيه (700 في writeAdminAlert) فتُبتر خاتمةُ
+    // الطمأنة «لم يُحذف شيء» ووجهةُ المراجعة.
     const sample = dead.slice(0, AUDIO_ALERT_SAMPLE)
-      .map((item) => `• ${item.title || "درس بلا عنوان"}`)
+      .map((item) => `• ${cleanString(item.title, 60) || "درس بلا عنوان"}`)
       .join("\n");
     const rest = dead.length - Math.min(dead.length, AUDIO_ALERT_SAMPLE);
-    const body = `${arabicLessonsCount(dead.length)} صوتها لا يعمل:\n${sample}`
+    const body = `${arabicLessonsCount(dead.length)} صوتها لا يعمل`
+      + (partial ? " (فحص جزئي — توقّف عند حدّ الوقت)" : "")
+      + `:\n${sample}`
       + (rest > 0 ? `\nوغيرها (${arabicLessonsCount(rest)}).` : "")
       + "\nراجعها في «إدارة الكل» — لم يُحذف شيء.";
 
@@ -4508,12 +4608,14 @@ exports.weeklyDeadAudioScan = functions
         refId: `dead_audio_${new Date().toISOString().slice(0, 10)}`,
         deadCount: dead.length,
         checked,
+        partial,
         lessonIds: dead.slice(0, 50).map((item) => item.id),
       },
     );
     await auditOwnerAction("system", "weekly_dead_audio_scan", "", {
       checked,
       dead: dead.length,
+      partial,
     });
     return null;
   });
@@ -4538,8 +4640,10 @@ exports.weeklyDeadAudioScan = functions
 // وemptyTrash فيمسحان من السلّة لا من `lessons`، والدرس كان قد سُجِّل
 // اختفاؤه لحظة دخوله السلّة.)
 //
-// و**الاستعادة** لا تحتاج شيئاً: restoreDeletedLesson يعيد كتابة الوثيقة
-// فتصل إلى التطبيق كوثيقة متغيّرة، والدمج يعيدها مكانها.
+// و**الاستعادة** تحتاج أمرين (تكتبهما restoreDeletedLesson
+// وrestoreDeletedSection): طابع `updatedAt` جديد كي تُلتقط الوثيقة
+// المستعادة تفاضلياً، ومحو شاهد الحذف من هذه المجموعة كي لا يُقدَّم
+// الحذفُ على الاستعادة عند جهاز تشمل نافذته الحدثين معاً.
 const DELETED_IDS_COLLECTION = "deleted_ids";
 const DELETED_IDS_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
@@ -4547,6 +4651,11 @@ async function recordDeletedId(collection, docId) {
   const id = cleanString(docId, 400);
   if (!id) return null;
   try {
+    // ♻️ سباق الاستعادة الفورية: قد يصل هذا المُشغِّل **بعد** أن استُعيدت
+    // الوثيقة (أو أُعيد إنشاؤها بالمعرّف نفسه) — كتابة شاهد حذف لوثيقة
+    // حيّة تُسقطها من أجهزة المستخدمين ظلماً.
+    const live = await db.collection(collection).doc(id).get();
+    if (live.exists) return null;
     // معرّفٌ مركَّب: المجموعات الثلاث قد تتشارك معرّفاً فلا يدهس أحدها الآخر.
     await db.collection(DELETED_IDS_COLLECTION).doc(`${collection}__${id}`).set({
       collection,
@@ -4620,7 +4729,6 @@ exports.updateMySubmission = functions.https.onCall(async (data, context) => {
   );
   // الحدّان نفسهما المستعملان في createSubmission (3..120 للعنوان، 500 للملاحظة).
   const title = requireString(data && data.title, "title", 3, 120);
-  const note = cleanString(data && data.note, 500);
   const ref = db.collection("lesson_submissions").doc(submissionId);
   const snap = await ref.get();
   if (!snap.exists) {
@@ -4631,12 +4739,18 @@ exports.updateMySubmission = functions.https.onCall(async (data, context) => {
   if (value.uid !== uid || value.status !== "pending") {
     throw new functions.https.HttpsError("permission-denied", "لا يمكن تعديل هذا الطلب.");
   }
-  await ref.update({
+  // ⚠️ لا مسح صامت: العنوان وحده إلزامي، وكل حقل آخر يُكتب **فقط** إن ورد
+  // في الحمولة — واجهة التطبيق تعدّل العنوان بلا `note`، فكانت ملاحظة
+  // المساهم الأصلية تُمحى بقيمة فارغة مع كل تعديل عنوان.
+  const update = {
     title,
-    note,
     editedAt: admin.firestore.FieldValue.serverTimestamp(),
     editedAtMs: Date.now(),
-  });
+  };
+  if (data && typeof data === "object" && Object.hasOwn(data, "note")) {
+    update.note = cleanString(data.note, 500);
+  }
+  await ref.update(update);
   return { ok: true, id: submissionId };
 });
 
@@ -4661,25 +4775,43 @@ exports.updateMyTranscriptSubmission = functions.https.onCall(async (data, conte
   if (value.uid !== uid || value.status !== "pending") {
     throw new functions.https.HttpsError("permission-denied", "لا يمكن تعديل هذا الطلب.");
   }
-  const text = cleanString(data && data.text, MAX_TRANSCRIPT_CHARS);
-  const bookTitle = cleanString(data && data.bookTitle, 200);
-  const sourceRef = cleanString(data && data.sourceRef, 300);
-  const note = cleanString(data && data.note, 500);
+  // ⚠️ لا كتابة إلا للحقول المُرسلة: كان كل نداء يكتب الحقول الأربعة كلّها
+  // فيمحو الغائبَ منها بقيمة فارغة — نداءُ تعديل الملاحظة وحدها كان يمسح
+  // نصَّ الاقتراح واسم الكتاب والمصدر التي كتبها المساهم يدوياً.
+  // (العنوان المعروض هو عنوان الدرس نفسه فليس حقلاً يملكه المساهم.)
+  const payload = data && typeof data === "object" ? data : {};
+  const update = {};
+  if (Object.hasOwn(payload, "text")) {
+    update.text = cleanString(payload.text, MAX_TRANSCRIPT_CHARS);
+  }
+  if (Object.hasOwn(payload, "bookTitle")) {
+    update.bookTitle = cleanString(payload.bookTitle, 200);
+  }
+  if (Object.hasOwn(payload, "sourceRef")) {
+    update.sourceRef = cleanString(payload.sourceRef, 300);
+  }
+  if (Object.hasOwn(payload, "note")) {
+    update.note = cleanString(payload.note, 500);
+  }
+  if (!Object.keys(update).length) {
+    throw new functions.https.HttpsError(
+      "invalid-argument",
+      "لا يوجد في الطلب حقل قابل للتعديل — يُعدَّل نص المقطع أو اسم الكتاب أو المصدر أو الملاحظة فقط.",
+    );
+  }
   const images = Array.isArray(value.imagePaths) ? value.imagePaths : [];
-  // الشرط نفسه المستعمل عند الإنشاء: نصّ معتبر أو صورة صفحة واحدة على الأقلّ.
-  if (text.length < MIN_TRANSCRIPT_TEXT_CHARS && !images.length) {
+  // الشرط نفسه المستعمل عند الإنشاء، على النصّ **الجديد** إن أُرسل فقط:
+  // لا يُسمح بمسح النصّ إن كان هو مصدر الاقتراح الوحيد (بلا صور).
+  if (Object.hasOwn(update, "text")
+      && update.text.length < MIN_TRANSCRIPT_TEXT_CHARS
+      && !images.length) {
     throw new functions.https.HttpsError(
       "invalid-argument",
       "أرفق نص المقطع أو صورة صفحة واحدة على الأقل.",
     );
   }
-  await ref.update({
-    text,
-    bookTitle,
-    sourceRef,
-    note,
-    editedAt: admin.firestore.FieldValue.serverTimestamp(),
-    editedAtMs: Date.now(),
-  });
+  update.editedAt = admin.firestore.FieldValue.serverTimestamp();
+  update.editedAtMs = Date.now();
+  await ref.update(update);
   return { ok: true, id: submissionId };
 });

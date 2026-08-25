@@ -1,5 +1,6 @@
 package com.ali.ishaqiyin_admin.data
 
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldPath
 import com.google.firebase.firestore.FieldValue
@@ -61,11 +62,32 @@ object AdminRepository {
      */
     suspend fun fetchLessons(limit: Long? = null): List<Lesson> {
         val base = db.collection("lessons")
-        val snap = if (limit != null && limit > 0) {
-            base.orderBy("createdAtMs", Query.Direction.DESCENDING).limit(limit).get().await()
-        } else {
-            base.get().await()
+        if (limit != null && limit > 0) {
+            // ⛔ كان الفرز الخادميّ على `createdAtMs` وهو حقل لا تكتبه
+            // `createLesson` أصلاً (تكتبه `reorderSubcategoryLessons` وحدها
+            // للدروس المعاد ترتيبها) — و`orderBy` يستبعد الوثائق بلا الحقل،
+            // فكان المسار يعيد الدروس المعاد ترتيبها فقط ويُسقط الباقي بلا
+            // خطأ ظاهر. الفرز الآن على `createdAt` (نصّ ISO يكتبه الخادم في
+            // كلّ وثيقة) بشكلَيه: الجذريّ والمغلَّف `data.createdAt`، ثم
+            // تُدمج النتيجتان — كما في [fetchRecentChanges]. وثيقة بلا
+            // `createdAt` إطلاقاً تبقى خارج المسار المحدود (لا يمكن عدّها
+            // «أحدث» أصلاً)، والجلب الكامل بلا [limit] يشملها كما كان.
+            val found = LinkedHashMap<String, Lesson>()
+            listOf(
+                FieldPath.of("createdAt"),
+                FieldPath.of("data", "createdAt"),
+            ).forEach { path ->
+                runCatching {
+                    base.orderBy(path, Query.Direction.DESCENDING).limit(limit).get().await()
+                }.getOrNull()?.documents?.forEach { doc ->
+                    found[doc.id] = Lesson.fromDoc(doc.id, doc.dataMap())
+                }
+            }
+            return withContext(Dispatchers.Default) {
+                found.values.sortedByDescending { it.createdAtMs }.take(limit.toInt())
+            }
         }
+        val snap = base.get().await()
         return withContext(Dispatchers.Default) {
             snap.documents
                 .map { Lesson.fromDoc(it.id, it.dataMap()) }
@@ -369,7 +391,9 @@ object AdminRepository {
             if (user != null) put("updatedByUid", user.uid)
             val email = user?.email.orEmpty()
             if (email.isNotEmpty()) put("updatedByEmail", email.trim().lowercase())
-            put("updatedAt", nowIso())
+            // ⏱️ Timestamp خادميّ لا نصّ ISO — نفس علّة [updateCompat]:
+            // المزامنة التفاضليّة في التطبيق العام كانت لا ترى التعديل.
+            put("updatedAt", FieldValue.serverTimestamp())
         }
         val ref = db.collection("lessons").document(id)
         db.runTransaction { transaction ->
@@ -439,6 +463,15 @@ object AdminRepository {
         lesson: Lesson,
         target: Subcategory,
         targetCategoryName: String = "",
+        /**
+         * ⚡ للنقل الجماعي (كتفريغ قسم درساً درساً قبل حذفه): إعادة ترتيب
+         * الوجهة بعد **كلّ** درس تقرأ وتعيد كتابة دروس الوجهة كاملة —
+         * تضخيم O(عدد المنقول × حجم الوجهة) قراءةً وكتابةً ونداءً سحابيّاً.
+         * مرِّر `false` في الحلقة واستدعِ [reorderSubcategoryLessons] مرّة
+         * واحدة بعد اكتمال الدفعة كلّها؛ عندها يُعاد `placedLast = true`
+         * لأنّ الترتيب صار على عاتق المستدعي لا خللاً يستدعي رسالة.
+         */
+        reorderAfterMove: Boolean = true,
     ): MoveLessonResult {
         // نقلٌ إلى الموضع نفسه لا معنى له — ولا نكتب في القاعدة من أجله.
         if (target.id == lesson.subcategoryId) return MoveLessonResult(true)
@@ -469,6 +502,7 @@ object AdminRepository {
         // الترتيب داخل القسم مبنيّ على طابع الإنشاء لا على حقل رقميّ، فخروج
         // الدرس من قسمه القديم **لا يترك ثغرة** تحتاج إصلاحاً. يبقى أن يأخذ
         // موضعه الصحيح في وجهته: آخر القائمة.
+        if (!reorderAfterMove) return MoveLessonResult(true)
         val placedLast = runCatching {
             val destination = fetchSubcategoryLessons(target.id)
             // درس وحيد في وجهته لا ترتيب له (والدالّة الخادميّة ترفض أقلّ من اثنين).
@@ -496,7 +530,14 @@ object AdminRepository {
             if (user != null) put("updatedByUid", user.uid)
             val email = user?.email.orEmpty()
             if (email.isNotEmpty()) put("updatedByEmail", email.trim().lowercase())
-            put("updatedAt", nowIso())
+            // ⏱️ Timestamp خادميّ لا نصّ ISO: استعلامات المزامنة التفاضليّة
+            // في التطبيق العام تضع حدوداً بأنواع Timestamp/رقم — وFirestore
+            // لا يُرجع في استعلام المدى قيمةً من نوع غير نوع الحدّ، فكان كلّ
+            // تعديل تكتبه اللوحة (تسمية، نقل، تمييز) غير مرئيّ للجلب
+            // التفاضليّ ولا يصل الأجهزة إلا بجلبة كاملة عرضيّة. القرّاء هنا
+            // (fetchRecentChanges/التحليلات) يقرؤون عبر parseDateMs الذي
+            // يفهم الطابع والنصّ معاً، فلا حاجة لحقل نصّيّ موازٍ.
+            put("updatedAt", FieldValue.serverTimestamp())
         }
         db.runTransaction { transaction ->
             val snapshot = transaction.get(ref)
@@ -571,18 +612,27 @@ object AdminRepository {
             Triple("subcategories", "subcategory", 15),
         )
         val found = LinkedHashMap<String, RecentChange>()
+        // ⛔ حقل `updatedAt` مختلط الأنواع: الدوال السحابيّة تكتبه Timestamp
+        // بينما تعديلات اللوحة القديمة نصّ ISO — وFirestore يفصل الأنواع في
+        // الترتيب (النصوص قبل الطوابع تنازليّاً) فكان `limit` يمتلئ بالنصوص
+        // القديمة مهما قدُمت وتُقصى الطوابع الأحدث من «آخر ما جرى». لكلّ
+        // نوع استعلامه المقيَّد بمدى نوعه (استعلام المدى لا يُرجع إلا نوع
+        // حدّه): >= "" للنصوص و>= طابع الصفر للطوابع، ثم تُدمج النتائج.
+        val typeBounds = listOf<Any>("", Timestamp(0, 0))
         plan.forEach { (collection, kind, cap) ->
             listOf(
                 FieldPath.of("updatedAt"),
                 FieldPath.of("data", "updatedAt"),
             ).forEach { path ->
+                typeBounds.forEach bounds@{ bound ->
                 val snap = runCatching {
                     db.collection(collection)
+                        .whereGreaterThanOrEqualTo(path, bound)
                         .orderBy(path, Query.Direction.DESCENDING)
                         .limit(cap.toLong())
                         .get()
                         .await()
-                }.getOrNull() ?: return@forEach
+                }.getOrNull() ?: return@bounds
                 snap.documents.forEach { doc ->
                     val raw = doc.dataMap()
                     val body = unwrap(raw)
@@ -590,7 +640,7 @@ object AdminRepository {
                     if (atMs <= 0L) return@forEach
                     val name = str(body["title"]).ifEmpty { str(body["name"]) }
                     val by = str(body["updatedByEmail"]).ifEmpty { str(raw["updatedByEmail"]) }
-                    // المفتاح بالمعرّف: الشكلان قد يُرجعان الوثيقة نفسها.
+                    // المفتاح بالمعرّف: الاستعلامات قد تُرجع الوثيقة نفسها.
                     val previous = found[doc.id]
                     if (previous == null || previous.atMs < atMs) {
                         found[doc.id] = RecentChange(
@@ -601,6 +651,7 @@ object AdminRepository {
                             atMs = atMs,
                         )
                     }
+                }
                 }
             }
         }

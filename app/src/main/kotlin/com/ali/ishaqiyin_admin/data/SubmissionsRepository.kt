@@ -3,7 +3,9 @@ package com.ali.ishaqiyin_admin.data
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.functions.FirebaseFunctions
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 
@@ -93,7 +95,14 @@ object SubmissionsRepository {
     private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
     const val COLLECTION = "lesson_submissions"
 
-    /** بثّ مباشر لكل الطلبات (المعلّقة أولاً ثم الأحدث قراراً). */
+    /**
+     * بثّ مباشر لكل الطلبات (المعلّقة أولاً ثم الأحدث قراراً).
+     *
+     * ⚠️ `flowOn(Default)` ليس ترفاً: Firestore يسلّم اللقطة على **الخيط
+     * الرئيسي**، وهذه المجموعة تحمل حقولاً نصّية كبيرة (نصّ مشروح يبلغ عشرين
+     * ألف حرف)، فتحليلها وفرزها كانا يقعان على خيط الواجهة عند كل انبعاث.
+     * نظيرتها في `TranscriptsRepository` تحمله أصلاً — وسقط هنا وحده.
+     */
     fun watchAll(): Flow<List<LessonSubmission>> =
         db.collection(COLLECTION).querySnapshots().map { snap ->
             snap.documents
@@ -102,12 +111,13 @@ object SubmissionsRepository {
                     compareByDescending<LessonSubmission> { it.isPending }
                         .thenByDescending { it.createdAtMs },
                 )
-        }
+        }.flowOn(Dispatchers.Default)
 
     /** عدد الطلبات المعلّقة (شارة اللوحة). */
     fun watchPendingCount(): Flow<Int> =
         db.collection(COLLECTION).whereEqualTo("status", "pending")
             .querySnapshots().map { it.size() }
+            .flowOn(Dispatchers.Default)
 
     /**
      * الموافقة والنشر. مرِّر عنواناً/قسمين معدَّلين ليُنشر بالتعديل

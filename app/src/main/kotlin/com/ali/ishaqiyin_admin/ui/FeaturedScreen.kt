@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.Lesson
+import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -131,19 +132,21 @@ fun FeaturedScreen(onBack: () -> Unit) {
         undoBar.show(
             message = "أُزيل «${lesson.title.ifBlank { "الدرس" }}» من مختارات المنبر.",
             onUndo = { pendingRemoval.remove(lesson.id) },
+            // ⛔ بلا scope.launch: الكتابة تجري في نطاق UndoBar الدائم —
+            // لفّها بنطاق الشاشة كان يجعل مغادرتها قبل انقضاء المهلة تُبطل
+            // الإزالة بصمت (launch على نطاق مُلغى لا ينفّذ شيئاً) فيبقى
+            // الدرس مميّزاً في القاعدة والتطبيق العام إلى الأبد.
             onCommit = {
                 busyId = lesson.id
-                scope.launch {
-                    runCatching { AdminRepository.setLessonFeatured(lesson.id, false) }
-                        .onFailure {
-                            // فشل الكتابة يعيد الدرس للعرض: إخفاؤه وهو
-                            // مميّز في القاعدة يخدع المشرف.
-                            pendingRemoval.remove(lesson.id)
-                            snack("تعذّرت الإزالة: ${it.message ?: it}")
-                        }
-                    busyId = ""
-                    pendingRemoval.remove(lesson.id)
-                }
+                runCatching { AdminRepository.setLessonFeatured(lesson.id, false) }
+                    .onFailure {
+                        // فشل الكتابة يعيد الدرس للعرض: إخفاؤه وهو
+                        // مميّز في القاعدة يخدع المشرف.
+                        pendingRemoval.remove(lesson.id)
+                        snack("تعذّرت الإزالة: ${it.arabicReason()}")
+                    }
+                busyId = ""
+                pendingRemoval.remove(lesson.id)
             },
         )
     }
@@ -158,23 +161,23 @@ fun FeaturedScreen(onBack: () -> Unit) {
         undoBar.show(
             message = "أُزيل التمييز عن ${lessonsCountLabel(batch.size)} انتهت مدّتها.",
             onUndo = { pendingRemoval.removeAll(ids) },
+            // ⛔ بلا scope.launch — نفس علّة [unfeature]: نطاق الشاشة يُلغى
+            // بمغادرتها فلا يُنظَّف شيء رغم شريط «أُزيل التمييز».
             onCommit = {
                 cleaning = true
-                scope.launch {
-                    var failed = 0
-                    batch.forEach { lesson ->
-                        runCatching { AdminRepository.setLessonFeatured(lesson.id, false) }
-                            .onFailure {
-                                failed++
-                                pendingRemoval.remove(lesson.id)
-                            }
-                    }
-                    if (failed > 0) {
-                        snack("نُظّفت ${batch.size - failed}، وتعذّر $failed — أعد المحاولة.")
-                    }
-                    pendingRemoval.removeAll(ids)
-                    cleaning = false
+                var failed = 0
+                batch.forEach { lesson ->
+                    runCatching { AdminRepository.setLessonFeatured(lesson.id, false) }
+                        .onFailure {
+                            failed++
+                            pendingRemoval.remove(lesson.id)
+                        }
                 }
+                if (failed > 0) {
+                    snack("نُظّفت ${batch.size - failed}، وتعذّر $failed — أعد المحاولة.")
+                }
+                pendingRemoval.removeAll(ids)
+                cleaning = false
             },
         )
     }
@@ -189,8 +192,10 @@ fun FeaturedScreen(onBack: () -> Unit) {
                 scope.launch {
                     runCatching {
                         AdminRepository.setLessonFeatured(lesson.id, true, duration.untilMs())
+                    // arabicReason: نصّ الاستثناء الخام إنجليزيّ تقنيّ لا
+                    // يفهمه جمهور اللوحة.
                     }.onSuccess { snack("مدّة التمييز الآن: ${duration.label}") }
-                        .onFailure { snack("تعذّر التعديل: ${it.message ?: it}") }
+                        .onFailure { snack("تعذّر التعديل: ${it.arabicReason()}") }
                 }
             },
         )

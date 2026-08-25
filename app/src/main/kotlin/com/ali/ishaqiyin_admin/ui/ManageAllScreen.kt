@@ -188,15 +188,6 @@ fun ManageAllScreen(onBack: () -> Unit) {
         }
     }
 
-    fun <T> filter(list: List<T>, name: (T) -> String): List<T> {
-        val q = query.trim().lowercase()
-        if (q.isEmpty()) return emptyList()
-        return list.mapNotNull { item ->
-            val idx = name(item).lowercase().indexOf(q)
-            if (idx == -1) null else item to idx
-        }.sortedBy { it.second }.map { it.first }
-    }
-
     // خريطتان مثبّتتان: مرشِّح البحث ينادي الاسمين لكلّ درس ولكلّ رمز، والبحث
     // الخطّي فيهما كان يتكرّر مع كل ضغطة مفتاح.
     val catNames = remember(categories) { categories.associate { it.id to it.name } }
@@ -216,24 +207,33 @@ fun ManageAllScreen(onBack: () -> Unit) {
     val savedCategory = categories.firstOrNull { it.id == AppPrefs.lastManageCategoryId }
     val savedSub = subcategories.firstOrNull { it.id == AppPrefs.lastManageSubcategoryId }
 
-    val cats = filter(categories) { it.name }
-    val subs = filter(subcategories) { it.name }
+    // ⚡ الترشيح كلّه داخل remember بمفاتيح البحث والقوائم: كان يُحسب في جسم
+    // التركيب مباشرةً فيُعاد بناء آلاف السلاسل النصّية مع **كلّ** إعادة تركيب
+    // (تقلّب loading أو فتح حوار) لا مع تغيّر البحث وحده — إطارات مفقودة
+    // وتسخين على أجهزة المشرفين الضعيفة.
+    val q = query.trim().lowercase()
+    val cats = remember(categories, q) { filterByName(categories, q) { it.name } }
+    val subs = remember(subcategories, q) { filterByName(subcategories, q) { it.name } }
 
     // بحث الدروس رمزيّ عامّ: يقبل رقماً واحداً، وكل كلمة تُطابق العنوان أو
     // اسم القسم الرئيسي أو الفرعي («3 الفقه» = الدرس 3 في الفقه).
-    val lessonTokens = query.trim().lowercase().split(Regex("\\s+"))
-        .filter { it.isNotEmpty() }
-    val foundLessons = if (!hasQuery) {
-        emptyList()
-    } else {
-        allLessons.orEmpty().filter { lesson ->
-            lessonTokens.all { token ->
-                "${lesson.title} ${catName(lesson.categoryId)} ${subName(lesson.subcategoryId)}"
-                    .lowercase().contains(token)
+    val foundLessons = remember(allLessons, q, catNames, subNames) {
+        val tokens = q.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) {
+            emptyList()
+        } else {
+            allLessons.orEmpty().filter { lesson ->
+                // سلسلة البحث تُبنى مرّة واحدة لكلّ درس لا مرّة لكلّ كلمة.
+                val haystack = "${lesson.title} ${catNames[lesson.categoryId].orEmpty()} " +
+                    subNames[lesson.subcategoryId].orEmpty()
+                val lower = haystack.lowercase()
+                tokens.all { token -> lower.contains(token) }
             }
         }
     }
-    val emptySearch = hasQuery && !loading &&
+    // ⛔ «لا توجد نتائج» لا تُقال ودروس البحث لم تُحمَّل أصلاً (allLessons
+    // فارغة بفشل الجلب): كانت تُعرض كذباً فيظنّ المشرف أنّ الدرس حُذف.
+    val emptySearch = hasQuery && !loading && allLessons != null &&
         cats.isEmpty() && subs.isEmpty() && foundLessons.isEmpty()
 
     // حوارات التعديل/الحذف
@@ -299,7 +299,12 @@ fun ManageAllScreen(onBack: () -> Unit) {
                 loading = true
                 scope.launch {
                     runCatching { AdminRepository.deleteLesson(action.item) }
-                        .onSuccess { snack("تم حذف الدرس والملف الصوتي.") }
+                        // ⚠️ لا يُقال «حُذف الملف الصوتي»: الخادم ينقل الوثيقة
+                        // إلى deleted_lessons ولا يمسّ الصوت — والحوار أعلاه
+                        // وعد بالاستعادة، فرسالة تناقضه تُربك المشرف.
+                        .onSuccess {
+                            snack("نُقل الدرس إلى سلة المحذوفات — يمكن استعادته خلال 30 يوماً.")
+                        }
                         .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
                     loading = false
                     lessonsChanged()
@@ -397,20 +402,40 @@ fun ManageAllScreen(onBack: () -> Unit) {
                 it.subcategoryId == target.item.id
             }
         }
+        // ⚠️ صدق الوصف واجب: الخادم ينقل القسم ودروسه إلى سلة المحذوفات
+        // (قابلة للاستعادة 30 يوماً، والملفات الصوتية لا تُمسّ قبل الحذف
+        // النهائي التلقائي) — النصّ القديم «نهائياً لا يمكن التراجع» كان
+        // يُرهب المشرف عن عملية آمنة ويوهمه أن مساحة التخزين تحرّرت فوراً.
+        // وعبارات الصفر («0 أقسام فرعيّة») تُسقَط لأنها ركيكة ومضلّلة.
+        val doomedParts = buildList {
+            if (target is DeleteTarget.Main && doomedSubs.isNotEmpty()) {
+                add(
+                    arabicCount(
+                        doomedSubs.size,
+                        "قسم فرعيّ واحد",
+                        "قسمان فرعيّان",
+                        "أقسام فرعيّة",
+                        "قسماً فرعيّاً",
+                    ),
+                )
+            }
+            if (doomedLessons.isNotEmpty()) add(lessonsCountLabel(doomedLessons.size))
+        }
         ConfirmDialog(
             title = "تأكيد الحذف",
             // ⚠️ حين يفشل الجلب تكون الأعداد أدناه صفرية كاذبة، فيُصدَّر التحذير أوّلاً.
             body = (if (!scopeKnown) "⚠️ تعذّر حساب مدى الحذف — لا تتابع. أعد التحميل ثمّ حاول.\n\n" else "") +
                 "هل أنت متأكد من حذف \"${target.name}\"؟\n\n" +
                 (
-                    if (target is DeleteTarget.Main) {
-                        "سيُحذف ${arabicCount(doomedSubs.size, "قسم فرعيّ واحد", "قسمان فرعيّان", "أقسام فرعيّة", "قسماً فرعيّاً")} " +
-                            "و${lessonsCountLabel(doomedLessons.size)}، "
+                    if (doomedParts.isEmpty()) {
+                        "القسم فارغ — يُنقل وحده إلى «سلة المحذوفات» ويمكن " +
+                            "استرجاعه خلال 30 يوماً."
                     } else {
-                        "سيُحذف ${lessonsCountLabel(doomedLessons.size)} "
+                        "يُنقل القسم مع ${doomedParts.joinToString(" و")} إلى " +
+                            "«سلة المحذوفات»، ويبقى كلّ ذلك قابلاً للاستعادة " +
+                            "30 يوماً قبل الحذف النهائي التلقائي."
                     }
                     ) +
-                "وملفاتها الصوتية من التخزين نهائياً. لا يمكن التراجع." +
                 // الرقم لا يُراجَع والاسم يُراجَع: رؤية اسم لم يقصده
                 // المشرف توقفه قبل الضغط، والعدد وحده لا يوقفه.
                 namesBlock("الأقسام الفرعيّة:", doomedSubs.map { it.name }, ::moreSubsLabel) +
@@ -432,7 +457,8 @@ fun ManageAllScreen(onBack: () -> Unit) {
                                 AdminRepository.deleteSubcategory(target.item.id)
                         }
                     }
-                        .onSuccess { snack("تم حذف القسم ومحتوياته بالكامل.") }
+                        // نفس صدق الحوار: نقلٌ إلى السلة لا محوٌ نهائيّ.
+                        .onSuccess { snack("نُقل القسم ومحتوياته إلى سلة المحذوفات.") }
                         .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
                     openSub = null
                     openCategory = null
@@ -623,6 +649,18 @@ fun ManageAllScreen(onBack: () -> Unit) {
                             item { TranscriptHint() }
                         }
                         items(foundLessons.size) { i -> lessonCard(foundLessons[i]) }
+                        // ⛔ فشل جلب الدروس كان يمرّ صامتاً (snack عابر ثم لا
+                        // شيء) ولا يعيد المحاولة إلا مسح الحقل وإعادة الكتابة.
+                        // هنا يُقال الصدق ويُتاح زرّ يعيد الجلب والبحثُ باقٍ.
+                        if (allLessons == null && !loading) {
+                            item {
+                                RetryBox(
+                                    message = "تعذّر تحميل الدروس للبحث فيها — " +
+                                        "تحقّق من الإنترنت.",
+                                    onRetry = { scope.launch { loadAllLessons() } },
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -672,8 +710,10 @@ fun ManageAllScreen(onBack: () -> Unit) {
                         ) {
                             item {
                                 Text(
-                                    "${lessonsCountLabel(browseLessons.size)} بترتيبها كما " +
-                                        "يراها المستمع.",
+                                    // جملة محايدة للعدد: «درس واحد بترتيبها كما
+                                    // يراها» كانت لحناً (ضمير جمع مؤنث لمفرد).
+                                    "الترتيب أدناه هو ما يراه المستمع في التطبيق " +
+                                        "(${lessonsCountLabel(browseLessons.size)}).",
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(vertical = 6.dp),
@@ -945,6 +985,15 @@ private fun LessonRow(
             }
         }
     }
+}
+
+/** ترشيح بالاسم مرتّباً بموضع أوّل تطابق (الأقرب لبداية الاسم أولاً). */
+private fun <T> filterByName(list: List<T>, q: String, name: (T) -> String): List<T> {
+    if (q.isEmpty()) return emptyList()
+    return list.mapNotNull { item ->
+        val idx = name(item).lowercase().indexOf(q)
+        if (idx == -1) null else item to idx
+    }.sortedBy { it.second }.map { it.first }
 }
 
 // ─── أسماء ما سيُحذف (لا عدده وحده) ───────────────────────────────────

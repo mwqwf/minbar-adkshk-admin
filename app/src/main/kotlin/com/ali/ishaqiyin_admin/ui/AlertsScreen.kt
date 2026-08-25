@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,7 +41,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -74,8 +74,11 @@ fun AlertsScreen(
     // شريط «تراجع» لهذه الشاشة — الإزالة تقع فوراً والتراجع يستردّها.
     val undoBar = rememberUndoBar()
     var confirmPublicDelete by remember { mutableStateOf<AdminAlert?>(null) }
+    // `null` = لم يصل انبعاث بعد: كانت القيمة الأوّليّة قائمة فارغة فتظهر
+    // رسالة «كلّ شيء تحت السيطرة ✅» أثناء التحميل على شبكة بطيئة — ادّعاء
+    // إيجابيّ قد يُغلق المشرف الشاشة مطمئنّاً قبل وصول تنبيهات تنتظر قراره.
     val live by remember(isOwner) { AdminAlertsFeed.stream(isOwner) }
-        .collectAsState(initial = emptyList())
+        .collectAsState(initial = null)
     val me = AdminAlertsFeed.myEmail
 
     // ما مُيّز مقروءاً في هذه الزيارة — يمنع إعادة الكتابة كلّما عاد الصفّ
@@ -86,9 +89,13 @@ fun AlertsScreen(
     // لقطة الزيارة: كلّ ما ظهر منذ فتح الشاشة يبقى معروضاً حتى الخروج —
     // ولا تُحدَّث نسخته بعد التمييز، فتظلّ إشارة «غير مقروء» ظاهرة للزائر.
     val session = remember { androidx.compose.runtime.mutableStateMapOf<String, AdminAlert>() }
+    // ⛔ معرّفات إزالتها معلّقة (شريط التراجع/حذف جارٍ): الوثيقة ما تزال في
+    // القاعدة خلال مهلة التأجيل، فكان أيّ انبعاث جديد من المستمع (كتمييز
+    // تنبيه آخر مقروءاً) يعيد المُزال إلى الشاشة رغم شريط «أُزيل التنبيه».
+    val pendingDelete = remember { mutableSetOf<String>() }
     LaunchedEffect(live) {
-        live.forEach { alert ->
-            if (!session.containsKey(alert.id)) {
+        live?.forEach { alert ->
+            if (!session.containsKey(alert.id) && !pendingDelete.contains(alert.id)) {
                 session[alert.id] = alert
                 // ⛔ markedAll لم يكن يُصفَّر عند وصول جديد، فيختفي زرّ «تمييز
                 // الكل مقروءاً» إلى الأبد بعد أوّل ضغطة رغم تراكم غير المقروء.
@@ -100,6 +107,7 @@ fun AlertsScreen(
 
     /** الحذف يمحو الوثيقة نفسها لا علامة قراءتي — لذا يُعلَن فشله. */
     fun deleteNow(alert: AdminAlert) {
+        pendingDelete.add(alert.id)
         session.remove(alert.id)
         scope.launch {
             runCatching { AdminAlertsFeed.delete(alert) }
@@ -109,6 +117,7 @@ fun AlertsScreen(
                     session[alert.id] = alert
                     snack("تعذّر حذف التنبيه: ${it.arabicReason()}")
                 }
+            pendingDelete.remove(alert.id)
         }
     }
 
@@ -119,18 +128,24 @@ fun AlertsScreen(
      * بزمن الإنشاء) لأنّ شيئاً لم يُمَسّ في القاعدة أصلاً.
      */
     fun removeWithUndo(alert: AdminAlert) {
+        pendingDelete.add(alert.id)
         session.remove(alert.id)
         undoBar.show(
             message = "أُزيل التنبيه «${alert.title.ifEmpty { "تنبيه" }}».",
-            onUndo = { session[alert.id] = alert },
+            onUndo = {
+                pendingDelete.remove(alert.id)
+                session[alert.id] = alert
+            },
+            // ⛔ بلا scope.launch: الحذف يجري في نطاق UndoBar الدائم — لفّه
+            // بنطاق الشاشة كان يجعله لا يُنفَّذ أبداً إن غادر المشرف قبل
+            // انقضاء المهلة (launch على نطاق مُلغى يعود بلا شيء).
             onCommit = {
-                scope.launch {
-                    runCatching { AdminAlertsFeed.delete(alert) }
-                        .onFailure {
-                            session[alert.id] = alert
-                            snack("تعذّر حذف التنبيه: ${it.arabicReason()}")
-                        }
-                }
+                runCatching { AdminAlertsFeed.delete(alert) }
+                    .onFailure {
+                        session[alert.id] = alert
+                        snack("تعذّر حذف التنبيه: ${it.arabicReason()}")
+                    }
+                pendingDelete.remove(alert.id)
             },
         )
     }
@@ -192,10 +207,19 @@ fun AlertsScreen(
                     IconButton(
                         onClick = {
                             val unread = alerts.filter { !it.isReadBy(me) }
-                            AdminAlertsFeed.markAllRead(unread)
-                            unread.forEach { marked.add(it.id) }
                             markedAll = true
-                            snack("مُيّزت التنبيهات مقروءة.")
+                            // ⛔ كانت الحصيلة تُهمل ورسالة النجاح فوريّة:
+                            // فشل الدفعات (رفض قواعد مثلاً) يمرّ بصمت وتعود
+                            // التنبيهات بعد المزامنة رغم إخبار المشرف بالنجاح.
+                            AdminAlertsFeed.markAllRead(unread) { ok ->
+                                if (ok) {
+                                    snack("مُيّزت التنبيهات مقروءة.")
+                                } else {
+                                    markedAll = false
+                                    snack("تعذّر تمييز بعض التنبيهات — أعد المحاولة.")
+                                }
+                            }
+                            unread.forEach { marked.add(it.id) }
                         },
                     ) {
                         Icon(Icons.Filled.DoneAll, contentDescription = "تمييز الكل مقروءاً")
@@ -208,11 +232,17 @@ fun AlertsScreen(
                     Modifier.padding(padding).fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        "لا تنبيهات — كلّ شيء تحت السيطرة ✅",
-                        fontSize = 16.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    // قبل أوّل انبعاث لا نعرف شيئاً بعد — مؤشّر تحميل لا
+                    // رسالة اطمئنان قد تنقلب فجأة إلى قائمة تنتظر قراره.
+                    if (live == null) {
+                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    } else {
+                        Text(
+                            "لا تنبيهات — كلّ شيء تحت السيطرة ✅",
+                            fontSize = 16.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 return@AdminScaffold
             }
@@ -237,12 +267,15 @@ fun AlertsScreen(
 
                     // الدائرة الباهتة (المقروء) تُظهر خلفيّة الشاشة من تحتها،
                     // فأيقونتها تتبع السطح لا اللون المصمت — وإلّا اختفى الحبر
-                    // الداكن فوق ذهب الليل الشفّاف.
+                    // الداكن فوق ذهب الليل الشفّاف. وفي الفاتح: الأبيض فوق
+                    // الدائرة الباهتة (primary بشفافيّة 0.35 فوق خلفيّة فاتحة)
+                    // كان تباينه ≈1.5 فتكاد الأيقونة تختفي — الحبر الداكن
+                    // نفسه (primary) هو الذي يُقرأ فوقها.
                     val bubble = MaterialTheme.colorScheme.primary
                     val bubbleIcon = when {
                         unread -> contentColorOn(bubble)
                         isAdminDarkTheme() -> MaterialTheme.colorScheme.onSurface
-                        else -> Color.White
+                        else -> bubble
                     }
 
                     Row(

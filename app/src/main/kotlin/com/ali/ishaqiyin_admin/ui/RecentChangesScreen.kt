@@ -53,6 +53,7 @@ import com.ali.ishaqiyin_admin.data.arabicReason
  */
 @Composable
 fun RecentChangesScreen(onBack: () -> Unit) {
+    val snack = LocalSnack.current
     var items by remember { mutableStateOf<List<AdminRepository.RecentChange>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf("") }
@@ -64,7 +65,13 @@ fun RecentChangesScreen(onBack: () -> Unit) {
         error = ""
         runCatching { AdminRepository.fetchRecentChanges() }
             .onSuccess { items = it }
-            .onFailure { error = "تعذّر جلب آخر ما جرى: ${it.arabicReason()}" }
+            .onFailure {
+                val message = "تعذّر جلب آخر ما جرى: ${it.arabicReason()}"
+                // ⛔ مع قائمة معروضة كان الفشل صامتاً تماماً (error لا يُعرض
+                // إلّا والقائمة فارغة) فيبدو زرّ «تحديث» ميتاً والمشرف يظنّ
+                // القائمة مُحدَّثة وهي قديمة — تُعلَن الرسالة على Snackbar.
+                if (items.isEmpty()) error = message else snack(message)
+            }
         loading = false
     }
 
@@ -73,7 +80,13 @@ fun RecentChangesScreen(onBack: () -> Unit) {
         onBack = onBack,
         actions = {
             IconButton(onClick = { if (!loading) reload++ }) {
-                Icon(Icons.Filled.Refresh, contentDescription = "تحديث")
+                // أثناء إعادة الجلب يظهر مؤشّر مكان الأيقونة — بدونه لا أثر
+                // للنقرة إطلاقاً على شبكة بطيئة.
+                if (loading) {
+                    Spin(size = 20)
+                } else {
+                    Icon(Icons.Filled.Refresh, contentDescription = "تحديث")
+                }
             }
         },
     ) { padding ->

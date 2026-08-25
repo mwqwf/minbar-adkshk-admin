@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -53,6 +54,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -101,6 +103,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 
 /**
  * 🔗 تدفّقات شارات اللوحة، مشتركة على مستوى العمليّة.
@@ -123,13 +126,19 @@ internal object DashboardBadges {
 
     @Suppress("UNCHECKED_CAST")
     @Synchronized
-    private fun <T> shared(key: String, initial: T, create: () -> Flow<T>): StateFlow<T> {
+    private fun <T> shared(
+        key: String,
+        initial: T,
+        /** سياسة المشاركة — الافتراض إبقاء المستمع حيّاً 30 ثانية بعد آخر مشترك. */
+        sharing: SharingStarted = started,
+        create: () -> Flow<T>,
+    ): StateFlow<T> {
         val uid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
         if (uid != boundUid) {
             boundUid = uid
             cache.clear()
         }
-        return cache.getOrPut(key) { create().stateIn(scope, started, initial) } as StateFlow<T>
+        return cache.getOrPut(key) { create().stateIn(scope, sharing, initial) } as StateFlow<T>
     }
 
     fun chatUnread(): StateFlow<Int> =
@@ -144,8 +153,14 @@ internal object DashboardBadges {
     fun pendingTranscripts(): StateFlow<Int> =
         shared("transcripts", 0) { TranscriptsRepository.watchPendingCount() }
 
+    // ⛔ watchCount تدفّق يبثّ قيمة واحدة ثم يكتمل: مشاركته بمهلة الـ30 ثانية
+    // كانت تُبقي عدّاً قديماً بعد تفريغ السلة والعودة السريعة إلى اللوحة
+    // (المهلة لم تنقضِ فلا يُعاد تشغيل تدفّق اكتمل أصلاً). مهلة الصفر تعيد
+    // العدّ عند كلّ عودة، وتبقى آخر قيمة معروضة ريثما يصل الجديد.
     fun trash(): StateFlow<Int> =
-        shared("trash", 0) { TrashRepository.watchCount() }
+        shared("trash", 0, sharing = SharingStarted.WhileSubscribed(0)) {
+            TrashRepository.watchCount()
+        }
 
     fun featured(): StateFlow<List<Lesson>> =
         shared("featured", emptyList<Lesson>()) { AdminRepository.watchFeatured() }
@@ -204,14 +219,22 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // الأرقام المحفوظة تظهر فوراً؛ عدّ الخادم يحلّ محلّها حين يصل.
-    var counts by remember { mutableStateOf(loadCounts(context)) }
+    // الأرقام المحفوظة تظهر فور قراءتها؛ عدّ الخادم يحلّ محلّها حين يصل.
+    // ⛔ كانت `loadCounts` تُستدعى داخل `remember` أثناء التركيب: أوّل وصول
+    // لملف SharedPreferences يحمّله من القرص **متزامناً على خيط الواجهة**
+    // فيقطع إطاراً عند الدخول — القراءة انتقلت إلى IO داخل الأثر أدناه،
+    // وريثما تصل تُظهر المربّعات مؤشّر تحميلها المعتاد (القيمة صفر).
+    var counts by remember { mutableStateOf(DashboardCounts(0, 0, 0)) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var reloadTrigger by remember { mutableIntStateOf(0) }
     var showProfileDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(reloadTrigger) {
+        // آخر الأعداد المحفوظة — مرّة واحدة عند أوّل تركيب لا مع كلّ «تحديث».
+        if (reloadTrigger == 0) {
+            counts = withContext(Dispatchers.IO) { loadCounts(context) }
+        }
         loading = true
         error = null
         try {
@@ -370,8 +393,13 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
     val trashCount by DashboardBadges.trash().collectAsState()
     val featured by DashboardBadges.featured().collectAsState()
     val queue by UploadQueue.items.collectAsState()
-    val missingTranscripts = remember {
-        AnalyticsRepository.loadCache(context)?.missingTranscripts ?: 0
+    // ⛔ كانت `loadCache` (قراءة SharedPreferences + فكّ JSON للقطة التحليلات)
+    // تُنفَّذ داخل `remember` أثناء التركيب على خيط الواجهة — الآن على IO
+    // بعد التركيب، والقيمة تبدأ صفراً فلا يظهر السطر إلّا حين تصل فعلاً.
+    val missingTranscripts by produceState(0) {
+        value = withContext(Dispatchers.IO) {
+            AnalyticsRepository.loadCache(context)?.missingTranscripts ?: 0
+        }
     }
 
     val now = System.currentTimeMillis()
@@ -568,6 +596,9 @@ private fun TodayTasksCard(isOwner: Boolean, unreadAlerts: Int, nav: NavHostCont
                 Row(
                     Modifier
                         .fillMaxWidth()
+                        // هدف لمس 48dp (جمهور اللوحة كبار سنّ): الصفّ كان
+                        // ~34dp متلاصقاً بجاريه فتصيب النقرة غير المقصود.
+                        .heightIn(min = 48.dp)
                         .clickable(onClick = task.onClick)
                         .padding(vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,

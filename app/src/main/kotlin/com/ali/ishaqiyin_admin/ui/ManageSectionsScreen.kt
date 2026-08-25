@@ -16,7 +16,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -27,9 +29,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.Category
+import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.ali.ishaqiyin_admin.data.Subcategory
 import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.launch
+import java.security.MessageDigest
 
 /** رسالة موحّدة حين تُحفظ الكتابة محليّاً ولم يؤكّدها الخادم بعد. */
 private const val PENDING_NETWORK_HINT =
@@ -38,6 +42,25 @@ private const val PENDING_NETWORK_HINT =
 /** تطبيع الاسم للمقارنة: مسافات مضغوطة وحالة أحرف موحّدة. */
 private fun normalizedName(name: String): String =
     name.trim().lowercase().replace(Regex("\\s+"), " ")
+
+/**
+ * نظير `AdminRepository.sectionKey` حرفاً بحرف — للفحص القَبْليّ فقط.
+ *
+ * ⛔ لماذا وُجد: معرّف وثيقة القسم يُشتقّ من **الاسم عند الإنشاء** ولا يتغيّر
+ * عند إعادة التسمية، والكتابة تقع بـ`set()` الكاسح. فإنشاء قسم باسم قسمٍ سبق
+ * أن أُنشئ ثمّ غُيِّر اسمه كان يشتقّ المعرّف القديم نفسه ويدهس وثيقته كاملةً
+ * — يختفي القسم المُعاد تسميته وتظهر فروعه ودروسه فجأة تحت الاسم الجديد.
+ * الدالّة الأصليّة خاصّة في المستودع، فنشتقّ المفتاح هنا لنرفض قبل الكتابة.
+ */
+private fun derivedSectionKey(prefix: String, vararg parts: String): String {
+    val raw = parts.joinToString("|") {
+        it.trim().lowercase().replace(Regex("\\s+"), " ")
+    }
+    val digest = MessageDigest.getInstance("SHA-1").digest(raw.toByteArray(Charsets.UTF_8))
+    return prefix + digest.joinToString("") { byte ->
+        "%02x".format(java.util.Locale.ROOT, byte.toInt() and 0xff)
+    }
+}
 
 @Composable
 fun ManageSectionsScreen(onBack: () -> Unit) {
@@ -54,6 +77,10 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
     // ⛔ كان runCatching بلا onFailure: فشل الجلب يُبتلَع فتبقى القائمتان
     // فارغتين بلا رسالة، ويمرّ حارس التكرار المبنيّ عليهما ⇒ أقسام مكرّرة.
     var listsLoaded by remember { mutableStateOf(false) }
+    // يفترق عن `!listsLoaded`: هذا لا يصير true إلّا بعد **فشل** فعليّ، كي لا
+    // يظهر زرّ «أعد المحاولة» أثناء التحميل الأوّل الجاري.
+    var loadFailed by remember { mutableStateOf(false) }
+    var retryTick by remember { mutableIntStateOf(0) }
 
     suspend fun refreshCategories() {
         runCatching {
@@ -61,14 +88,24 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
             // تُجلب الفرعية أيضاً لمنع تكرار اسم داخل القسم الرئيسي نفسه.
             subcategories = AdminRepository.fetchSubcategories()
         }
-            .onSuccess { listsLoaded = true }
+            .onSuccess {
+                listsLoaded = true
+                loadFailed = false
+            }
             .onFailure {
                 listsLoaded = false
+                loadFailed = true
                 snack("تعذّر تحميل الأقسام: ${it.arabicReason()}. الإنشاء معطّل حتى ينجح التحميل.")
             }
     }
 
-    LaunchedEffect(Unit) { refreshCategories() }
+    // ⛔ كانت الاستدعاءة الوحيدة LaunchedEffect(Unit): فشل الجلب الأوّل يقفل
+    // زرّي الإنشاء إلى الأبد بلا أيّ مسار لإعادة المحاولة إلّا مغادرة الشاشة.
+    // الآن يُعاد الجلب عند ضغط «أعد المحاولة» وعند عودة الشبكة تلقائياً.
+    val online by NetworkMonitor.online.collectAsState()
+    LaunchedEffect(retryTick, online) {
+        if (!listsLoaded) refreshCategories()
+    }
 
     AdminScaffold(title = "إدارة الأقسام", onBack = onBack) { padding ->
         Column(
@@ -77,6 +114,14 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
+            // فشل الجلب يعطّل الإنشاء — فلا بدّ من مخرج ظاهر بدل شاشة مقفلة.
+            if (loadFailed) {
+                RetryBox(
+                    message = "تعذّر تحميل الأقسام — الإنشاء معطّل حتى ينجح التحميل.",
+                    onRetry = { retryTick++ },
+                )
+                Spacer(Modifier.height(8.dp))
+            }
             Card(
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(
@@ -109,6 +154,20 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                             }
                             if (twin != null) {
                                 snack("«${twin.name}» موجود مسبقاً — لم يُنشأ قسم مكرّر.")
+                                return@Button
+                            }
+                            // حارس الدهس: المعرّف يُشتقّ من الاسم، وقسمٌ سبق
+                            // إنشاؤه بهذا الاسم ثمّ أُعيدت تسميته يحمل المعرّف
+                            // نفسه — الكتابة فوقه بـset() تمحوه بكلّ محتواه.
+                            val ghost = categories.firstOrNull {
+                                it.id == derivedSectionKey("cat_", name)
+                            }
+                            if (ghost != null) {
+                                snack(
+                                    "هذا الاسم استُعمل سابقاً لقسمٍ اسمه الآن " +
+                                        "«${ghost.name}» — إنشاؤه به يمحو ذاك القسم. " +
+                                        "غيّر الاسم ولو بحرف واحد.",
+                                )
                                 return@Button
                             }
                             busyCat = true
@@ -195,6 +254,20 @@ fun ManageSectionsScreen(onBack: () -> Unit) {
                             }
                             if (twin != null) {
                                 snack("«${twin.name}» موجود في هذا القسم — لم يُنشأ فرع مكرّر.")
+                                return@Button
+                            }
+                            // نفس حارس الدهس أعلاه، بمفتاح الفرعيّ المركّب
+                            // (الأب + الاسم): فرعٌ أُعيدت تسميته يبقى بمعرّف
+                            // اسمه الأوّل، وإنشاء فرعٍ به يكتب فوقه فيمحوه.
+                            val ghost = subcategories.firstOrNull {
+                                it.id == derivedSectionKey("sub_", parent, name)
+                            }
+                            if (ghost != null) {
+                                snack(
+                                    "هذا الاسم استُعمل سابقاً لفرعٍ اسمه الآن " +
+                                        "«${ghost.name}» — إنشاؤه به يمحو ذاك الفرع. " +
+                                        "غيّر الاسم ولو بحرف واحد.",
+                                )
                                 return@Button
                             }
                             busySub = true

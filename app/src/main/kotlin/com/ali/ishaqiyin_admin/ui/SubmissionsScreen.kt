@@ -194,6 +194,9 @@ private fun SubmissionsFilterBar(
                 selected = current == option,
                 onClick = { onSelect(option) },
                 label = { Text("${option.label} ($count)", fontSize = 12.sp) },
+                // هدف لمس 48dp كشرائح المساهمين أسفلها — ارتفاع FilterChip
+                // الافتراضيّ 32dp دون حدّ اللمس، وهي أوّل ما يُلمس بالشاشة.
+                modifier = Modifier.heightIn(min = 48.dp),
             )
         }
     }
@@ -464,7 +467,10 @@ private fun AudioSubmissionsContent(targetId: String = "") {
     // بين العشرات — ويضيع الغرض من حمل معرّفها في حمولة الإشعار.
     val listState = rememberLazyListState()
     var highlighted by remember { mutableStateOf("") }
-    var seeked by remember { mutableStateOf(false) }
+    // ⛔ saveable كـtargetId: تدوير الشاشة كان يصفّر `seeked` وحدها فيقفز
+    // التمرير رجوعاً إلى مساهمة الإشعار ويعيد توهّجها، ساحباً المشرف من
+    // موضع تصفّحه مع كلّ تدوير.
+    var seeked by rememberSaveable { mutableStateOf(false) }
     // ⛔ كان shown.size ضمن المفاتيح: أيّ لقطة Firestore جديدة خلال مدّة
     // التمييز تُعيد تشغيل الأثر فيرتدّ عند `seeked` قبل تصفير highlighted
     // ⇒ يبقى التمييز إلى نهاية عمر الشاشة. فُصل التصفير في أثر مستقلّ.
@@ -508,10 +514,15 @@ private fun AudioSubmissionsContent(targetId: String = "") {
         selectMode = false
         bulkBusy = false
         snack(
-            if (failed > 0) {
-                "$label ${arabicCount(done, "مساهمة واحدة", "مساهمتين", "مساهمات", "مساهمة")}، وأخفقت $failed — أعد المحاولة عليها."
-            } else {
-                "$label ${arabicCount(done, "مساهمة واحدة", "مساهمتين", "مساهمات", "مساهمة")} دفعة واحدة. ✅"
+            when {
+                // «نُشرت 0 مساهمات، وأخفقت 2» ركيكة — رسالة مستقلّة للصفر.
+                done == 0 && failed > 0 ->
+                    "لم تُحسم أي مساهمة — أخفقت $failed، أعد المحاولة."
+                // نائب الفاعل مرفوع: «مساهمتان» لا «مساهمتين».
+                failed > 0 ->
+                    "$label ${arabicCount(done, "مساهمة واحدة", "مساهمتان", "مساهمات", "مساهمة")}، وأخفقت $failed — أعد المحاولة عليها."
+                else ->
+                    "$label ${arabicCount(done, "مساهمة واحدة", "مساهمتان", "مساهمات", "مساهمة")} دفعة واحدة. ✅"
             },
         )
     }
@@ -1018,7 +1029,8 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
     // 🎯 نظير تبويب الصوتيات: تمرير إلى الاقتراح الذي جاء الإشعار من أجله.
     val listState = rememberLazyListState()
     var highlighted by remember { mutableStateOf("") }
-    var seeked by remember { mutableStateOf(false) }
+    // saveable — نفس علّة تبويب الصوتيات: التدوير كان يعيد القفز والتوهّج.
+    var seeked by rememberSaveable { mutableStateOf(false) }
     // ⛔ كان shown.size ضمن المفاتيح: أيّ لقطة Firestore جديدة خلال مدّة
     // التمييز تُعيد تشغيل الأثر فيرتدّ عند `seeked` قبل تصفير highlighted
     // ⇒ يبقى التمييز إلى نهاية عمر الشاشة. فُصل التصفير في أثر مستقلّ.
@@ -1077,7 +1089,14 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
             if (failed > 0) append("، وأخفقت $failed")
             if (skipped > 0) append("، وتُخُطّي $skipped لأن درسها حُسم في الدفعة نفسها")
         }
-        snack("$label ${arabicCount(done, "اقتراحاً واحداً", "اقتراحين", "اقتراحات", "اقتراحاً")}$extra.")
+        snack(
+            if (done == 0) {
+                "لم يُحسم أي اقتراح$extra."
+            } else {
+                // نائب الفاعل مرفوع: «اقتراح واحد/اقتراحان» لا «اقتراحاً/اقتراحين».
+                "$label ${arabicCount(done, "اقتراح واحد", "اقتراحان", "اقتراحات", "اقتراحاً")}$extra."
+            },
+        )
     }
 
     /**
@@ -1449,7 +1468,8 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
                                     }
                                 }
                             }
-                            StatusChip(s.status)
+                            // صيغ مذكّرة: الاقتراح «يُعتمد» ولا «يُنشر».
+                            StatusChip(s.status, masculine = true)
                         }
                         // شريط التحكّم للصوتية الجارية: مطابقة النص بالصوت
                         // تحتاج قفزاً داخل الدرس لا سماعه من أوّله.
@@ -1950,13 +1970,19 @@ private fun EditTranscriptDialog(
     }
 }
 
+/**
+ * [masculine]: كيان تبويب النصوص «اقتراح» مذكّر **ويُعتمد** لا يُنشر —
+ * كانت شارة واحدة مؤنّثة («نُشرت/مرفوضة») تظهر على بطاقة الاقتراح فتناقض
+ * رسائل تبويبه («رُفض الاقتراح») وتوحي «نُشرت» خطأً بنشر درس.
+ */
 @Composable
-private fun StatusChip(status: String) {
+private fun StatusChip(status: String, masculine: Boolean = false) {
     val (color, label) = when (status) {
-        "approved" -> adminGreen to "نُشرت"
-        "approved_edited" -> MaterialTheme.colorScheme.primary to "نُشرت معدَّلة"
-        "rejected" -> MaterialTheme.colorScheme.error to "مرفوضة"
-        else -> adminOrange to "معلّقة"
+        "approved" -> adminGreen to if (masculine) "اعتُمد" else "نُشرت"
+        "approved_edited" ->
+            MaterialTheme.colorScheme.primary to if (masculine) "اعتُمد معدَّلاً" else "نُشرت معدَّلة"
+        "rejected" -> MaterialTheme.colorScheme.error to if (masculine) "مرفوض" else "مرفوضة"
+        else -> adminOrange to if (masculine) "معلّق" else "معلّقة"
     }
     Box(
         Modifier
@@ -2044,8 +2070,11 @@ private fun RejectDialog(
     onDismiss: () -> Unit,
     onReject: (String) -> Unit,
 ) {
-    var selected by remember { mutableStateOf<String?>(null) }
-    var note by remember { mutableStateOf("") }
+    // saveable: تدوير الشاشة أثناء كتابة «سبب آخر» كان يمحو الاختيار والنص
+    // بينما الحوار نفسه يبقى مفتوحاً (rejectingId محفوظ) — خلافاً لبقيّة
+    // مسودّات الشاشة المحفوظة عبر إعادة الإنشاء.
+    var selected by rememberSaveable { mutableStateOf<String?>(null) }
+    var note by rememberSaveable { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,

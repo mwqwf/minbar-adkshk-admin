@@ -108,7 +108,14 @@ fun SectionDeleteFlowDialog(
         categories.filter { it.id in withDestinations }
     }
 
-    /** ينقل ما في [batch] درساً درساً ويحدّث العدّاد بعد كلّ نجاح. */
+    /**
+     * ينقل ما في [batch] درساً درساً ويحدّث العدّاد بعد كلّ نجاح.
+     *
+     * ⚡ الترتيب **مرّة واحدة بعد الدفعة** لا بعد كلّ درس: إعادة ترتيب الوجهة
+     * تقرأ دروسها كاملةً وتعيد كتابة طوابعها، فتكرارها لكلّ درس تضخيمٌ
+     * O(عدد المنقول × حجم الوجهة) على إنترنت مدفوع. نمرّر
+     * `reorderAfterMove = false` في الحلقة ثمّ نرتّب الوجهة دفعةً واحدة.
+     */
     fun runMove(batch: List<Lesson>, target: Subcategory, targetCategoryName: String) {
         busy = true
         problem = ""
@@ -123,6 +130,7 @@ fun SectionDeleteFlowDialog(
                         lesson = lesson,
                         target = target,
                         targetCategoryName = targetCategoryName,
+                        reorderAfterMove = false,
                     )
                 }
                 if (outcome.isSuccess) {
@@ -134,7 +142,25 @@ fun SectionDeleteFlowDialog(
                     }
                 }
             }
-            if (movedCount > 0) onSomethingMoved()
+            // ترتيبٌ واحد للوجهة بعد الدفعة كلّها. وفشله لا يُبطل النقل: الدروس
+            // انتقلت فعلاً، وغايةُ الترتيب موضعُها في القائمة لا وجودُها فيها —
+            // فيُبلَّغ المشرف أنّ الترتيب وحده يحتاج إعادة، لا الرفع.
+            if (movedCount > 0) {
+                runCatching {
+                    val destination = AdminRepository.fetchSubcategoryLessons(target.id)
+                    if (destination.size > 1) {
+                        AdminRepository.reorderSubcategoryLessons(
+                            target.id,
+                            destination.map { it.id },
+                        )
+                    }
+                }.onFailure {
+                    if (failureReason.isEmpty()) {
+                        failureReason = "نُقلت الدروس، وتعذّر ضبط ترتيبها — رتّبها من زرّ إعادة الترتيب."
+                    }
+                }
+                onSomethingMoved()
+            }
             busy = false
             if (failed.isEmpty()) {
                 // ⛔ الحذف لا يقع إلا بعد نقل الجميع — قسمٌ نصف مفرَّغ
@@ -230,11 +256,12 @@ fun SectionDeleteFlowDialog(
                     Step.CHOICE -> {
                         Text(
                             // العدد لا يُذكر إن كان مجهولاً: «0 دروس» كاذبة تطمئن
-                            // المشرف على قسم مليء.
-                            if (scopeKnown) {
-                                "فيه ${lessonsCountLabel(knownLessonCount)}. ماذا تريد؟"
-                            } else {
-                                "لم نستطع معرفة عدد دروسه. ماذا تريد؟"
+                            // المشرف على قسم مليء. وحالة الصفر المعلومة تُقال
+                            // بجملة سليمة — «فيه 0 دروس» ركيكة ومربكة.
+                            when {
+                                !scopeKnown -> "لم نستطع معرفة عدد دروسه. ماذا تريد؟"
+                                knownLessonCount == 0 -> "لا دروس فيه. ماذا تريد؟"
+                                else -> "فيه ${lessonsCountLabel(knownLessonCount)}. ماذا تريد؟"
                             },
                             fontSize = 15.sp,
                         )
@@ -272,7 +299,10 @@ fun SectionDeleteFlowDialog(
                             )
                             Spacer(Modifier.size(6.dp))
                             Text(
-                                "احذف $label ودروسه كلّها نهائيّاً",
+                                // ⚠️ لا «نهائيّاً»: الخادم ينقل القسم ودروسه إلى
+                                // سلة المحذوفات (استعادة خلال 30 يوماً) — الكذب
+                                // بالتهويل يُحجم المشرفَ عن عملية آمنة.
+                                "احذف $label بكلّ دروسه (إلى سلة المحذوفات)",
                                 color = MaterialTheme.colorScheme.error,
                             )
                         }

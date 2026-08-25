@@ -133,6 +133,7 @@ import com.ali.ishaqiyin_admin.data.chatTypeToString
 import com.ali.ishaqiyin_admin.data.formatBytes
 import com.ali.ishaqiyin_admin.data.guessContentType
 import com.ali.ishaqiyin_admin.ui.ClipboardImageSuggestion
+import com.ali.ishaqiyin_admin.ui.RecentScreenshotChip
 import com.ali.ishaqiyin_admin.ui.CountBadge
 import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.RemoteImage
@@ -808,6 +809,13 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
                 )
             }
             replyTo?.let { ReplyBanner(it) { replyTo = null } }
+            // 📸 اقتراح آخر لقطة شاشة (≤ دقيقتين): النقر يسلك مسار إرفاق
+            // الصور الموجود نفسه (pendingUpload ⇒ CaptionDialog ⇒ ChatUploader).
+            RecentScreenshotChip(
+                enabled = !voice.showsBar && (!meta.locked || isOwner),
+                onPick = { uri -> pendingUpload = context.pickedFileFrom(uri) },
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
             ClipboardImageSuggestion(
                 enabled = !voice.showsBar && (!meta.locked || isOwner),
                 onImage = { uri -> pendingUpload = context.pickedFileFrom(uri) },

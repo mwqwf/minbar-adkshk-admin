@@ -99,6 +99,7 @@ import com.ali.ishaqiyin_admin.data.chatTypeForMime
 import com.ali.ishaqiyin_admin.data.chatTypeLabel
 import com.ali.ishaqiyin_admin.data.guessContentType
 import com.ali.ishaqiyin_admin.ui.ClipboardImageSuggestion
+import com.ali.ishaqiyin_admin.ui.RecentScreenshotChip
 import com.ali.ishaqiyin_admin.ui.ConfirmDialog
 import com.ali.ishaqiyin_admin.ui.LocalSnack
 import com.ali.ishaqiyin_admin.ui.adminFieldColors
@@ -923,6 +924,13 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
                 }
             }
             replyTo?.let { ReplyBanner(it) { replyTo = null } }
+            // 📸 اقتراح آخر لقطة شاشة (≤ دقيقتين): النقر يسلك مسار إرفاق
+            // الصور الموجود نفسه (pendingUpload ⇒ الإرسال الفوريّ عبر ChatUploader).
+            RecentScreenshotChip(
+                enabled = !voice.showsBar,
+                onPick = { uri -> pendingUpload = context.pickedFileFrom(uri) },
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
             ClipboardImageSuggestion(
                 enabled = !voice.showsBar,
                 onImage = { uri -> pendingUpload = context.pickedFileFrom(uri) },

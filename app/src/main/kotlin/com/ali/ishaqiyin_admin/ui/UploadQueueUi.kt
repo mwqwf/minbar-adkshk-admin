@@ -425,13 +425,21 @@ private fun itemStatusLine(
     else -> null
 }
 
-/** مدّة انتظار مقروءة بالعربية من `nextScheduleTimeMillis`. */
+/**
+ * مدّة انتظار مقروءة بالعربية من `nextScheduleTimeMillis`.
+ *
+ * بصيغة العدد الموحّدة (arabicCount): كانت تُخرج «3 دقيقة» و«2 ساعة»
+ * — لحناً عدديّاً ظاهراً في سطر «المحاولة بعد …».
+ */
 private fun formatWait(ms: Long): String {
-    val seconds = ms / 1000
+    val seconds = (ms / 1000).toInt()
     return when {
-        seconds < 60 -> "$seconds ثانية"
-        seconds < 3_600 -> "${seconds / 60} دقيقة"
-        else -> "${seconds / 3_600} ساعة"
+        seconds < 60 ->
+            arabicCount(seconds, "ثانية واحدة", "ثانيتين", "ثوانٍ", "ثانية")
+        seconds < 3_600 ->
+            arabicCount(seconds / 60, "دقيقة واحدة", "دقيقتين", "دقائق", "دقيقة")
+        else ->
+            arabicCount(seconds / 3_600, "ساعة واحدة", "ساعتين", "ساعات", "ساعة")
     }
 }
 

@@ -94,7 +94,16 @@ fun MoveLessonDialog(
                     // رجوع خطوة واحدة بدل إغلاق الحوار كلّه وإعادة البدء.
                     if (chosenCategory != null) {
                         androidx.compose.material3.IconButton(
-                            onClick = { chosenCategory = null; chosenSub = null },
+                            onClick = {
+                                // ⚠️ خطوة **واحدة** فعلاً: من المراجعة إلى اختيار
+                                // الفرعيّ، ومنه إلى الرئيسيّ — كان يمسح الاختيارين
+                                // معاً فيُعيد المشرف من الصفر عند كلّ تصحيح.
+                                if (chosenSub != null) {
+                                    chosenSub = null
+                                } else {
+                                    chosenCategory = null
+                                }
+                            },
                             enabled = !busy,
                         ) {
                             Icon(
