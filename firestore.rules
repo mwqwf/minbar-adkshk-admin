@@ -193,6 +193,21 @@ service cloud.firestore {
         && request.resource.data.platform.size() <= 20
         && request.resource.data.chatMuted is bool;
       allow delete: if isOwner() || (signedIn() && request.auth.uid == uid);
+
+      // 📱 تعدّد الأجهزة: وثيقة لكلّ جهاز باسم بصمة رمزه (SHA-256).
+      // الكتابة لصاحب الـuid وحده، والهويّة (البريد/الدور/الكتم) تبقى في
+      // الوثيقة الأمّ — هنا الرمز وبيانات الجهاز لا غير.
+      match /devices/{tokenHash} {
+        allow get: if isOwner() || (signedIn() && request.auth.uid == uid);
+        allow list: if isOwner();
+        allow create, update: if signedIn()
+          && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['token', 'model', 'updatedAt'])
+          && request.resource.data.token is string
+          && request.resource.data.token.size() >= 20
+          && request.resource.data.token.size() <= 4096;
+        allow delete: if isOwner() || (signedIn() && request.auth.uid == uid);
+      }
     }
 
     // مشرف المجموعة ⭐ دور داخلي للدردشة لا يمنح أي صلاحية في بقية اللوحة.

@@ -58,10 +58,10 @@ function contextEmail(context) {
     : "");
 }
 
-// وضع المراقبة أولاً (الخطوة 7 من تسلسل النشر الآمن): لا يُرفض الطلب بلا
-// رمز App Check قبل تسجيل تواقيع Play وتفعيل Play Integrity — يُقلَب إلى
-// true بعد التأكد من أن كل الطلبات الشرعية تحمل الرمز.
-const APP_CHECK_ENFORCED = false;
+// وضع الإنفاذ (قرار 2026-08-26): كل الطلبات الشرعية تحمل رمز App Check —
+// نسخ debug عبر DebugAppCheckProviderFactory ونسخ release عبر Play
+// Integrity في التطبيقين — فيُرفض أي طلب بلا رمز.
+const APP_CHECK_ENFORCED = true;
 
 function assertAppCheck(context) {
   if (!context.app) {
@@ -310,8 +310,18 @@ async function pushToToken(token, title, body, data) {
   }
 }
 
+// 📱 تعدّد أجهزة المشرف: رموز كل مشرف = اتحاد {حقل token في وثيقته
+// القديمة} ∪ {المجموعة الفرعية devices} بلا تكرار. هويّة الجهاز (البريد
+// والدور والكتم) تبقى من الوثيقة الأمّ وحدها — وثائق devices لا تحمل
+// إلا token/updatedAt/model.
 async function activeAdminTokens(ownerOnly) {
-  const snap = await db.collection("admin_device_tokens").get();
+  const [snap, devicesSnap] = await Promise.all([
+    db.collection("admin_device_tokens").get(),
+    db.collectionGroup("devices").get().catch((error) => {
+      console.error("admin devices collectionGroup read failed", error);
+      return { docs: [] };
+    }),
+  ]);
   if (snap.empty) return [];
   const rows = snap.docs
     .map((doc) => {
@@ -325,6 +335,26 @@ async function activeAdminTokens(ownerOnly) {
       };
     })
     .filter((item) => item.email && item.token);
+  // فهرس الوثائق الأمّ بالـuid لإسناد هويّة كل جهاز فرعي إليها.
+  const parents = new Map(rows.map((item) => [item.uid, item]));
+  const seen = new Set(rows.map((item) => item.token));
+  for (const doc of devicesSnap.docs) {
+    // المسار: admin_device_tokens/{uid}/devices/{tokenHash}.
+    const parentRef = doc.ref.parent.parent;
+    if (!parentRef || parentRef.parent.id !== "admin_device_tokens") continue;
+    const parent = parents.get(cleanString(parentRef.id, 180));
+    if (!parent) continue;
+    const token = cleanString((doc.data() || {}).token, 4096);
+    if (!token || seen.has(token)) continue;
+    seen.add(token);
+    rows.push({
+      ref: doc.ref,
+      token,
+      email: parent.email,
+      uid: parent.uid,
+      chatMuted: parent.chatMuted,
+    });
+  }
   // قراءات dashboard_admins بالتوازي لا واحدة-واحدة: القراءة التسلسلية كانت
   // تضاعف زمن كلّ بثّ/إشعار بعدد الأجهزة.
   const emails = [...new Set(
@@ -1199,6 +1229,11 @@ exports.deleteMyData = functions.runWith({ timeoutSeconds: 120, memory: "512MB" 
       db.collection("feedback").where("uid", "==", uid),
     ));
     const anonymizedLessons = await anonymizePublishedLessons(uid);
+    // مع المجموعة الفرعية devices (تعدّد الأجهزة) — الوثيقة الأمّ وحدها
+    // كانت تُحذف فتبقى وثائق الأجهزة يتيمة.
+    await deleteQuery(
+      db.collection("admin_device_tokens").doc(uid).collection("devices"),
+    ).catch(() => {});
     await db.collection("admin_device_tokens").doc(uid).delete().catch(() => {});
     const rates = await deleteQuery(
       db.collection("private_rate_limits").where("uid", "==", uid),
@@ -3313,7 +3348,13 @@ exports.onAdminDmMessageCreated = functions.firestore
     // الرمز المستهدف مباشرة: الوثائق مفهرسة بالـuid، فقراءة المجموعة كاملة
     // كانت تكلّف N قراءة لإشعار شخص واحد. وكتم «إشعارات المجموعة» لا يشمل
     // الخاص (نمط واتساب): الرسائل الشخصية تصل دائماً.
-    const targetDoc = await db.collection("admin_device_tokens").doc(target).get();
+    const targetRef = db.collection("admin_device_tokens").doc(target);
+    // كل أجهزة المستهدف: الرمز القديم في الوثيقة الأمّ ∪ المجموعة الفرعية
+    // devices، بلا تكرار — التخويل يُفحص مرّة واحدة على هويّة الوثيقة الأمّ.
+    const [targetDoc, devicesSnap] = await Promise.all([
+      targetRef.get(),
+      targetRef.collection("devices").get().catch(() => ({ docs: [] })),
+    ]);
     const tokens = [];
     if (targetDoc.exists) {
       const value = targetDoc.data() || {};
@@ -3329,13 +3370,19 @@ exports.onAdminDmMessageCreated = functions.firestore
             && data.blocked !== true;
         }
         if (authorized) {
-          tokens.push({
-            ref: targetDoc.ref,
-            token,
+          const identity = {
             email,
             uid: cleanString(value.uid || targetDoc.id, 180),
             chatMuted: value.chatMuted === true,
-          });
+          };
+          tokens.push(Object.assign({ ref: targetDoc.ref, token }, identity));
+          const seen = new Set([token]);
+          for (const deviceDoc of devicesSnap.docs) {
+            const deviceToken = cleanString((deviceDoc.data() || {}).token, 4096);
+            if (!deviceToken || seen.has(deviceToken)) continue;
+            seen.add(deviceToken);
+            tokens.push(Object.assign({ ref: deviceDoc.ref, token: deviceToken }, identity));
+          }
         }
       }
     }

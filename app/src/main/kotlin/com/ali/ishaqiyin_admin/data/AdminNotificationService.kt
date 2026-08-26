@@ -165,6 +165,16 @@ object AdminNotificationService {
     /** أقصى عمر لبصمة الرمز قبل إعادة الكتابة رغم ثباتها (يُبقي updatedAt حيّاً). */
     private const val TOKEN_REWRITE_MS = 3L * 24 * 60 * 60 * 1000
 
+    /**
+     * 📱 معرّف وثيقة الجهاز في المجموعة الفرعية `devices`: بصمة SHA-256
+     * للرمز (64 خانة ست-عشرية) — حتمية فلا تتكرّر وثيقة لرمز واحد، ولا
+     * يدخل الرمز الخام (فيه أحرف غير صالحة لمعرّفات Firestore) في المسار.
+     */
+    private fun tokenHash(token: String): String =
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(token.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+
     private suspend fun saveToken(
         user: FirebaseUser,
         email: String,
@@ -191,6 +201,20 @@ object AdminNotificationService {
                 ),
                 SetOptions.merge(),
             ).await()
+        // 📱 تعدّد الأجهزة: الرمز يُكتب أيضاً في المجموعة الفرعية
+        // devices/{بصمة الرمز} — الوثيقة الأمّ تبقى للتوافق (رمز آخر جهاز)،
+        // والخادم يرسل لاتحاد الاثنين، فتصل الإشعارات لكلّ أجهزة المشرف.
+        FirebaseFirestore.getInstance()
+            .collection("admin_device_tokens").document(user.uid)
+            .collection("devices").document(tokenHash(token))
+            .set(
+                mapOf(
+                    "token" to token,
+                    "model" to android.os.Build.MODEL.orEmpty().take(80),
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                ),
+                SetOptions.merge(),
+            ).await()
         AppPrefs.lastDeviceTokenSig = sig
         AppPrefs.lastDeviceTokenWriteMs = System.currentTimeMillis()
     }
@@ -202,6 +226,17 @@ object AdminNotificationService {
         val user = FirebaseAuth.getInstance().currentUser
         if (user != null) {
             // تسجيل الخروج يجب ألا يُحتجز بسبب تعذّر تنظيف الرمز.
+            // 📱 وثيقة **هذا الجهاز** وحدها تُحذف من المجموعة الفرعية —
+            // أجهزة المشرف الأخرى تبقى مسجّلة.
+            runCatching {
+                val token = FirebaseMessaging.getInstance().token.await()
+                if (!token.isNullOrEmpty()) {
+                    FirebaseFirestore.getInstance()
+                        .collection("admin_device_tokens").document(user.uid)
+                        .collection("devices").document(tokenHash(token))
+                        .delete().await()
+                }
+            }
             runCatching {
                 FirebaseFirestore.getInstance()
                     .collection("admin_device_tokens").document(user.uid).delete().await()

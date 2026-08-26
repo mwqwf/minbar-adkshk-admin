@@ -86,8 +86,10 @@ import com.ali.ishaqiyin_admin.util.smartTitleFromFileName
 import com.ali.ishaqiyin_admin.util.sortedByNaturalName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.util.Calendar
 
@@ -321,6 +323,59 @@ fun AddLessonScreen(onBack: () -> Unit) {
     var transcriptSourceRef by rememberSaveable { mutableStateOf("") }
     val transcriptImages = rememberSaveable(saver = transcriptImagesSaver) {
         mutableStateListOf<Uri>()
+    }
+
+    // 📝 المسودة التلقائية: إغلاق التطبيق أثناء التعبئة كان يضيّع الحقول
+    // كلّها (rememberSaveable ينجو من التدوير لا من إنهاء العمليّة).
+    // النصوص والاختيارات وحدها تُحفظ — لا ملفّات الصوت ولا الصور.
+    var draftRestored by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val raw = withContext(Dispatchers.IO) { AppPrefs.addLessonDraft }
+            ?: return@LaunchedEffect
+        // لا استعادة فوق نموذج فيه شيء (عودة من تدوير — حالته محفوظة أصلاً).
+        val formEmpty = title.isBlank() && categoryId == null &&
+            transcriptText.isBlank() && transcriptBookTitle.isBlank() &&
+            transcriptSourceRef.isBlank()
+        if (!formEmpty) return@LaunchedEffect
+        runCatching {
+            val json = JSONObject(raw)
+            title = json.optString("title")
+            categoryId = json.optString("categoryId").takeIf { it.isNotEmpty() }
+            subcategoryId = json.optString("subcategoryId").takeIf { it.isNotEmpty() }
+            transcriptText = json.optString("transcriptText")
+            transcriptBookTitle = json.optString("transcriptBookTitle")
+            transcriptSourceRef = json.optString("transcriptSourceRef")
+            if (transcriptText.isNotBlank() || transcriptBookTitle.isNotBlank() ||
+                transcriptSourceRef.isNotBlank()
+            ) {
+                transcriptOpen = true
+            }
+            draftRestored = true
+        }
+    }
+    // حفظ خفيف بمهلة: كلّ تغيير يعيد تشغيل الأثر فلا يُكتب إلّا بعد سكون
+    // قصير — والنموذج الفارغ يمسح المسودة بدل حفظ فراغ.
+    LaunchedEffect(
+        title, categoryId, subcategoryId,
+        transcriptText, transcriptBookTitle, transcriptSourceRef,
+    ) {
+        delay(600)
+        val empty = title.isBlank() && categoryId == null && subcategoryId == null &&
+            transcriptText.isBlank() && transcriptBookTitle.isBlank() &&
+            transcriptSourceRef.isBlank()
+        val payload = if (empty) {
+            null
+        } else {
+            JSONObject()
+                .put("title", title)
+                .put("categoryId", categoryId.orEmpty())
+                .put("subcategoryId", subcategoryId.orEmpty())
+                .put("transcriptText", transcriptText)
+                .put("transcriptBookTitle", transcriptBookTitle)
+                .put("transcriptSourceRef", transcriptSourceRef)
+                .toString()
+        }
+        withContext(Dispatchers.IO) { AppPrefs.addLessonDraft = payload }
     }
 
     // ⛔ كان runCatching بلا onFailure: فشل الجلب على شبكة ضعيفة يترك
@@ -630,6 +685,10 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 transcriptImages.clear()
                 transcriptOpen = false
                 queuing = false
+                // نجاح الإدراج يمسح المسودة (العنوان المقترح تلقائيّاً ليس عملاً
+                // يخشى ضياعه) — وشريط الاستعادة يختفي إن كان ظاهراً.
+                draftRestored = false
+                withContext(Dispatchers.IO) { AppPrefs.addLessonDraft = null }
                 // تأكيد **لكلّ إضافة** لا للأولى فقط: الرسالة الداخلية قد
                 // تتطابق نصّاً مع سابقتها فلا يلحظ المشرف تغيّراً، فيُضاف
                 // موقع الدرس في الدور ويُرفَق شريط سفليّ يظهر من جديد
@@ -830,6 +889,8 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 transcriptImages.clear()
                 transcriptOpen = false
                 queuing = false
+                draftRestored = false
+                withContext(Dispatchers.IO) { AppPrefs.addLessonDraft = null }
                 message = buildString {
                     when {
                         added > 0 -> {
@@ -981,6 +1042,45 @@ fun AddLessonScreen(onBack: () -> Unit) {
             item { QueueHintCard(Modifier.padding(bottom = 8.dp)) }
             // مؤشّر حيّ لما يُرفع الآن وما ينتظر الدور.
             item { UploadQueueBanner(Modifier.padding(bottom = 8.dp)) }
+            // 📝 شريط صغير عند استعادة مسودة: يطمئن المشرف أنّ ما كتبه لم
+            // يضع، و«تفريغ» يمحوها مع حقولها إن أراد البدء من جديد.
+            if (draftRestored) {
+                item {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                            .background(
+                                adminGold.copy(alpha = 0.12f),
+                                RoundedCornerShape(10.dp),
+                            )
+                            .padding(start = 10.dp, top = 2.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "استُعيدت مسودة غير مكتملة",
+                            fontSize = 13.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(
+                            onClick = {
+                                title = ""
+                                categoryId = null
+                                subcategoryId = null
+                                transcriptText = ""
+                                transcriptBookTitle = ""
+                                transcriptSourceRef = ""
+                                transcriptOpen = false
+                                draftRestored = false
+                                scope.launch(Dispatchers.IO) { AppPrefs.addLessonDraft = null }
+                            },
+                            enabled = !busy,
+                        ) {
+                            Text("تفريغ", fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
             item {
                 AdminTextField(
                     value = title,

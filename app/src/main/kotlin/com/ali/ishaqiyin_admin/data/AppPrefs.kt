@@ -88,6 +88,15 @@ object AppPrefs {
         get() = prefs.getLong("device_token_write_ms_v1", 0L)
         set(value) = prefs.edit().putLong("device_token_write_ms_v1", value).apply()
 
+    /**
+     * 📝 مسودة نموذج «إضافة درس» (JSON): الحقول النصّية والاختيارات وحدها —
+     * لا ملفّات الصوت. تُكتب عند تغيّر الحقول (بمهلة قصيرة) وتُمسح عند نجاح
+     * الإدراج أو التفريغ اليدويّ، فإغلاق التطبيق أثناء التعبئة لا يضيّعها.
+     */
+    var addLessonDraft: String?
+        get() = readId("add_lesson_draft_v1")
+        set(value) = writeId("add_lesson_draft_v1", value)
+
     /** أُلغي اشتراك موضوع FCM القديم على هذا الجهاز (يكفي مرّة لكلّ تثبيت). */
     var legacyTopicUnsubscribed: Boolean
         get() = prefs.getBoolean("legacy_topic_unsubscribed_v1", false)

@@ -334,6 +334,7 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
                 }
             }
             item {
+                TodayHealthCard(isOwner = isOwner, nav = nav)
                 TodayTasksCard(isOwner = isOwner, unreadAlerts = unreadAlerts, nav = nav)
                 Spacer(Modifier.height(12.dp))
             }
@@ -375,6 +376,88 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
             item { Spacer(Modifier.height(16.dp)) }
         }
     }
+}
+
+/**
+ * 🩺 «صحة اليوم»: بطاقة واحدة مضغوطة تلخّص ما ينتظر المشرف الآن —
+ * «بانتظارك: N مساهمة، N نصّ مشروح، N رسالة دعم» — كلّ رقم ينقل لشاشته،
+ * وتختفي كلّياً إن كان كلّ شيء صفراً.
+ *
+ * ⚠️ بلا استعلام واحد جديد: الأرقام كلّها من تدفّقات [DashboardBadges]
+ * المشتركة نفسها التي تغذّي الشارات و«مهامّي اليوم».
+ */
+@Composable
+private fun TodayHealthCard(isOwner: Boolean, nav: NavHostController) {
+    val pendingAudio by DashboardBadges.pendingAudio().collectAsState()
+    val pendingTranscripts by DashboardBadges.pendingTranscripts().collectAsState()
+    val supportUnread by DashboardBadges.supportUnread(isOwner).collectAsState()
+    if (pendingAudio + pendingTranscripts + supportUnread == 0) return
+
+    data class HealthEntry(val count: Int, val label: String, val route: String)
+    val entries = listOf(
+        HealthEntry(
+            pendingAudio,
+            arabicCount(pendingAudio, "مساهمة", "مساهمتان", "مساهمات", "مساهمة"),
+            Routes.SUBMISSIONS,
+        ),
+        HealthEntry(
+            pendingTranscripts,
+            arabicCount(pendingTranscripts, "نصّ مشروح", "نصّان مشروحان", "نصوص مشروحة", "نصّاً مشروحاً"),
+            Routes.SUBMISSIONS,
+        ),
+        HealthEntry(
+            supportUnread,
+            arabicCount(supportUnread, "رسالة دعم", "رسالتا دعم", "رسائل دعم", "رسالة دعم"),
+            Routes.SUPPORT,
+        ),
+    ).filter { it.count > 0 }
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(adminGold.copy(alpha = 0.10f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "بانتظارك:",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.size(8.dp))
+        Row(
+            Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            entries.forEach { entry ->
+                Text(
+                    "${entry.count} ${entry.label}",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .background(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                            RoundedCornerShape(999.dp),
+                        )
+                        .clickable {
+                            // تبويب المساهمات المناسب قبل التنقّل (صوت/نصوص).
+                            if (entry.route == Routes.SUBMISSIONS) {
+                                SubmissionsTarget.set(
+                                    if (entry.label.contains("مشروح")) 1 else 0,
+                                )
+                            }
+                            nav.navigate(entry.route)
+                        }
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(12.dp))
 }
 
 /** بند واحد في «مهامّي اليوم». */
