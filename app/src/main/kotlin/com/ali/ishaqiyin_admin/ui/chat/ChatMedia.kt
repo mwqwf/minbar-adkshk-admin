@@ -267,13 +267,19 @@ object SharedAudioPlayer {
         }
     }
 
-    fun playFile(context: Context, key: String, file: File) {
+    fun playFile(context: Context, key: String, file: File, fromAutoAdvance: Boolean = false) {
         // ⚠️ حارس التشغيل التلقائي المؤجَّل — داخل المشغّل لا في الشاشات، كي
         // يغطّي مستدعيَيه (شاشة المجموعة والخاصّ) بمنطق واحد: إن وصل الطلب
         // بعد تنزيل طويل داخل نافذة الانتقال التلقائي، وكان المشرف قد بدأ
         // مقطعاً آخر أو أوقفه عمداً أثناء الانتظار، يُهمَل الطلب.
+        // ويقتصر الحارس على مسارات التقدّم التلقائي (fromAutoAdvance) — كان
+        // يبتلع أيضاً نقرة المشرف اليدويّة على فقاعة منزَّلة أثناء النافذة.
         val current = _activeKey.value
-        if (SystemClock.elapsedRealtime() < autoWindowUntil && current != null && current != key) {
+        if (
+            fromAutoAdvance &&
+            SystemClock.elapsedRealtime() < autoWindowUntil &&
+            current != null && current != key
+        ) {
             Log.d(TAG, "auto-play ignored: user moved to $current")
             autoWindowUntil = 0L
             return
@@ -362,12 +368,16 @@ object SharedAudioPlayer {
      * أثناء التنزيل كان يلغي الكوروتين فيكتمل الملفّ ولا يبدأ التشغيل أبداً.
      */
     fun downloadThenPlay(context: Context, att: ChatAttachment): Job = ownScope.launch {
-        ChatMediaStore.download(att)?.let { playFile(context, ChatMediaStore.keyOf(att), it) }
+        ChatMediaStore.download(att)?.let {
+            playFile(context, ChatMediaStore.keyOf(att), it, fromAutoAdvance = true)
+        }
     }
 
     /** نظيرها بعد فشل سابق (زرّ إعادة المحاولة). */
     fun retryThenPlay(context: Context, att: ChatAttachment): Job = ownScope.launch {
-        ChatMediaStore.retry(att)?.let { playFile(context, ChatMediaStore.keyOf(att), it) }
+        ChatMediaStore.retry(att)?.let {
+            playFile(context, ChatMediaStore.keyOf(att), it, fromAutoAdvance = true)
+        }
     }
 
     /** تحديث الموضع دوريّاً أثناء التشغيل (يستدعيه شريط الفقاعة). */

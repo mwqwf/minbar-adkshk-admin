@@ -125,7 +125,11 @@ function safeData(data) {
   return out;
 }
 
-async function consumeRateLimit({ uid, action, limit, windowMs, minIntervalMs }) {
+// dryRun: فحص الحد دون استهلاكه — يُستعمل قبل كتابة رئيسية قد تفشل، ثم
+// يُستهلك الحد بعد نجاحها؛ وإلا حُرم المستخدم نافذته كاملة بلا أثر مكتوب.
+async function consumeRateLimit({
+  uid, action, limit, windowMs, minIntervalMs, dryRun = false,
+}) {
   const ref = db.collection("private_rate_limits")
     .doc(hashId(`${action}:${uid}`));
   const now = Date.now();
@@ -151,6 +155,7 @@ async function consumeRateLimit({ uid, action, limit, windowMs, minIntervalMs })
         "تم بلوغ الحد المسموح مؤقتاً.",
       );
     }
+    if (dryRun) return;
     tx.set(ref, {
       uid,
       action,
@@ -203,22 +208,14 @@ async function clearAdminAlerts(type, refId) {
   const normalizedType = cleanString(type, 40);
   const normalizedRef = cleanString(refId, 180);
   if (!normalizedType || !normalizedRef) return 0;
-  const snap = await db.collection("admin_alerts").get();
-  const refs = snap.docs.filter((doc) => {
-    const value = doc.data() || {};
-    const metadata = value.data || {};
-    const itemType = cleanString(value.type || metadata.type, 40);
-    const itemRef = cleanString(
-      value.refId
-        || metadata.refId
-        || metadata.submissionId
-        || metadata.lessonId
-        || metadata.candidateEmail
-        || metadata.id,
-      180,
-    );
-    return itemType === normalizedType && itemRef === normalizedRef;
-  }).map((doc) => doc.ref);
+  // استعلام مركّب على الحقول الجذرية (writeAdminAlert يكتبها جذرياً دائماً)
+  // بدل قراءة المجموعة كاملة وترشيحها في الذاكرة عند كل حسم. تنبيهات النسخ
+  // القديمة بلا حقول جذرية تلتقطها cleanupResolvedAdminAlerts اليدوية.
+  const snap = await db.collection("admin_alerts")
+    .where("type", "==", normalizedType)
+    .where("refId", "==", normalizedRef)
+    .get();
+  const refs = snap.docs.map((doc) => doc.ref);
   for (let offset = 0; offset < refs.length; offset += 400) {
     const batch = db.batch();
     refs.slice(offset, offset + 400).forEach((ref) => batch.delete(ref));
@@ -940,13 +937,16 @@ exports.createSubmission = functions.https.onCall(async (data, context) => {
     data && data.transcriptImagePaths,
     `transcript_submissions/${uid}/${ref.id}/`,
   );
-  await consumeRateLimit({
+  // فحص الحد قبل الكتابة دون استهلاك، والاستهلاك بعد نجاحها — كي لا يخسر
+  // المساهم محاولة من نافذته إن فشلت كتابة المساهمة نفسها.
+  const submissionRateLimit = {
     uid,
     action: "submission",
     limit: 5,
     windowMs: 24 * 60 * 60 * 1000,
     minIntervalMs: 60 * 1000,
-  });
+  };
+  await consumeRateLimit({ ...submissionRateLimit, dryRun: true });
   await ref.set({
     uid,
     submitterName,
@@ -977,6 +977,9 @@ exports.createSubmission = functions.https.onCall(async (data, context) => {
     createdAt: new Date().toISOString(),
     createdAtTs: admin.firestore.FieldValue.serverTimestamp(),
     createdAtMs: Date.now(),
+  });
+  await consumeRateLimit(submissionRateLimit).catch((error) => {
+    console.error("submission rate limit consume failed", ref.id, error);
   });
   return { ok: true, id: ref.id, submissionId: ref.id };
 });
@@ -2646,10 +2649,12 @@ exports.emptyTrash = functions
     const snap = await db.collection(TRASH_COLLECTION).get();
     let purged = 0;
     for (const doc of snap.docs) {
-      await purgeTrashedLesson(doc, "").catch((error) => {
+      try {
+        await purgeTrashedLesson(doc, "");
+        purged += 1; // العدّ عند النجاح فقط — الفشل لا يُحسب.
+      } catch (error) {
         console.error("empty trash item failed", doc.id, error);
-      });
-      purged += 1;
+      }
     }
     await auditOwnerAction(actorEmail, "empty_trash", "", { purged });
     return { ok: true, purged };
@@ -4058,14 +4063,21 @@ exports.expireFeaturedLessons = functions.pubsub
   .onRun(async () => {
     const nowIso = new Date().toISOString();
     const nowMs = Date.now();
-    const snap = await db.collection("lessons")
-      .where("featured", "==", true)
-      .get();
+    // الوثائق القديمة ملفوفة `{data:{...}}` بلا مرآة جذرية: استعلام الجذر
+    // لا يراها فيبقى تمييزها المنقضي قائماً للأبد. لذا استعلام ثانٍ على
+    // المفتاح الملفوف والدمج بمعرّف الوثيقة (نفس نهج deleteSubcategoryCascade).
+    const [rootSnap, wrappedSnap] = await Promise.all([
+      db.collection("lessons").where("featured", "==", true).get(),
+      db.collection("lessons").where("data.featured", "==", true).get(),
+    ]);
+    const docMap = new Map();
+    [...rootSnap.docs, ...wrappedSnap.docs]
+      .forEach((doc) => docMap.set(doc.id, doc));
     let cleared = 0;
     let batch = db.batch();
     let pending = 0;
     const warnings = [];
-    for (const doc of snap.docs) {
+    for (const doc of docMap.values()) {
       const value = doc.data() || {};
       const wrapped = value.data && typeof value.data === "object";
       const inner = wrapped ? value.data : value;
@@ -4374,13 +4386,15 @@ exports.onCodeVerifyRequested = functions.firestore
         tx.delete(codeRef);
         tx.update(snap.ref, { result: "ok" });
       });
-      const mirrorRef = db.collection("dashboard_owner_codes").doc("current");
-      const mirror = await mirrorRef.get();
-      if (mirror.exists && normalizeEmail(mirror.data().candidateEmail) === email) {
-        await mirrorRef.delete();
-      }
       const resultSnap = await snap.ref.get();
       const result = cleanString((resultSnap.data() || {}).result, 40);
+      // مرآة «current» تُمحى عند كل تحقق ناجح وعند انقضاء الصلاحية أو
+      // استنفاد المحاولات (الرمز نفسه حُذف حينها) — لا فقط حين يطابق
+      // بريدها لحظة التحقق، وإلا بقيت مرآة يتيمة تشير إلى رمز لم يعد قائماً.
+      if (["ok", "expired", "too_many_attempts"].includes(result)) {
+        await db.collection("dashboard_owner_codes").doc("current")
+          .delete().catch(() => {});
+      }
       if (["ok", "expired", "too_many_attempts", "no_code"].includes(result)) {
         await clearAdminAlerts("owner_code", email);
       }
@@ -4995,14 +5009,16 @@ exports.createSupportThread = functions.https.onCall(async (data, context) => {
   if (kind === "supervision" && !text && !about) {
     throw new functions.https.HttpsError("invalid-argument", "عرّف بنفسك في طلب الإشراف.");
   }
-  // خيط جديد واحد كل ٢٤ ساعة لكل مستخدم.
-  await consumeRateLimit({
+  // خيط جديد واحد كل ٢٤ ساعة لكل مستخدم: هنا فحص فقط (dryRun) — الاستهلاك
+  // الفعلي بعد نجاح commit، وإلا حُرم المستخدم يوماً كاملاً بلا خيط منشأ.
+  const supportRateLimit = {
     uid,
     action: "support-thread",
     limit: 1,
     windowMs: 24 * 60 * 60 * 1000,
     minIntervalMs: 5 * 1000,
-  });
+  };
+  await consumeRateLimit({ ...supportRateLimit, dryRun: true });
   const now = Date.now();
   const preview = supportPreview(text, audio, images);
   const thread = {
@@ -5057,6 +5073,10 @@ exports.createSupportThread = functions.https.onCall(async (data, context) => {
   batch.set(ref, thread);
   batch.set(messageRef, message);
   await batch.commit();
+  // استهلاك الحد بعد نجاح الإنشاء فقط. فشله لا يُفشل الطلب.
+  await consumeRateLimit(supportRateLimit).catch((error) => {
+    console.error("support thread rate limit consume failed", ref.id, error);
+  });
   const label = SUPPORT_KIND_LABELS[kind] || "رسالة";
   const who = displayName || "مستمع";
   const alertTitle = kind === "supervision"

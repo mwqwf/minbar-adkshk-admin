@@ -338,7 +338,12 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
             ) {
                 scope.launch {
                     ChatMediaStore.download(att)?.let { file ->
-                        SharedAudioPlayer.playFile(context, ChatMediaStore.keyOf(att), file)
+                        SharedAudioPlayer.playFile(
+                            context,
+                            ChatMediaStore.keyOf(att),
+                            file,
+                            fromAutoAdvance = true,
+                        )
                     }
                 }
             }

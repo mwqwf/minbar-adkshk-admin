@@ -816,11 +816,24 @@ object UploadQueue {
     // ⚠️ @Volatile: يُقرآن ويُكتبان من خيط مستمعات الرفع ومن خيوط أخرى، وبلا
     // حاجز ذاكرة قد يرى خيطٌ قيمةً بائتة فتنطلق نبضة قرصيّة في كلّ تقدّم
     // (أو تُحبس كلّها) — وهي العلّة نفسها التي عُلِّم بها `lastPercent`.
+    // ⚠️ المقنِّن مربوط بمعرّف العنصر: كان مشتركاً بين العناصر، فنبضة
+    // متأخّرة من عنصر سابق كانت تلوّث عتبة العنصر الجاري فتُحبس نبضاته
+    // (أو تنطلق كلّها). تغيُّر المعرّف يصفّر العتبتين.
+    @Volatile private var beatId = ""
     @Volatile private var beatAtMs = 0L
     @Volatile private var beatPercent = -1
 
+    private fun resetBeatIfNewItem(id: String) {
+        if (beatId != id) {
+            beatId = id
+            beatAtMs = 0L
+            beatPercent = -1
+        }
+    }
+
     /** بداية نقل عنصر: تُثبَّت الحالة «يُرفع» على القرص قبل أوّل بايت. */
     fun markUploading(id: String, percent: Int) {
+        beatId = id
         beatAtMs = System.currentTimeMillis()
         beatPercent = percent
         update(id) {
@@ -836,6 +849,7 @@ object UploadQueue {
 
     /** نبضة تقدّم محفوظة — مقنَّنة بـ5% أو 10 ثوانٍ أيّهما أبعد. */
     fun heartbeat(id: String, percent: Int) {
+        resetBeatIfNewItem(id)
         val now = System.currentTimeMillis()
         if (percent - beatPercent < 5 && now - beatAtMs < HEARTBEAT_WRITE_MS) return
         beatAtMs = now

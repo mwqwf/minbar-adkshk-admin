@@ -505,9 +505,12 @@ class LessonUploadWorker(
     private fun markPaused(title: String? = null) {
         val current = UploadQueue.progress.value
         val item = UploadQueue.peek()
+        // بلا معرّف لا بطاقة: نشر تقدّم بمعرّف فارغ يرسم بطاقة فارغة عالقة.
+        val id = current?.id ?: item?.id.orEmpty()
+        if (id.isEmpty()) return
         UploadQueue.setProgress(
             UploadProgress(
-                id = current?.id ?: item?.id.orEmpty(),
+                id = id,
                 title = title ?: current?.title ?: item?.title.orEmpty(),
                 percent = current?.percent ?: lastPercent,
                 paused = true,

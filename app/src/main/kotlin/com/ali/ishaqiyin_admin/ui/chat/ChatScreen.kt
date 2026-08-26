@@ -340,7 +340,12 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
             ) {
                 scope.launch {
                     ChatMediaStore.download(att)?.let { file ->
-                        SharedAudioPlayer.playFile(context, ChatMediaStore.keyOf(att), file)
+                        SharedAudioPlayer.playFile(
+                            context,
+                            ChatMediaStore.keyOf(att),
+                            file,
+                            fromAutoAdvance = true,
+                        )
                     }
                 }
             }
