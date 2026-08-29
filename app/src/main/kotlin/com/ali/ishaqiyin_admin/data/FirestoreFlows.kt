@@ -107,7 +107,12 @@ private fun <T> ProducerScope<T>.reattachingListener(
                 return@listen
             }
             backoffMs = RELISTEN_MIN_MS
-            if (value != null) trySend(value)
+            // ⚠️ أي استثناء يفلت من ردّ مستمع Firestore يُسقط التطبيق كاملاً
+            // (شوهد في إنتاج تطبيق المستخدم) — فالتسليم معزول ويُسجَّل فشله.
+            if (value != null) {
+                runCatching { trySend(value) }
+                    .onFailure { Log.w(TAG, "تعذّر تسليم لقطة مستمع $label", it) }
+            }
         }
     }
 

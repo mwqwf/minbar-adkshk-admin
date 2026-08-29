@@ -46,6 +46,15 @@ object AppPrefs {
         get() = prefs.getFloat(KEY_AUDIO_SPEED, 1f)
         set(value) = prefs.edit().putFloat(KEY_AUDIO_SPEED, value).apply()
 
+    /**
+     * هل طُلب إذن الصور (لشريحة «إرفاق لقطة الشاشة الأخيرة»)؟ يُطلب مرّة
+     * واحدة فقط في عمر التطبيق — الرفض لا يُتبَع بإلحاح، والتفعيل لاحقاً
+     * يكون من إعدادات النظام.
+     */
+    var mediaPermissionAsked: Boolean
+        get() = prefs.getBoolean("media_permission_asked_v1", false)
+        set(value) = prefs.edit().putBoolean("media_permission_asked_v1", value).apply()
+
     /** معرّف محفوظ: النصّ الفارغ يُعامَل كغياب اختيار لا كمعرّف صالح. */
     private fun readId(key: String): String? =
         prefs.getString(key, null)?.takeIf { it.isNotEmpty() }

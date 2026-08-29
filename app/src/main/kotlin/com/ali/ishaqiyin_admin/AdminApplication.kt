@@ -52,6 +52,24 @@ class AdminApplication : Application() {
     }
 
     /**
+     * 🍃 امتثال متطلب Play (ذاكرة الصور النقطية بالخلفية): عند اختفاء الواجهة
+     * أو أشدّ يُفرَغ كاش ذاكرة Coil (صور الأعضاء وصفحات «النص المشروح»)،
+     * وعند ضغطٍ أخفّ والواجهة ظاهرة يُقلَّص للنصف فقط. الصور تُعاد من كاش
+     * القرص/الشبكة عند العودة فلا أثر وظيفي.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        val imageCache = runCatching {
+            coil3.SingletonImageLoader.get(this).memoryCache
+        }.getOrNull()
+        if (level >= TRIM_MEMORY_UI_HIDDEN) {
+            runCatching { imageCache?.clear() }
+        } else if (level >= TRIM_MEMORY_RUNNING_LOW) {
+            runCatching { imageCache?.let { it.trimToSize(it.size / 2) } }
+        }
+    }
+
+    /**
      * ⚡ إيقاظ الطابور عند كلّ عودة إلى المقدّمة لا عند البدء البارد وحده.
      *
      * ⚠️ كان `onCreate` هو المُوقظ الوحيد، فالعودة الدافئة من «التطبيقات

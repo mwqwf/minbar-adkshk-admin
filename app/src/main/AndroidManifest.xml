@@ -21,11 +21,22 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- ⛔ لا تُعِد أذونات الصور (READ_MEDIA_IMAGES /
-         READ_MEDIA_VISUAL_USER_SELECTED / READ_EXTERNAL_STORAGE): Play يوجب
-         على كلّ تطبيق يطلبها إقرار «الوظيفة الأساسيّة للصور والفيديوهات»
-         وقد رفض إصدار اللوحة بسببها. كلّ ما نحتاجه هو اختيار صورة واحدة،
-         ومنتقي الصور (PickVisualMedia) يفعلها بلا أيّ إذن وعلى كلّ إصدار. -->
+    <!-- 📸 أذونات الصور — قرار المالك النهائي 2026-08-29: «لا ولوج للمعرض
+         نهائياً»؛ شريحة «إرفاق لقطة الشاشة الأخيرة» تستعلم MediaStore
+         مباشرة وتُرفق بنقرة واحدة بلا منتقٍ. الحظر السابق (⛔ 2026-08-25)
+         يبقى سارياً على **تطبيق المستخدم** وحده؛ أمّا اللوحة فوظيفتها
+         الأساسيّة تصوير ورفع صفحات الكتب للنصّ المشروح، فإقرار
+         «الوظيفة الأساسيّة للصور» في Play صادق فيها.
+         ⚠️ عند أوّل رفع للمتجر بعد هذا التغيير: املأ إقرار
+         Photo and Video Permissions في Play Console (App content)
+         وإلّا رُفض الإصدار. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- الوصول الجزئي على أندرويد 14+ («اختيار صور بعينها») مقبول. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <!-- الأجهزة الأقدم (≤ أندرويد 12): الإذن القديم بسقف صريح. -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
 
     <!-- ⛔ لا تحذف هذه الكتلة: Play **يستنتج** عتاداً مطلوباً من الأذونات ما لم
          نُصرّح بخلافه، فيُسقط من قائمة التوافق كل جهاز ينقصه ذلك العتاد.
