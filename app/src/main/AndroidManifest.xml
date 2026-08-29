@@ -21,23 +21,11 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- 📸 أذونات الصور — قرار المالك النهائي 2026-08-29: «لا ولوج للمعرض
-         نهائياً»؛ شريحة «إرفاق لقطة الشاشة الأخيرة» تستعلم MediaStore
-         مباشرة وتُرفق بنقرة واحدة بلا منتقٍ. الحظر السابق (⛔ 2026-08-25)
-         يبقى سارياً على **تطبيق المستخدم** وحده؛ أمّا اللوحة فوظيفتها
-         الأساسيّة تصوير ورفع صفحات الكتب للنصّ المشروح، فإقرار
-         «الوظيفة الأساسيّة للصور» في Play صادق فيها.
-         ⚠️ عند أوّل رفع للمتجر بعد هذا التغيير: املأ إقرار
-         Photo and Video Permissions في Play Console (App content)
-         وإلّا رُفض الإصدار. -->
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <!-- الوصول الجزئي على أندرويد 14+ («اختيار صور بعينها») مقبول. -->
-    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
-    <!-- الأجهزة الأقدم (≤ أندرويد 12): الإذن القديم بسقف صريح. -->
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-
+    <!-- ⛔ 📸 لا أذونات صور هنا نهائياً (أُزيلت 2026-08-29 بعد أن أوقف
+         Play حفظ إصدار 2018 مطالباً بإقرار Photo and Video Permissions).
+         شريحة «آخر لقطة شاشة» تتدهور بصمت بلا إذن، وتبقى شريحة الحافظة
+         (إرفاق مباشر بلا معرض وبلا أي إذن) هي المسار المعتمد.
+         لا تُعِد أي إذن صور قبل ملء الإقرار في Play Console أولاً. -->
     <!-- ⛔ لا تحذف هذه الكتلة: Play **يستنتج** عتاداً مطلوباً من الأذونات ما لم
          نُصرّح بخلافه، فيُسقط من قائمة التوافق كل جهاز ينقصه ذلك العتاد.
          `RECORD_AUDIO` تُوجب ميكروفوناً، و`USE_FINGERPRINT` (تدخل من مكتبة

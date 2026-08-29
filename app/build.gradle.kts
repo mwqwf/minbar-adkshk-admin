@@ -90,8 +90,10 @@ android {
         // رؤوس كاش للتخزين، حضورٌ يتوقف بالخلفية، تنبيهات وأقسام ومساهمات
         // بقراءات مقصوصة، وضغط صور النصوص قبل الرفع، ودوال بكاش رموز
         // وتجميعات. وApp Check صار مُنفَذاً.
-        versionCode = 2018
-        versionName = "1.5.0"
+        // ٢٠١٩ \ ١.٥.١: أُزيلت أذونات الصور كلّها (Play أوقف حفظ إصدار ٢٠١٨
+        // مطالباً بإقرارها) — شريحة الحافظة تبقى مسار الإرفاق المباشر بلا إذن.
+        versionCode = 2019
+        versionName = "1.5.1"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
