@@ -1367,7 +1367,10 @@ async function copySubmissionAudio(sourcePath, lessonId, fileName) {
   const token = crypto.randomUUID();
   await destination.setMetadata({
     contentType: metadata.contentType || "audio/mpeg",
-    cacheControl: "public,max-age=3600",
+    // مسار الوجهة مختوم بمعرّف الدرس واسم الملف ولا يُستبدل محتواه أبداً —
+    // فرأس سنة الخالد (كرفع اللوحة سواء) صحيح، وساعةٌ واحدة كانت سهواً
+    // يجعل كل استماع يعيد التنزيل من الأصل.
+    cacheControl: "public, max-age=31536000, immutable",
     metadata: {
       firebaseStorageDownloadTokens: token,
       sourceSubmissionPath: sourcePath,
@@ -4887,6 +4890,14 @@ exports.cleanupDeletedIds = functions
       if (snap.size < 400) break;
     }
     if (removed > 0) console.log("cleanupDeletedIds removed", removed);
+    // 🧭 أرضية الدلتا: أقدم لحظة ما زال سجلّ الحذف يغطّيها. جهازٌ علامةُ
+    // حذفه أقدم من هذه الأرضية لا يستطيع الاستمرار بالدلتا حتمياً (قد فاتته
+    // شواهد ممسوحة) فيجب عليه جلبٌ كامل — يقرؤها المسبار من content_meta.
+    try {
+      await CONTENT_META_REF.set({ deltaFloorMs: cutoff }, { merge: true });
+    } catch (error) {
+      console.error("cleanupDeletedIds deltaFloor failed", error);
+    }
     return null;
   });
 
@@ -4909,7 +4920,12 @@ function contentTsToMs(value) {
 
 /** ملء كامل بقراءة شاملة واحدة (تجميعيّة) — للتهيئة الأولى وbackfill. */
 async function computeContentMeta() {
-  const state = { updatedAtMs: Date.now() };
+  const state = {
+    updatedAtMs: Date.now(),
+    // أرضية الدلتا المضمونة: ما هو أقدم من عمر الاحتفاظ قد مُسح من سجلّ
+    // الحذف، فجهازٌ علامته دونها يجلب الكتالوج كاملاً حتمياً لا احتمالاً.
+    deltaFloorMs: Date.now() - DELETED_IDS_RETENTION_MS,
+  };
   for (const collection of CONTENT_META_COLLECTIONS) {
     const countSnap = await db.collection(collection).count().get();
     state[`${collection}Count`] = Number(countSnap.data().count || 0);
@@ -4945,6 +4961,22 @@ async function bumpContentMeta(collection, change) {
   const existedBefore = change.before.exists;
   const existsAfter = change.after.exists;
   const now = Date.now();
+  // ⚡ تعديلٌ لم يتغيّر فيه `updatedAt` (زيادة views مثلاً) لا يعني المزامنة
+  // إطلاقاً: إدخاله في البصمة كان يُبطل كاش جميع الأجهزة مع كل استماع
+  // ويُشعل جلباً كاملاً دائماً (لغم 2026-08-29) — يُتجاهل بلا أي كتابة.
+  if (existedBefore && existsAfter) {
+    const before = change.before.data() || {};
+    const after = change.after.data() || {};
+    const beforeMs = Math.max(
+      contentTsToMs(before.updatedAt),
+      contentTsToMs(before.data && before.data.updatedAt),
+    );
+    const afterMs = Math.max(
+      contentTsToMs(after.updatedAt),
+      contentTsToMs(after.data && after.data.updatedAt),
+    );
+    if (afterMs <= beforeMs) return null;
+  }
   try {
     const needsBackfill = await db.runTransaction(async (tx) => {
       const doc = await tx.get(CONTENT_META_REF);
@@ -4961,13 +4993,17 @@ async function bumpContentMeta(collection, change) {
       }
       if (existsAfter) {
         const raw = change.after.data() || {};
+        // بلا `now` عمداً: البصمة مرآةٌ لطوابع الوثائق نفسها — وهي عين ما
+        // تقيسه استعلامات التطبيق (`whereGreaterThan(updatedAt)`)؛ إقحام
+        // لحظة التريجر جعل المساواة مع علامات الأجهزة مستحيلة للأبد.
         const ms = Math.max(
           contentTsToMs(raw.updatedAt),
           contentTsToMs(raw.data && raw.data.updatedAt),
-          now,
         );
-        update[`${collection}UpdatedAtMs`] =
-          Math.max(Number(doc.get(`${collection}UpdatedAtMs`) || 0), ms);
+        if (ms > 0) {
+          update[`${collection}UpdatedAtMs`] =
+            Math.max(Number(doc.get(`${collection}UpdatedAtMs`) || 0), ms);
+        }
       }
       tx.set(CONTENT_META_REF, update, { merge: true });
       return false;
@@ -5644,4 +5680,261 @@ exports.deleteMySupportThread = functions
     }
     await deleteSupportThreadDeep(uid, ref);
     return { ok: true, threadId: ref.id };
+  });
+
+// ─── الصوت القانوني: تطبيع Opus + بصمة SHA-256 + نشر مختوم بالمحتوى ─────
+// خطّ أنابيب واحد للسنوات القادمة (معمارية «المكتبة الكاملة» 2026-08-29):
+// اللوحة ترفع الأصل كما هو (ثابت مسار الرفع لا يُمَسّ)، وهذه الدالة — في
+// بيئة ffmpeg محكومة وموحّدة لا في هواتف المشرفين — تُطبّع الملف إلى صيغة
+// المكتبة (Opus أحادي 24kbps voip) أو تُبقيه إن كان Opus/Ogg مضغوطاً أصلاً،
+// ثم تحسب بصمة SHA-256 للبايتات **النهائية المُقدَّمة**، وترفعها إلى مسار
+// مختوم بالمحتوى serving/{sha256}.ogg (الرابط ≡ البايتات بالتعريف، والدروس
+// المتطابقة تتشارك الكائن نفسه)، وتتحقق من الحجم، **وآخر خطوة فقط** تكتب
+// وثيقة الدرس (audioUrl + sha256 + sizeBytes + durationSeconds) — ففشلٌ في
+// أي منتصف يُبقي الدرس على رابطه القديم الصالح. العملية idempotent بمفتاح
+// البصمة، والأصل يبقى في مساره الأول ولا يُحذف.
+const AUDIO_SERVING_PREFIX = "serving/";
+const AUDIO_OPUS_KBPS = 24; // قابل للتغيير قبل أي ترميز مستقبلي إن حكم السمع بغيره
+const AUDIO_KEEP_MAX_BPS = 48000; // ogg/opus دون هذا يُبقى كما هو (لا إعادة ترميز للمضغوط)
+const AUDIO_MAX_SOURCE_BYTES = 200 * 1024 * 1024;
+const AUDIO_JOB_MAX_ATTEMPTS = 4;
+// قاعدة بناء الرابط: تبديل المضيف مستقبلاً (R2 خلف نطاق وسائط) = تغيير هذه
+// القاعدة وحدها ثم backfill للروابط — البصمة في المسار ثابتة فلا يفسد كاش.
+const MEDIA_BASE_URL = process.env.MEDIA_BASE_URL || "";
+
+function audioBinaries() {
+  let ffmpeg = null;
+  let ffprobe = null;
+  try { ffmpeg = require("ffmpeg-static"); } catch (e) { /* غير مثبّتة */ }
+  try { ffprobe = require("ffprobe-static").path; } catch (e) { /* غير مثبّتة */ }
+  return { ffmpeg, ffprobe };
+}
+
+function probeAudioFile(ffprobe, filePath) {
+  const { spawnSync } = require("child_process");
+  const out = spawnSync(ffprobe, [
+    "-v", "error", "-print_format", "json",
+    "-show_format", "-show_streams", filePath,
+  ], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  if (out.status !== 0) {
+    throw new Error("ffprobe failed: " + String(out.stderr || "").slice(0, 300));
+  }
+  const parsed = JSON.parse(out.stdout || "{}");
+  const stream = (parsed.streams || []).find((s) => s.codec_type === "audio") || {};
+  const format = parsed.format || {};
+  const durationSec = Number(stream.duration || format.duration || 0);
+  return {
+    durationSec: Number.isFinite(durationSec) ? durationSec : 0,
+    codec: String(stream.codec_name || ""),
+    container: String(format.format_name || ""),
+  };
+}
+
+async function processLessonAudioCanonical(lessonId) {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const { spawnSync } = require("child_process");
+  const { ffmpeg, ffprobe } = audioBinaries();
+  if (!ffmpeg || !ffprobe) throw new Error("ffmpeg/ffprobe binaries unavailable");
+
+  const ref = db.collection("lessons").doc(lessonId);
+  const snap = await ref.get();
+  if (!snap.exists) return { skipped: "missing" };
+  const raw = snap.data() || {};
+  const data = (raw.data && typeof raw.data === "object") ? raw.data : raw;
+  const audioUrl = cleanString(data.audioUrl || raw.audioUrl, 2000);
+  if (!audioUrl) return { skipped: "no-audio" };
+  const doneSha = cleanString(raw.sha256, 80);
+  if (doneSha && cleanString(raw.audioUrlAtSha, 2000) === audioUrl) {
+    return { skipped: "already-canonical" };
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "minbar-audio-"));
+  try {
+    // 1) جلب المصدر: من دلونا مباشرةً إن كان مساره لدينا، وإلا عبر https.
+    const srcPath = path.join(tmpDir, "source.bin");
+    const storagePath = cleanString(raw.audioStoragePath || raw.storagePath
+      || data.audioStoragePath || data.storagePath, 600);
+    if (storagePath && !storagePath.startsWith(AUDIO_SERVING_PREFIX)) {
+      await bucket.file(storagePath).download({ destination: srcPath });
+    } else {
+      const response = await fetch(audioUrl);
+      if (!response.ok) throw new Error("source fetch " + response.status);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > AUDIO_MAX_SOURCE_BYTES) throw new Error("source too large");
+      fs.writeFileSync(srcPath, bytes);
+    }
+    const srcSize = fs.statSync(srcPath).size;
+    if (srcSize <= 0) throw new Error("empty source");
+
+    // 2) التطبيع: Opus/Ogg مضغوط أصلاً يُبقى بايتاً ببايت، وغيره يُرمَّز.
+    const probe = probeAudioFile(ffprobe, srcPath);
+    const derivedBps = probe.durationSec > 0 ? (srcSize * 8) / probe.durationSec : 0;
+    const keepAsIs = (probe.codec === "opus" || probe.codec === "vorbis")
+      && probe.container.includes("ogg")
+      && derivedBps > 0 && derivedBps <= AUDIO_KEEP_MAX_BPS;
+    let canonicalPath = srcPath;
+    if (!keepAsIs) {
+      canonicalPath = path.join(tmpDir, "canonical.ogg");
+      const enc = spawnSync(ffmpeg, [
+        "-hide_banner", "-loglevel", "error", "-y", "-i", srcPath,
+        "-vn", "-ac", "1", "-c:a", "libopus",
+        "-b:a", AUDIO_OPUS_KBPS + "k", "-application", "voip",
+        canonicalPath,
+      ], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+      if (enc.status !== 0 || !fs.existsSync(canonicalPath)) {
+        throw new Error("ffmpeg failed: " + String(enc.stderr || "").slice(0, 300));
+      }
+    }
+    const finalProbe = keepAsIs ? probe : probeAudioFile(ffprobe, canonicalPath);
+    const sizeBytes = fs.statSync(canonicalPath).size;
+    const sha256 = crypto.createHash("sha256")
+      .update(fs.readFileSync(canonicalPath)).digest("hex");
+
+    // 3) نشر مختوم بالمحتوى — idempotent: الكائن الموجود بنفس الحجم لا يُرفع.
+    const servingPath = AUDIO_SERVING_PREFIX + sha256 + ".ogg";
+    const servingFile = bucket.file(servingPath);
+    const [exists] = await servingFile.exists();
+    let token = crypto.randomUUID();
+    if (exists) {
+      const [meta] = await servingFile.getMetadata();
+      if (Number(meta.size) !== sizeBytes) throw new Error("sha collision/size mismatch");
+      const existing = (meta.metadata || {}).firebaseStorageDownloadTokens;
+      if (existing) token = String(existing).split(",")[0];
+      else await servingFile.setMetadata({ metadata: { firebaseStorageDownloadTokens: token } });
+    } else {
+      await bucket.upload(canonicalPath, {
+        destination: servingPath,
+        metadata: {
+          contentType: "audio/ogg",
+          cacheControl: "public, max-age=31536000, immutable",
+          metadata: { firebaseStorageDownloadTokens: token, canonicalSha256: sha256 },
+        },
+      });
+      const [meta] = await servingFile.getMetadata();
+      if (Number(meta.size) !== sizeBytes) throw new Error("upload size mismatch");
+    }
+    const servingUrl = MEDIA_BASE_URL
+      ? MEDIA_BASE_URL.replace(/\/$/, "") + "/" + servingPath
+      : "https://firebasestorage.googleapis.com/v0/b/" + encodeURIComponent(bucket.name)
+        + "/o/" + encodeURIComponent(servingPath) + "?alt=media&token=" + token;
+
+    // 4) آخر خطوة: كتابة الوثيقة ذرياً — البيانات الوصفية تصف حرفياً بايتات
+    // الرابط المنشور (invariant المراجعة الرابعة)، والأصل يُحفظ في legacyAudio
+    // مرةً واحدة ليبقى rollback كاملاً (رابط+بصمة+حجم معاً لا رابطاً وحده).
+    await db.runTransaction(async (tx) => {
+      const fresh = await tx.get(ref);
+      if (!fresh.exists) return;
+      const current = fresh.data() || {};
+      const currentData = (current.data && typeof current.data === "object") ? current.data : current;
+      const currentUrl = cleanString(currentData.audioUrl || current.audioUrl, 2000);
+      if (currentUrl !== audioUrl) return; // استُبدل الصوت أثناء عملنا — دورة قادمة تلتقطه.
+      const update = {
+        audioUrl: servingUrl,
+        sha256,
+        sizeBytes,
+        durationSeconds: Math.round(finalProbe.durationSec),
+        audioCodec: "opus",
+        audioServingPath: servingPath,
+        audioUrlAtSha: servingUrl,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (!current.legacyAudio) {
+        update.legacyAudio = {
+          audioUrl,
+          storagePath: storagePath || "",
+          keptAsIs: keepAsIs,
+        };
+      }
+      if (current.data && typeof current.data === "object") {
+        update["data.audioUrl"] = servingUrl;
+        update["data.updatedAt"] = new Date().toISOString();
+      }
+      tx.update(ref, update);
+    });
+    await db.collection("audio_jobs").doc(lessonId).set({
+      status: "done", sha256, sizeBytes, attempts: 0,
+      finishedAtMs: Date.now(),
+    }, { merge: true });
+    return { ok: true, sha256, sizeBytes, keepAsIs };
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) { /* تنظيف */ }
+  }
+}
+
+async function recordAudioJobFailure(lessonId, error) {
+  const ref = db.collection("audio_jobs").doc(lessonId);
+  try {
+    const snap = await ref.get();
+    const attempts = Number((snap.data() || {}).attempts || 0) + 1;
+    await ref.set({
+      status: "failed", attempts,
+      lastError: String((error && error.message) || error).slice(0, 500),
+      lastAttemptMs: Date.now(),
+    }, { merge: true });
+    if (attempts === AUDIO_JOB_MAX_ATTEMPTS) {
+      await writeAdminAlert("", "⚠️ تعذّر تطبيع صوت درس",
+        "الدرس " + lessonId + " فشل تطبيعه " + attempts + " مرات — يبقى على رابطه الأصلي ويحتاج نظرة.",
+        { type: "audio_job_failed", lessonId });
+    }
+  } catch (e) {
+    console.error("recordAudioJobFailure", lessonId, e);
+  }
+}
+
+// مشغّل فوري: أي درس كتب/بدّل صوته يُطبَّع. حارس الخروج المبكر يمنع الدوران
+// الذاتي (كتابتنا تضع sha256 + audioUrlAtSha المطابق) ويتجاهل كتابات views.
+exports.onLessonAudioCanonical = functions
+  .runWith({ timeoutSeconds: 540, memory: "1GB" })
+  .firestore.document("lessons/{id}")
+  .onWrite(async (change, context) => {
+    if (!change.after.exists) return null;
+    const raw = change.after.data() || {};
+    const data = (raw.data && typeof raw.data === "object") ? raw.data : raw;
+    const audioUrl = cleanString(data.audioUrl || raw.audioUrl, 2000);
+    if (!audioUrl) return null;
+    if (cleanString(raw.sha256, 80)
+      && cleanString(raw.audioUrlAtSha, 2000) === audioUrl) return null;
+    // لا تُعاد المحاولة تلقائياً بعد استنفاد المحاولات — الكنّاس يتولى الجدولة.
+    const job = await db.collection("audio_jobs").doc(context.params.id).get();
+    if (Number((job.data() || {}).attempts || 0) >= AUDIO_JOB_MAX_ATTEMPTS) return null;
+    try {
+      await processLessonAudioCanonical(context.params.id);
+    } catch (error) {
+      console.error("onLessonAudioCanonical", context.params.id, error);
+      await recordAudioJobFailure(context.params.id, error);
+    }
+    return null;
+  });
+
+// كنّاس دوري: يلتقط ما فشل (بمحاولات دون السقف) وما فات المشغّل لأي سبب.
+exports.audioJobsSweep = functions
+  .runWith({ timeoutSeconds: 540, memory: "1GB" })
+  .pubsub.schedule("every 6 hours")
+  .onRun(async () => {
+    const failed = await db.collection("audio_jobs")
+      .where("status", "==", "failed")
+      .where("attempts", "<", AUDIO_JOB_MAX_ATTEMPTS)
+      .limit(5).get();
+    for (const doc of failed.docs) {
+      try {
+        await processLessonAudioCanonical(doc.id);
+      } catch (error) {
+        await recordAudioJobFailure(doc.id, error);
+      }
+    }
+    return null;
+  });
+
+// إعادة محاولة يدوية من المالك لدرس بعينه (بعد إصلاح سبب الفشل مثلاً).
+exports.normalizeLessonAudio = functions
+  .runWith({ timeoutSeconds: 540, memory: "1GB" })
+  .https.onCall(async (data, context) => {
+    await assertOwner(context);
+    const lessonId = requireString(data && data.lessonId, "lessonId", 400);
+    await db.collection("audio_jobs").doc(lessonId)
+      .set({ attempts: 0, status: "retry" }, { merge: true });
+    const result = await processLessonAudioCanonical(lessonId);
+    return { ok: true, result };
   });
