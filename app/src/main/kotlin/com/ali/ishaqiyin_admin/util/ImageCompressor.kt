@@ -83,6 +83,77 @@ object ImageCompressor {
         }.getOrElse { Prepared(file, null) }
     }
 
+    // ─── صور «النص المشروح» ─────────────────────────────────────────
+    // حدّ أعلى (2400px) وجودة أعلى (85) من صور الدردشة: صفحة كتاب يجب أن
+    // يبقى نصّها مقروءاً تماماً بعد الضغط.
+    private const val TRANSCRIPT_MAX_DIMENSION = 2400
+    private const val TRANSCRIPT_QUALITY = 85
+
+    /**
+     * ضغط صورة صفحة كتاب قبل رفعها (JPEG، أطول بُعد 2400px، جودة 85).
+     * يعيد الأصل نفسه (بالهويّة `===`) إن تعذّر الضغط أو لم يُصغِّر الحجم —
+     * فالمستدعي يعرف هل صارت JPEG فعلاً.
+     */
+    fun compressTranscriptImage(bytes: ByteArray): ByteArray = runCatching {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val largest = maxOf(bounds.outWidth, bounds.outHeight)
+        if (largest <= 0) return bytes
+
+        var sample = 1
+        while (largest / sample > TRANSCRIPT_MAX_DIMENSION * 2) sample *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            ?: return bytes
+
+        val scaled = scaleDownTo(decoded, TRANSCRIPT_MAX_DIMENSION)
+        val rotated = applyExifRotationBytes(bytes, scaled)
+        val out = java.io.ByteArrayOutputStream()
+        val compressed = rotated.compress(Bitmap.CompressFormat.JPEG, TRANSCRIPT_QUALITY, out)
+        if (rotated !== decoded) decoded.recycle()
+        if (scaled !== decoded && scaled !== rotated) scaled.recycle()
+        rotated.recycle()
+
+        val result = out.toByteArray()
+        // لا فائدة إن فشل الترميز أو لم يصغر الحجم فعلاً.
+        if (!compressed || result.isEmpty() || result.size >= bytes.size) bytes else result
+    }.getOrDefault(bytes)
+
+    private fun scaleDownTo(bitmap: Bitmap, maxDimension: Int): Bitmap {
+        val largest = maxOf(bitmap.width, bitmap.height)
+        if (largest <= maxDimension) return bitmap
+        val ratio = maxDimension.toFloat() / largest
+        return Bitmap.createScaledBitmap(
+            bitmap,
+            (bitmap.width * ratio).toInt().coerceAtLeast(1),
+            (bitmap.height * ratio).toInt().coerceAtLeast(1),
+            true,
+        )
+    }
+
+    /** نظير [applyExifRotation] لصورة في الذاكرة (بلا Uri). */
+    private fun applyExifRotationBytes(bytes: ByteArray, bitmap: Bitmap): Bitmap =
+        runCatching {
+            val orientation = java.io.ByteArrayInputStream(bytes).use { stream ->
+                ExifInterface(stream).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL,
+                )
+            }
+            val degrees = when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+            if (degrees == 0f) {
+                bitmap
+            } else {
+                val matrix = android.graphics.Matrix().apply { postRotate(degrees) }
+                Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            }
+        }.getOrDefault(bitmap)
+
     private fun scaleDown(bitmap: Bitmap): Bitmap {
         val largest = maxOf(bitmap.width, bitmap.height)
         if (largest <= MAX_DIMENSION) return bitmap

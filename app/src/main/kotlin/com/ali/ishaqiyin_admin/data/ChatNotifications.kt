@@ -39,12 +39,17 @@ object ChatNotifications {
                 .onSuccess { AppPrefs.legacyTopicUnsubscribed = true }
         }
         val user = FirebaseAuth.getInstance().currentUser
-        if (user != null) {
+        // 💸 اكتب فقط إن تغيّرت القيمة: تُستدعى المزامنة عند كلّ فتح للوحة،
+        // والقيمة لا تتبدّل إلا بتبديل مفتاح «إشعارات المجموعة» نفسه.
+        // (AdminNotificationService يكتبها ضمن بصمة الرمز عند تغيّرها أيضاً.)
+        val written = "$muted|${user?.uid.orEmpty()}"
+        if (user != null && written != AppPrefs.lastChatMutedWritten) {
             // بلا await: تُجدوَل الكتابة محليّاً وتصل عند عودة الشبكة.
             runCatching {
                 FirebaseFirestore.getInstance()
                     .collection("admin_device_tokens").document(user.uid)
                     .set(mapOf("chatMuted" to muted), SetOptions.merge())
+                AppPrefs.lastChatMutedWritten = written
             }
         }
     }

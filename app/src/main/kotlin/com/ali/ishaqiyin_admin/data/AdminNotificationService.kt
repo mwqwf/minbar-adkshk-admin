@@ -237,9 +237,12 @@ object AdminNotificationService {
                         .delete().await()
                 }
             }
+            // الوثيقة الأمّ لا تُحذف: هي مصدر الهوية (البريد/الدور/الكتم)
+            // لكل وثائق devices الأخرى — يُمحى حقل token وحده.
             runCatching {
                 FirebaseFirestore.getInstance()
-                    .collection("admin_device_tokens").document(user.uid).delete().await()
+                    .collection("admin_device_tokens").document(user.uid)
+                    .update("token", FieldValue.delete()).await()
             }
         }
         ChatNotifications.unsubscribe()

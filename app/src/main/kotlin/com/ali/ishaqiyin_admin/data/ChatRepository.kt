@@ -44,7 +44,8 @@ object ChatPaths {
 }
 
 /** نافذة اعتبار العضو «متصلاً الآن»: آخر نبضة حضور خلال هذه المدّة. */
-const val ONLINE_WINDOW_MS = 95_000L
+// نافذة «متصل الآن» = ضعف فاصل النبضة (90ث) + هامش — كما كانت 95ث لنبضة 45ث.
+const val ONLINE_WINDOW_MS = 190_000L
 
 /** نافذة اعتبار العضو «يكتب الآن…». */
 const val TYPING_WINDOW_MS = 6_000L
@@ -382,7 +383,14 @@ suspend fun chatUploadFile(
     val ref = storage.reference.child(path)
     val ct = contentType.trim().ifEmpty { "application/octet-stream" }
 
-    val task = ref.putFile(uri, StorageMetadata.Builder().setContentType(ct).build())
+    // المسار مختوم زمنيّاً فلا يُستبدل — كاش دائم يوفّر إعادة تنزيل الوسائط.
+    val task = ref.putFile(
+        uri,
+        StorageMetadata.Builder()
+            .setContentType(ct)
+            .setCacheControl("public, max-age=31536000, immutable")
+            .build(),
+    )
     var size = 0L
     task.addOnProgressListener { snapshot ->
         if (isAborted?.invoke() == true) {
@@ -772,6 +780,19 @@ object ChatRepository {
         val name = u.displayName?.takeIf { it.isNotBlank() }
             ?: u.email?.substringBefore('@') ?: "مستخدم"
         runCatching {
+            // 💸 حارس «اكتب فقط إن تغيّرت القيمة» (نمط AdminNotificationService):
+            // بيانات الهويّة لا تتبدّل بين فتحين للوحة غالباً، فتكفي نبضة حضور
+            // خفيفة (الأثر الظاهر نفسه: العضو «متصل الآن») بدل كتابة العضويّة.
+            val sig = "${u.uid}|$name|${u.email.orEmpty().lowercase()}|" +
+                "${u.photoUrl?.toString().orEmpty()}|${role.orEmpty()}"
+            // تُعاد الكتابة الكاملة يوميّاً رغم ثبات البصمة: تُصلح ذاتيّاً
+            // وثيقة عضو حُذفت خادميّاً (إزالة مشرف ثم إعادته) خلال يوم.
+            val fresh = System.currentTimeMillis() - AppPrefs.lastChatMemberWriteMs <
+                24L * 60 * 60 * 1000
+            if (sig == AppPrefs.lastChatMemberSig && fresh) {
+                presenceTick()
+                return@runCatching
+            }
             val data = buildMap<String, Any?> {
                 put("name", name)
                 put("email", u.email.orEmpty().lowercase())
@@ -779,13 +800,13 @@ object ChatRepository {
                 if (role != null) put("role", role)
                 put("lastSeenAt", FieldValue.serverTimestamp())
                 put("lastActiveAtMs", System.currentTimeMillis())
+                // كتابة واحدة مدموجة لا كتابتان (كانت joinedAt كتابة مستقلّة).
+                put("joinedAt", FieldValue.serverTimestamp())
             }
             // بلا await: الانضمام يجب ألّا يؤخّر فتح اللوحة أو الدردشة.
             members.document(u.uid).set(data, SetOptions.merge())
-            members.document(u.uid).set(
-                mapOf("joinedAt" to FieldValue.serverTimestamp()),
-                SetOptions.merge(),
-            )
+            AppPrefs.lastChatMemberSig = sig
+            AppPrefs.lastChatMemberWriteMs = System.currentTimeMillis()
         }
     }
 
@@ -907,7 +928,9 @@ object ChatRepository {
             .querySnapshots()
             .map { snap -> snap.documents.firstOrNull()?.let { ChatMessage.fromDoc(it) } }
 
+    // سقف وقائيّ: عدد المشرفين الفعليّ بالعشرات، والحدّ يمنع تضخّماً شاذّاً.
     fun membersStream(): Flow<List<ChatMember>> = members.orderBy("name")
+        .limit(200)
         .querySnapshots()
         .map { snap -> snap.documents.map { ChatMember.fromDoc(it) } }
 

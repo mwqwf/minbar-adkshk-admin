@@ -329,36 +329,45 @@ fun AddLessonScreen(onBack: () -> Unit) {
     // كلّها (rememberSaveable ينجو من التدوير لا من إنهاء العمليّة).
     // النصوص والاختيارات وحدها تُحفظ — لا ملفّات الصوت ولا الصور.
     var draftRestored by rememberSaveable { mutableStateOf(false) }
+    // 🛡️ سباق الاستعادة/الحفظ: أثر الحفظ قد ينتهي (delay 600ms) قبل انتهاء
+    // قراءة المسودة فيكتب null فوقها ويمحوها. لا كتابة قبل انتهاء المحاولة.
+    var draftChecked by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        val raw = withContext(Dispatchers.IO) { AppPrefs.addLessonDraft }
-            ?: return@LaunchedEffect
-        // لا استعادة فوق نموذج فيه شيء (عودة من تدوير — حالته محفوظة أصلاً).
-        val formEmpty = title.isBlank() && categoryId == null &&
-            transcriptText.isBlank() && transcriptBookTitle.isBlank() &&
-            transcriptSourceRef.isBlank()
-        if (!formEmpty) return@LaunchedEffect
-        runCatching {
-            val json = JSONObject(raw)
-            title = json.optString("title")
-            categoryId = json.optString("categoryId").takeIf { it.isNotEmpty() }
-            subcategoryId = json.optString("subcategoryId").takeIf { it.isNotEmpty() }
-            transcriptText = json.optString("transcriptText")
-            transcriptBookTitle = json.optString("transcriptBookTitle")
-            transcriptSourceRef = json.optString("transcriptSourceRef")
-            if (transcriptText.isNotBlank() || transcriptBookTitle.isNotBlank() ||
-                transcriptSourceRef.isNotBlank()
-            ) {
-                transcriptOpen = true
+        try {
+            val raw = withContext(Dispatchers.IO) { AppPrefs.addLessonDraft }
+                ?: return@LaunchedEffect
+            // لا استعادة فوق نموذج فيه شيء (عودة من تدوير — حالته محفوظة أصلاً).
+            val formEmpty = title.isBlank() && categoryId == null &&
+                transcriptText.isBlank() && transcriptBookTitle.isBlank() &&
+                transcriptSourceRef.isBlank()
+            if (!formEmpty) return@LaunchedEffect
+            runCatching {
+                val json = JSONObject(raw)
+                title = json.optString("title")
+                categoryId = json.optString("categoryId").takeIf { it.isNotEmpty() }
+                subcategoryId = json.optString("subcategoryId").takeIf { it.isNotEmpty() }
+                transcriptText = json.optString("transcriptText")
+                transcriptBookTitle = json.optString("transcriptBookTitle")
+                transcriptSourceRef = json.optString("transcriptSourceRef")
+                if (transcriptText.isNotBlank() || transcriptBookTitle.isNotBlank() ||
+                    transcriptSourceRef.isNotBlank()
+                ) {
+                    transcriptOpen = true
+                }
+                draftRestored = true
             }
-            draftRestored = true
+        } finally {
+            draftChecked = true
         }
     }
     // حفظ خفيف بمهلة: كلّ تغيير يعيد تشغيل الأثر فلا يُكتب إلّا بعد سكون
     // قصير — والنموذج الفارغ يمسح المسودة بدل حفظ فراغ.
     LaunchedEffect(
-        title, categoryId, subcategoryId,
+        draftChecked, title, categoryId, subcategoryId,
         transcriptText, transcriptBookTitle, transcriptSourceRef,
     ) {
+        // لا كتابة (ولا محو) قبل انتهاء محاولة الاستعادة أعلاه.
+        if (!draftChecked) return@LaunchedEffect
         delay(600)
         val empty = title.isBlank() && categoryId == null && subcategoryId == null &&
             transcriptText.isBlank() && transcriptBookTitle.isBlank() &&

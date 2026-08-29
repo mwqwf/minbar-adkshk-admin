@@ -456,6 +456,7 @@ private fun AudioSubmissionsContent(targetId: String = "") {
 
     val items by remember { SubmissionsRepository.watchAll() }
         .collectAsState(initial = emptyList())
+    val hasMoreDecided by SubmissionsRepository.hasMoreDecided.collectAsState()
 
     val pendingCount = items.count { it.isPending }
     val decidedCount = items.size - pendingCount
@@ -1023,6 +1024,15 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                     }
                 }
             }
+            // 💸 المحسوم القديم لا يُنزَّل كلّه: زرّ يوسّع نافذته 50 فـ50.
+            if (hasMoreDecided && filter != SubFilter.PENDING) {
+                item {
+                    TextButton(
+                        onClick = { SubmissionsRepository.loadMoreDecided() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("تحميل المزيد من المحسومة…") }
+                }
+            }
         }
     }
 }
@@ -1077,6 +1087,7 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
 
     val items by remember { TranscriptsRepository.watchAll() }
         .collectAsState(initial = emptyList())
+    val hasMoreDecided by TranscriptsRepository.hasMoreDecided.collectAsState()
 
     val pendingCount = items.count { it.isPending }
     val decidedCount = items.size - pendingCount
@@ -1715,6 +1726,15 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
                             }
                         }
                     }
+                }
+            }
+            // 💸 المحسوم القديم لا يُنزَّل كلّه: زرّ يوسّع نافذته 50 فـ50.
+            if (hasMoreDecided && filter != SubFilter.PENDING) {
+                item {
+                    TextButton(
+                        onClick = { TranscriptsRepository.loadMoreDecided() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("تحميل المزيد من المحسومة…") }
                 }
             }
         }

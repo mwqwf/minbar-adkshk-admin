@@ -104,8 +104,15 @@ object AdminAlertsFeed {
         // سقف خادميّ: المجموعة تتراكم (التنظيف الخادمي لا يمسّ milestone/digest)
         // فبلا حدٍّ تُنزَّل كاملةً في المزامنة الأولى ويُعاد ترشيحها محليّاً مع
         // كل كتابة readBy. و‏TTL الـ24 ساعة يجعل ما وراء أحدث 200 غير مرئيّ أصلاً.
+        //
+        // 💸 وشرط `createdAtMs >= الآن - TTL` خادميّاً أيضاً: ما هو أقدم من
+        // 24 ساعة لا يُعرض بحكم الفلتر المحلي أدناه أصلاً، فتنزيله هدر محض.
+        // (writeAdminAlert تكتب createdAtMs رقماً دائماً — تحقّقنا.) الفلتر
+        // المحلي يبقى كما هو: هو الذي يُسقط ما انقضى أثناء بقاء الشاشة مفتوحة.
+        val serverCutoff = System.currentTimeMillis() - TTL_MS
         if (isOwner) {
             return db.collection("admin_alerts")
+                .whereGreaterThanOrEqualTo("createdAtMs", serverCutoff)
                 .orderBy("createdAtMs", Query.Direction.DESCENDING)
                 .limit(ALERTS_LIMIT)
                 .querySnapshots()
@@ -119,10 +126,12 @@ object AdminAlertsFeed {
         // التنازليّ يجعل المقتطع هو الأحدث كما في فرع المالك تماماً.
         val personal = db.collection("admin_alerts")
             .whereEqualTo("email", me)
+            .whereGreaterThanOrEqualTo("createdAtMs", serverCutoff)
             .orderBy("createdAtMs", Query.Direction.DESCENDING)
             .limit(ALERTS_LIMIT).querySnapshots()
         val general = db.collection("admin_alerts")
             .whereEqualTo("email", "")
+            .whereGreaterThanOrEqualTo("createdAtMs", serverCutoff)
             .orderBy("createdAtMs", Query.Direction.DESCENDING)
             .limit(ALERTS_LIMIT).querySnapshots()
         return personal.combine(general) { a, b ->

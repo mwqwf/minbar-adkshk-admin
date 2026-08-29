@@ -172,9 +172,20 @@ fun ManageAllScreen(onBack: () -> Unit) {
         browseLoading = false
     }
 
-    /** بعد أيّ تغيير في الدروس: يُحدَّث المفتوح، ويُبطَل كاش البحث. */
-    fun lessonsChanged() {
+    /**
+     * بعد أيّ تغيير في الدروس: يُحدَّث المفتوح، ويُبطَل كاش البحث.
+     *
+     * 💸 [mutate] تعديل محليّ معروف (تغيير عنوان/حذف/نقل/تمييز): يُطبَّق على
+     * القائمة المحفوظة مباشرة بدل إعادة قراءة مجموعة `lessons` **كاملة** مع
+     * كلّ تعديل أثناء البحث — النتيجة المعروضة واحدة والقراءة صفر.
+     */
+    fun lessonsChanged(mutate: ((List<Lesson>) -> List<Lesson>)? = null) {
         if (openSub != null) browseReload++
+        val cached = allLessons
+        if (mutate != null && cached != null) {
+            allLessons = mutate(cached)
+            return
+        }
         if (hasQuery) {
             // بحثٌ قائم: يُعاد الجلب فوراً كي لا تختفي النتائج تحت يد المشرف.
             scope.launch {
@@ -279,7 +290,14 @@ fun ManageAllScreen(onBack: () -> Unit) {
                 if (title.isNotEmpty() && title != action.item.title) {
                     scope.launch {
                         runCatching { AdminRepository.updateLessonTitle(action.item.id, title) }
-                            .onSuccess { snack("تم التعديل."); lessonsChanged() }
+                            .onSuccess {
+                                snack("تم التعديل.")
+                                lessonsChanged { list ->
+                                    list.map {
+                                        if (it.id == action.item.id) it.copy(title = title) else it
+                                    }
+                                }
+                            }
                             .onFailure { snack("تعذّر التعديل: ${it.arabicReason()}") }
                     }
                 }
@@ -298,7 +316,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                 pending = null
                 loading = true
                 scope.launch {
-                    runCatching { AdminRepository.deleteLesson(action.item) }
+                    val ok = runCatching { AdminRepository.deleteLesson(action.item) }
                         // ⚠️ لا يُقال «حُذف الملف الصوتي»: الخادم ينقل الوثيقة
                         // إلى deleted_lessons ولا يمسّ الصوت — والحوار أعلاه
                         // وعد بالاستعادة، فرسالة تناقضه تُربك المشرف.
@@ -306,8 +324,13 @@ fun ManageAllScreen(onBack: () -> Unit) {
                             snack("نُقل الدرس إلى سلة المحذوفات — يمكن استعادته خلال 30 يوماً.")
                         }
                         .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
+                        .isSuccess
                     loading = false
-                    lessonsChanged()
+                    if (ok) {
+                        lessonsChanged { list -> list.filterNot { it.id == action.item.id } }
+                    } else {
+                        lessonsChanged()
+                    }
                 }
             },
         )
@@ -518,7 +541,15 @@ fun ManageAllScreen(onBack: () -> Unit) {
                                     "رتّبه داخل القسم من زرّ «إعادة ترتيب الدروس» إن أردت."
                             },
                         )
-                        lessonsChanged()
+                        lessonsChanged { list ->
+                            list.map {
+                                if (it.id == lesson.id) {
+                                    it.copy(categoryId = target.categoryId, subcategoryId = target.id)
+                                } else {
+                                    it
+                                }
+                            }
+                        }
                     }.onFailure {
                         moveBusy = false
                         snack(
@@ -544,7 +575,15 @@ fun ManageAllScreen(onBack: () -> Unit) {
                         AdminRepository.setLessonFeatured(lesson.id, true, duration.untilMs())
                     }.onSuccess {
                         snack("مُيّز في مختارات المنبر — ${duration.label}")
-                        lessonsChanged()
+                        lessonsChanged { list ->
+                            list.map {
+                                if (it.id == lesson.id) {
+                                    it.copy(featured = true, featuredUntilMs = duration.untilMs())
+                                } else {
+                                    it
+                                }
+                            }
+                        }
                     }.onFailure { snack("تعذّر التمييز: ${it.arabicReason()}") }
                 }
             },
@@ -565,7 +604,15 @@ fun ManageAllScreen(onBack: () -> Unit) {
                         }.onSuccess {
                             snack("أُزيل من مختارات المنبر.")
                             loading = false
-                            lessonsChanged()
+                            lessonsChanged { list ->
+                                list.map {
+                                    if (it.id == l.id) {
+                                        it.copy(featured = false, featuredUntilMs = null)
+                                    } else {
+                                        it
+                                    }
+                                }
+                            }
                         }.onFailure {
                             snack("تعذّر التعديل: ${it.arabicReason()}")
                             loading = false

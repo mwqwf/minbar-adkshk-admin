@@ -181,6 +181,8 @@ object SupportRepository {
     fun watchThreads(): Flow<List<SupportThread>> =
         db.collection(THREADS)
             .orderBy("lastMessageAtMs", Query.Direction.DESCENDING)
+            // سقف وقائيّ: أحدث 200 محادثة تكفي الصندوق بلا تنزيل الأرشيف كله.
+            .limit(200)
             .querySnapshots()
             .map { snap -> snap.documents.map { SupportThread.fromDoc(it) } }
             // اللقطة تصل على الخيط الرئيسيّ: التحليل والفرز لا يقعان عليه.
@@ -212,6 +214,8 @@ object SupportRepository {
     fun watchSupervisionRequests(): Flow<List<SupervisionRequest>> =
         db.collection(REQUESTS)
             .orderBy("createdAtMs", Query.Direction.DESCENDING)
+            // سقف وقائيّ — كما في watchThreads.
+            .limit(200)
             .querySnapshots()
             .map { snap ->
                 snap.documents.map { SupervisionRequest.fromDoc(it) }
@@ -331,7 +335,11 @@ object SupportRepository {
     ): String {
         val safeName = file.name.replace(Regex("[^\\p{L}\\p{N}._-]"), "_").takeLast(80)
         val path = "$MEDIA_DIR/$userUid/$threadId/${System.currentTimeMillis()}_$safeName"
-        val metadata = StorageMetadata.Builder().setContentType(contentType).build()
+        // المسار مختوم زمنيّاً فلا يُستبدل — كاش دائم يوفّر إعادة التنزيل.
+        val metadata = StorageMetadata.Builder()
+            .setContentType(contentType)
+            .setCacheControl("public, max-age=31536000, immutable")
+            .build()
         storage.reference.child(path)
             .putFile(android.net.Uri.fromFile(file), metadata)
             .await()

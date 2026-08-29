@@ -35,22 +35,47 @@ object AdminRepository {
     private const val SECTION_WRITE_TIMEOUT_MS = 12_000L
 
     // ---------------- جلب ----------------
+    // 💸 كاش ذاكرة 5 دقائق للأقسام (نمط كاشات TranscriptsRepository): كل
+    // شاشة كانت تعيد قراءة المجموعتين كاملتين عند كل فتح، والأقسام لا
+    // تتبدّل إلا بكتابة مشرف — وكل كتابة قسم هنا **تُبطل** الكاش فوراً.
+    private const val SECTIONS_TTL_MS = 5 * 60 * 1000L
+
+    @Volatile
+    private var categoriesCache: Pair<Long, List<Category>>? = null
+
+    @Volatile
+    private var subcategoriesCache: Pair<Long, List<Subcategory>>? = null
+
+    /** إبطال كاش الأقسام — يُستدعى بعد أي إضافة/تعديل/حذف قسم. */
+    fun invalidateSectionsCache() {
+        categoriesCache = null
+        subcategoriesCache = null
+    }
+
     // فكّ الترميز والفرز خارج الخيط الرئيسي: `await()` يستأنف على سياق
     // المستدعي (Main في LaunchedEffect)، فكانت مئات الوثائق تُحوَّل هناك.
     suspend fun fetchCategories(): List<Category> {
+        val now = System.currentTimeMillis()
+        categoriesCache?.let { (at, value) ->
+            if (now - at < SECTIONS_TTL_MS) return value
+        }
         val snap = db.collection("categories").get().await()
         return withContext(Dispatchers.Default) {
             snap.documents
                 .map { Category.fromDoc(it.id, it.dataMap()) }
                 .sortedBy { it.name }
-        }
+        }.also { categoriesCache = System.currentTimeMillis() to it }
     }
 
     suspend fun fetchSubcategories(): List<Subcategory> {
+        val now = System.currentTimeMillis()
+        subcategoriesCache?.let { (at, value) ->
+            if (now - at < SECTIONS_TTL_MS) return value
+        }
         val snap = db.collection("subcategories").get().await()
         return withContext(Dispatchers.Default) {
             snap.documents.map { Subcategory.fromDoc(it.id, it.dataMap()) }
-        }
+        }.also { subcategoriesCache = System.currentTimeMillis() to it }
     }
 
     /**
@@ -269,6 +294,7 @@ object AdminRepository {
         key: String,
         data: Map<String, Any?>,
     ): Boolean {
+        invalidateSectionsCache()
         val task = db.collection(collection).document(key).set(data)
         // بلا شبكة: الكتابة سُجِّلت محليّاً بالفعل ولن يصل تأكيد أبداً —
         // لا ننتظر المهلة كاملة أمام المشرف.
@@ -435,11 +461,15 @@ object AdminRepository {
     // مستقبليّ. فلا جدولة ولا «نشر الآن» ولا حقل `publishAt` — لا تُعَد.
 
     // ---------------- تعديل ----------------
-    suspend fun updateCategory(id: String, name: String) =
+    suspend fun updateCategory(id: String, name: String) {
+        invalidateSectionsCache()
         updateCompat("categories", id, mapOf("name" to name.trim()))
+    }
 
-    suspend fun updateSubcategory(id: String, name: String) =
+    suspend fun updateSubcategory(id: String, name: String) {
+        invalidateSectionsCache()
         updateCompat("subcategories", id, mapOf("name" to name.trim()))
+    }
 
     suspend fun updateLessonTitle(id: String, title: String) =
         updateCompat("lessons", id, mapOf("title" to title.trim()))
@@ -560,6 +590,7 @@ object AdminRepository {
     suspend fun deleteCategory(id: String) {
         functions.getHttpsCallable("deleteCategoryCascade")
             .call(mapOf("categoryId" to id)).await()
+        invalidateSectionsCache()
     }
 
     /**
@@ -569,6 +600,7 @@ object AdminRepository {
     suspend fun deleteSubcategory(id: String) {
         functions.getHttpsCallable("deleteSubcategoryCascade")
             .call(mapOf("subcategoryId" to id)).await()
+        invalidateSectionsCache()
     }
 
     /** يحذف الدرس: الملف الصوتي من التخزين (إن وُجد) ثم الوثيقة. */

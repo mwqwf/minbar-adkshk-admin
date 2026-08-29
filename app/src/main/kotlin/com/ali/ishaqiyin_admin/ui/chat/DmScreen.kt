@@ -56,6 +56,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -307,12 +308,18 @@ fun DmScreen(threadId: String, otherUid: String, otherName: String, onBack: () -
     // مبكّراً إن عُطّلت الإشعارات أو رُفض إذنها) — فتظهر شاشة الرنين هنا.
     LaunchedEffect(Unit) { CallEngine.startIncomingWatch(context) }
 
+    // 🔋 نبضة الحضور داخل repeatOnLifecycle(STARTED): تتوقّف في الخلفية،
+    // والفاصل 90ث مع ONLINE_WINDOW_MS المرفوع بنفس النسبة.
+    val presenceLifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     LaunchedEffect(threadId) {
         DmRepository.markRead(threadId)
-        ChatRepository.presenceTick()
-        while (true) {
-            delay(45_000)
-            ChatRepository.presenceTick()
+        presenceLifecycleOwner.lifecycle.repeatOnLifecycle(
+            androidx.lifecycle.Lifecycle.State.STARTED,
+        ) {
+            while (true) {
+                ChatRepository.presenceTick()
+                delay(90_000)
+            }
         }
     }
 

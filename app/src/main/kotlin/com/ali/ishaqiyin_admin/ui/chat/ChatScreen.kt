@@ -80,6 +80,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -290,13 +291,20 @@ fun ChatScreen(isOwner: Boolean, nav: NavHostController) {
     }
 
     // الانضمام التلقائي + نبضات الحضور والقراءة.
+    // 🔋 النبضة داخل repeatOnLifecycle(STARTED): تتوقّف كليّاً في الخلفية
+    // (كانت تكتب كل 45ث والشاشة مطفأة)، والفاصل 90ث مع ONLINE_WINDOW_MS
+    // المرفوع بنفس النسبة فتبقى «متصل الآن» صادقة.
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     LaunchedEffect(Unit) {
         ChatRepository.upsertSelf(role = if (isOwner) "owner" else "supervisor")
-        ChatRepository.presenceTick()
         ChatRepository.markRead()
-        while (true) {
-            delay(45_000)
-            ChatRepository.presenceTick()
+        lifecycleOwner.lifecycle.repeatOnLifecycle(
+            androidx.lifecycle.Lifecycle.State.STARTED,
+        ) {
+            while (true) {
+                ChatRepository.presenceTick()
+                delay(90_000)
+            }
         }
     }
 

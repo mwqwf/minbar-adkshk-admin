@@ -310,11 +310,32 @@ async function pushToToken(token, title, body, data) {
   }
 }
 
+// 💸 كاش على مستوى الوحدة (90 ثانية) لنتيجة activeAdminTokens: كل بثّ —
+// وخاصّة رسائل الدردشة المتتابعة — كان يعيد قراءة admin_device_tokens
+// وdevices وdashboard_admins كاملة. أقصى أثر: التقاط جهاز جديد يتأخّر
+// 90 ثانية — مقبول. يُخزَّن الوعد نفسه فلا تتوازى قراءتان لنفس المفتاح.
+const ADMIN_TOKENS_CACHE_MS = 90 * 1000;
+const adminTokensCache = new Map(); // "all" | "owner" → {at, promise}
+
+function activeAdminTokens(ownerOnly) {
+  const key = ownerOnly ? "owner" : "all";
+  const now = Date.now();
+  const cached = adminTokensCache.get(key);
+  if (cached && now - cached.at < ADMIN_TOKENS_CACHE_MS) return cached.promise;
+  const promise = loadActiveAdminTokens(ownerOnly).catch((error) => {
+    // فشل القراءة لا يُخزَّن — المحاولة التالية تقرأ من جديد.
+    adminTokensCache.delete(key);
+    throw error;
+  });
+  adminTokensCache.set(key, { at: now, promise });
+  return promise;
+}
+
 // 📱 تعدّد أجهزة المشرف: رموز كل مشرف = اتحاد {حقل token في وثيقته
 // القديمة} ∪ {المجموعة الفرعية devices} بلا تكرار. هويّة الجهاز (البريد
 // والدور والكتم) تبقى من الوثيقة الأمّ وحدها — وثائق devices لا تحمل
 // إلا token/updatedAt/model.
-async function activeAdminTokens(ownerOnly) {
+async function loadActiveAdminTokens(ownerOnly) {
   const [snap, devicesSnap] = await Promise.all([
     db.collection("admin_device_tokens").get(),
     db.collectionGroup("devices").get().catch((error) => {
@@ -323,20 +344,24 @@ async function activeAdminTokens(ownerOnly) {
     }),
   ]);
   if (snap.empty) return [];
-  const rows = snap.docs
+  // الأمّ بلا token تبقى مصدر هويّة صالحاً لأجهزتها — الترشيح بالبريد وحده.
+  const parentItems = snap.docs
     .map((doc) => {
       const value = doc.data() || {};
       return {
         ref: doc.ref,
+        isParent: true,
         token: cleanString(value.token, 4096),
         email: normalizeEmail(value.email),
         uid: cleanString(value.uid || doc.id, 180),
         chatMuted: value.chatMuted === true,
       };
     })
-    .filter((item) => item.email && item.token);
+    .filter((item) => item.email);
   // فهرس الوثائق الأمّ بالـuid لإسناد هويّة كل جهاز فرعي إليها.
-  const parents = new Map(rows.map((item) => [item.uid, item]));
+  const parents = new Map(parentItems.map((item) => [item.uid, item]));
+  // صفوف الإرسال: الأمّ ذات الرمز فقط (الأمّ بلا رمز هويّة لا هدف).
+  const rows = parentItems.filter((item) => item.token);
   const seen = new Set(rows.map((item) => item.token));
   for (const doc of devicesSnap.docs) {
     // المسار: admin_device_tokens/{uid}/devices/{tokenHash}.
@@ -417,7 +442,15 @@ async function sendToAdminTargets(targets, title, body, data) {
       const code = item.error && item.error.code || "";
       if (code.includes("registration-token-not-registered")
           || code.includes("invalid-registration-token")) {
-        removals.push(chunk[index].ref.delete());
+        // صفّ الأمّ: لا تُحذف وثيقتها (هي مصدر هويّة أجهزة devices) —
+        // يُمحى حقل token وحده. صفّ device: تُحذف وثيقته كاملة.
+        if (chunk[index].isParent) {
+          removals.push(chunk[index].ref.update({
+            token: admin.firestore.FieldValue.delete(),
+          }).catch(() => null));
+        } else {
+          removals.push(chunk[index].ref.delete());
+        }
       }
     });
     await Promise.all(removals);
@@ -741,20 +774,50 @@ exports.weeklyDigest = functions.pubsub
   .timeZone("Asia/Riyadh")
   .onRun(async () => {
     const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const snap = await db.collection("lessons").get();
     let newCount = 0;
     let totalViews = 0;
-    snap.forEach((doc) => {
-      const d = unwrapLegacy(doc.data());
-      totalViews += Number(d.views || 0);
-      let createdAt = 0;
-      if (d.createdAtTs && typeof d.createdAtTs.toMillis === "function") {
-        createdAt = d.createdAtTs.toMillis();
-      } else {
-        createdAt = Date.parse(d.createdAt || "") || 0;
-      }
-      if (createdAt >= weekAgo) newCount += 1;
-    });
+    try {
+      // 💸 استعلامات تجميعيّة خادميّة بدل تنزيل مجموعة lessons كاملة:
+      // - الجديد أسبوعيّاً: count بشرط createdAtTs (كلّ مسارات الإنشاء
+      //   تكتبه Timestamp منذ البداية — فحديث الأسبوع يحمله يقيناً).
+      // - إجمالي الاستماع: sum(views) + sum(data.views) − sum(views حيث
+      //   توجد data.views): الوثيقة المغلّفة تحمل الحقلَين متساويين
+      //   (incrementLessonView يكتبهما معاً) فيُطرح المكرَّر — النتيجة
+      //   مطابقة لقراءة unwrapLegacy القديمة تماماً.
+      const { AggregateField } = require("firebase-admin/firestore");
+      const lessons = db.collection("lessons");
+      const [countSnap, rootSum, wrappedSum, overlapSum] = await Promise.all([
+        lessons
+          .where("createdAtTs", ">=", admin.firestore.Timestamp.fromMillis(weekAgo))
+          .count().get(),
+        lessons.aggregate({ v: AggregateField.sum("views") }).get(),
+        lessons.aggregate({ v: AggregateField.sum("data.views") }).get(),
+        lessons.where("data.views", ">=", 0)
+          .aggregate({ v: AggregateField.sum("views") }).get(),
+      ]);
+      newCount = Number(countSnap.data().count || 0);
+      totalViews = Number(rootSum.data().v || 0)
+        + Number(wrappedSum.data().v || 0)
+        - Number(overlapSum.data().v || 0);
+    } catch (error) {
+      // الصحّة قبل التوفير: أيّ تعثّر تجميعيّ (فهرس ناقص مثلاً) يعيدنا
+      // للمسار القديم كاملاً فلا يتغيّر الرقم المعلَن أبداً.
+      console.error("weeklyDigest aggregates failed; falling back", error);
+      const snap = await db.collection("lessons").get();
+      newCount = 0;
+      totalViews = 0;
+      snap.forEach((doc) => {
+        const d = unwrapLegacy(doc.data());
+        totalViews += Number(d.views || 0);
+        let createdAt = 0;
+        if (d.createdAtTs && typeof d.createdAtTs.toMillis === "function") {
+          createdAt = d.createdAtTs.toMillis();
+        } else {
+          createdAt = Date.parse(d.createdAt || "") || 0;
+        }
+        if (createdAt >= weekAgo) newCount += 1;
+      });
+    }
     const title = "📊 تقرير الأسبوع";
     const body = `دروس جديدة هذا الأسبوع: ${newCount} · إجمالي الاستماع: ${totalViews}.`;
     await writeAdminAlert("", title, body, { type: "weekly_digest" });
@@ -3360,7 +3423,9 @@ exports.onAdminDmMessageCreated = functions.firestore
       const value = targetDoc.data() || {};
       const email = normalizeEmail(value.email);
       const token = cleanString(value.token, 4096);
-      if (email && token) {
+      // التخويل بالبريد وحده: خلوّ الأمّ من token (خرج من جهاز مثلاً)
+      // لا يمنع وصول الرسائل الخاصّة لبقيّة أجهزته في devices.
+      if (email) {
         let authorized = email === OWNER_EMAIL;
         if (!authorized) {
           const adminSnap = await db.collection(ADMINS_COLLECTION).doc(email).get();
@@ -3375,8 +3440,13 @@ exports.onAdminDmMessageCreated = functions.firestore
             uid: cleanString(value.uid || targetDoc.id, 180),
             chatMuted: value.chatMuted === true,
           };
-          tokens.push(Object.assign({ ref: targetDoc.ref, token }, identity));
-          const seen = new Set([token]);
+          const seen = new Set();
+          if (token) {
+            seen.add(token);
+            tokens.push(Object.assign(
+              { ref: targetDoc.ref, token, isParent: true }, identity,
+            ));
+          }
           for (const deviceDoc of devicesSnap.docs) {
             const deviceToken = cleanString((deviceDoc.data() || {}).token, 4096);
             if (!deviceToken || seen.has(deviceToken)) continue;
@@ -4148,8 +4218,13 @@ exports.expireFeaturedLessons = functions.pubsub
         });
         continue;
       }
+      // الوثيقة الملفوفة تحمل المرآتين (الجذر + data): مسح data.* وحده
+      // يُبقي المرآة الجذرية featured=true للأبد — يُمسح الموضعان معاً.
       batch.update(doc.ref, wrapped
         ? {
+          "featured": false,
+          "featuredUntil": admin.firestore.FieldValue.delete(),
+          "featuredExpiredAt": nowIso,
           "data.featured": false,
           "data.featuredUntil": admin.firestore.FieldValue.delete(),
           "data.featuredExpiredAt": nowIso,
@@ -4483,7 +4558,15 @@ async function sendCallPush(targetUid, data) {
       const code = item.error && item.error.code || "";
       if (code.includes("registration-token-not-registered")
           || code.includes("invalid-registration-token")) {
-        removals.push(chunk[index].ref.delete());
+        // صفّ الأمّ: لا تُحذف وثيقتها (هي مصدر هويّة أجهزة devices) —
+        // يُمحى حقل token وحده. صفّ device: تُحذف وثيقته كاملة.
+        if (chunk[index].isParent) {
+          removals.push(chunk[index].ref.update({
+            token: admin.firestore.FieldValue.delete(),
+          }).catch(() => null));
+        } else {
+          removals.push(chunk[index].ref.delete());
+        }
       }
     });
     await Promise.all(removals);
@@ -4806,6 +4889,118 @@ exports.cleanupDeletedIds = functions
     if (removed > 0) console.log("cleanupDeletedIds removed", removed);
     return null;
   });
+
+// ─── بصمة المحتوى content_meta/state ────────────────────────────────
+// وثيقة واحدة تحمل ما يفحصه مسبار التطبيق (ContentRepository.probe):
+// عدد كل مجموعة + أحدث updatedAt لكلٍّ منها + أحدث حذف — فيقرأ التطبيق
+// وثيقةً واحدة بدل ستّة استعلامات عند كل فتح. التحديث رخيص: increment
+// للعدادات عند الإنشاء/الحذف، والطوابع بـmax داخل معاملة على وثيقة واحدة.
+const CONTENT_META_REF = db.collection("content_meta").doc("state");
+const CONTENT_META_COLLECTIONS = ["lessons", "categories", "subcategories"];
+
+function contentTsToMs(value) {
+  if (!value) return 0;
+  if (typeof value.toMillis === "function") return value.toMillis();
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** ملء كامل بقراءة شاملة واحدة (تجميعيّة) — للتهيئة الأولى وbackfill. */
+async function computeContentMeta() {
+  const state = { updatedAtMs: Date.now() };
+  for (const collection of CONTENT_META_COLLECTIONS) {
+    const countSnap = await db.collection(collection).count().get();
+    state[`${collection}Count`] = Number(countSnap.data().count || 0);
+    let newest = 0;
+    // الشكلان: الجذري والمغلَّف data.updatedAt (كما في مسبار التطبيق).
+    for (const field of ["updatedAt", "data.updatedAt"]) {
+      try {
+        const snap = await db.collection(collection)
+          .orderBy(field, "desc").limit(1).get();
+        if (!snap.empty) {
+          newest = Math.max(newest, contentTsToMs(snap.docs[0].get(field)));
+        }
+      } catch (error) {
+        console.error("computeContentMeta newest failed", collection, field, error);
+      }
+    }
+    state[`${collection}UpdatedAtMs`] = newest;
+  }
+  try {
+    const snap = await db.collection(DELETED_IDS_COLLECTION)
+      .orderBy("deletedAtMs", "desc").limit(1).get();
+    state.lastDeletedAtMs = snap.empty
+      ? 0
+      : Number(snap.docs[0].get("deletedAtMs") || 0);
+  } catch (error) {
+    console.error("computeContentMeta lastDeleted failed", error);
+    state.lastDeletedAtMs = 0;
+  }
+  return state;
+}
+
+async function bumpContentMeta(collection, change) {
+  const existedBefore = change.before.exists;
+  const existsAfter = change.after.exists;
+  const now = Date.now();
+  try {
+    const needsBackfill = await db.runTransaction(async (tx) => {
+      const doc = await tx.get(CONTENT_META_REF);
+      // غياب الوثيقة = لم تُهيَّأ بعد — تُملأ كاملة خارج المعاملة.
+      if (!doc.exists) return true;
+      const update = { updatedAtMs: now };
+      if (!existedBefore && existsAfter) {
+        update[`${collection}Count`] = admin.firestore.FieldValue.increment(1);
+      }
+      if (existedBefore && !existsAfter) {
+        update[`${collection}Count`] = admin.firestore.FieldValue.increment(-1);
+        update.lastDeletedAtMs =
+          Math.max(Number(doc.get("lastDeletedAtMs") || 0), now);
+      }
+      if (existsAfter) {
+        const raw = change.after.data() || {};
+        const ms = Math.max(
+          contentTsToMs(raw.updatedAt),
+          contentTsToMs(raw.data && raw.data.updatedAt),
+          now,
+        );
+        update[`${collection}UpdatedAtMs`] =
+          Math.max(Number(doc.get(`${collection}UpdatedAtMs`) || 0), ms);
+      }
+      tx.set(CONTENT_META_REF, update, { merge: true });
+      return false;
+    });
+    if (needsBackfill) {
+      await CONTENT_META_REF.set(await computeContentMeta());
+    }
+  } catch (error) {
+    // بصمة تعريفيّة لا مصدر حقيقة: فشلها لا يمسّ الكتابة الأصليّة أبداً.
+    console.error("bumpContentMeta failed", collection, error);
+  }
+  return null;
+}
+
+exports.onLessonWriteContentMeta = functions.firestore
+  .document("lessons/{id}")
+  .onWrite((change) => bumpContentMeta("lessons", change));
+
+exports.onCategoryWriteContentMeta = functions.firestore
+  .document("categories/{id}")
+  .onWrite((change) => bumpContentMeta("categories", change));
+
+exports.onSubcategoryWriteContentMeta = functions.firestore
+  .document("subcategories/{id}")
+  .onWrite((change) => bumpContentMeta("subcategories", change));
+
+/** ملء/إعادة ضبط يدويّ لوثيقة البصمة — للمالك وحده. */
+exports.backfillContentMeta = functions.https.onCall(async (data, context) => {
+  await assertOwner(context);
+  const state = await computeContentMeta();
+  await CONTENT_META_REF.set(state);
+  return { ok: true, state };
+});
 
 // ─── تصحيح المساهم لمساهمته ────────────────────────────────────────
 // كان على من أخطأ في عنوان درسٍ رفعه أن يسحب المساهمة ويرفع الملفّ

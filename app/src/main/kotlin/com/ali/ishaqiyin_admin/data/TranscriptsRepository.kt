@@ -10,6 +10,7 @@ import com.google.firebase.storage.FirebaseStorage
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
@@ -149,16 +150,45 @@ object TranscriptsRepository {
         paths.forEach { urlCache.remove(it) }
     }
 
+    /** حجم صفحة المحسوم — والزيادة عبر [loadMoreDecided] (نمط سلة المحذوفات). */
+    private const val DECIDED_PAGE = 50L
+    private val decidedLimit = kotlinx.coroutines.flow.MutableStateFlow(DECIDED_PAGE)
+
+    /** هل بقي محسومٌ أقدم لم يُنزَّل؟ — تُظهر الشاشة زرّ «تحميل المزيد». */
+    val hasMoreDecided = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    fun loadMoreDecided() {
+        decidedLimit.value += DECIDED_PAGE
+    }
+
     // Firestore يسلّم اللقطة على الخيط الرئيسي؛ التحليل والفرز يجريان هنا
     // بعيداً عنه كي لا يتقطّع التمرير عند كل تحديث للمجموعة.
+    //
+    // 💸 مستمعان بدل مستمع المجموعة كاملة: المعلّق (بلا سقف) + الأحدث إنشاءً
+    // `limit(50)` تتوسّع بزرّ «تحميل المزيد» — فلا تُنزَّل مئات الاقتراحات
+    // المحسومة بنصوصها الضخمة مع كل فتح للشاشة. الدمج في التدفّق نفسه.
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun watchAll(): Flow<List<TranscriptSubmission>> =
-        db.collection(COLLECTION).querySnapshots().map { snap ->
-            snap.documents
-                .map { TranscriptSubmission.fromDoc(it) }
-                .sortedWith(
+        decidedLimit.flatMapLatest { limit ->
+            kotlinx.coroutines.flow.combine(
+                db.collection(COLLECTION)
+                    .whereEqualTo("status", "pending")
+                    .querySnapshots(),
+                db.collection(COLLECTION)
+                    .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                    .limit(limit)
+                    .querySnapshots(),
+            ) { pending, recent ->
+                hasMoreDecided.value = recent.size() >= limit
+                val merged = LinkedHashMap<String, TranscriptSubmission>()
+                (pending.documents + recent.documents).forEach { doc ->
+                    merged[doc.id] = TranscriptSubmission.fromDoc(doc)
+                }
+                merged.values.sortedWith(
                     compareByDescending<TranscriptSubmission> { it.isPending }
                         .thenByDescending { it.createdAtMs },
                 )
+            }
         }.flowOn(Dispatchers.Default)
 
     fun watchPendingCount(): Flow<Int> =
@@ -337,11 +367,22 @@ object TranscriptsRepository {
             context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
         }.getOrNull() ?: -1L
         require(declared < 0 || declared <= 10L * 1024 * 1024) { "حجم الصورة يتجاوز 10MB." }
-        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw IllegalStateException("تعذّرت قراءة الصورة.")
-        require(bytes.size <= 10 * 1024 * 1024) { "حجم الصورة يتجاوز 10MB." }
+        require(raw.size <= 10 * 1024 * 1024) { "حجم الصورة يتجاوز 10MB." }
+        // ضغط صورة الصفحة قبل الرفع (2400px/85 — نمط ChatUploader): النص يبقى
+        // مقروءاً تماماً والحجم ينخفض أضعافاً. عند تعذّر الضغط تُرفع كما هي.
+        val bytes = com.ali.ishaqiyin_admin.util.ImageCompressor.compressTranscriptImage(raw)
         val metadata = com.google.firebase.storage.StorageMetadata.Builder()
-            .setContentType(context.contentResolver.getType(uri) ?: "image/jpeg")
+            .setContentType(
+                if (bytes !== raw) {
+                    "image/jpeg"
+                } else {
+                    context.contentResolver.getType(uri) ?: "image/jpeg"
+                },
+            )
+            // المسار مختوم زمنيّاً فلا يُستبدل — كاش دائم يوفّر إعادة التنزيل.
+            .setCacheControl("public, max-age=31536000, immutable")
             .build()
         storage.reference.child(path).putBytes(bytes, metadata).await()
         path

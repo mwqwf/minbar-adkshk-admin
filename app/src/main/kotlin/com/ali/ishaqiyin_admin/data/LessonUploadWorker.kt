@@ -595,6 +595,9 @@ class LessonUploadWorker(
         // يعرض DISPLAY_NAME) لم يعد يُرفض من قواعد التخزين.
         val metadata = StorageMetadata.Builder()
             .setContentType(StorageService.mimeForExt(item.fileName.substringAfterLast('.', "")))
+            // المسار مختوم زمنيّاً بالاسم فلا يُستبدل أبداً — كاش سنة كاملة
+            // يوفّر إعادة تنزيل الصوت نفسه (CDN/جهاز المستخدم).
+            .setCacheControl("public, max-age=31536000, immutable")
             .build()
 
         // ⏳ جلسة أقدم من يوم تُهمَل **قبل** المحاولة لا بعد فشلها: جلسات GCS
@@ -764,9 +767,14 @@ class LessonUploadWorker(
             val remotePath = "lesson_transcripts/$lessonId/${item.queuedAtMs}_$index.jpg"
             val metadata = com.google.firebase.storage.StorageMetadata.Builder()
                 .setContentType("image/jpeg")
+                // مسار مختوم زمنيّاً لا يُستبدل — كاش دائم يوفّر التنزيل المتكرّر.
+                .setCacheControl("public, max-age=31536000, immutable")
                 .build()
+            // ضغط صورة الصفحة قبل الرفع (2400px/85) — النص يبقى مقروءاً تماماً.
+            val bytes = com.ali.ishaqiyin_admin.util.ImageCompressor
+                .compressTranscriptImage(local.readBytes())
             storage.reference.child(remotePath)
-                .putFile(android.net.Uri.fromFile(local), metadata)
+                .putBytes(bytes, metadata)
                 .await()
             uploadedPaths.add(remotePath)
         }

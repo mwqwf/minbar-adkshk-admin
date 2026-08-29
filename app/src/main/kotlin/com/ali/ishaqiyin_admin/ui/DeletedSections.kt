@@ -77,6 +77,8 @@ object DeletedSectionsRepository {
     suspend fun restore(item: TrashedSection) {
         functions.getHttpsCallable("restoreDeletedSection")
             .call(mapOf("entryId" to item.entryId)).await()
+        // القسم عاد للحياة — كاش الأقسام يجب ألّا يخفيه 5 دقائق.
+        com.ali.ishaqiyin_admin.data.AdminRepository.invalidateSectionsCache()
     }
 
     suspend fun purge(item: TrashedSection) {

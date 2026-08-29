@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -393,17 +395,26 @@ private fun TodayHealthCard(isOwner: Boolean, nav: NavHostController) {
     val supportUnread by DashboardBadges.supportUnread(isOwner).collectAsState()
     if (pendingAudio + pendingTranscripts + supportUnread == 0) return
 
-    data class HealthEntry(val count: Int, val label: String, val route: String)
+    // الوجهة (تبويب المساهمات) محمولة صراحةً في البنية — لا استنتاج هشّ
+    // بمطابقة نصّ الرقاقة.
+    data class HealthEntry(
+        val count: Int,
+        val label: String,
+        val route: String,
+        val submissionsTab: Int? = null,
+    )
     val entries = listOf(
         HealthEntry(
             pendingAudio,
             arabicCount(pendingAudio, "مساهمة", "مساهمتان", "مساهمات", "مساهمة"),
             Routes.SUBMISSIONS,
+            submissionsTab = 0,
         ),
         HealthEntry(
             pendingTranscripts,
             arabicCount(pendingTranscripts, "نصّ مشروح", "نصّان مشروحان", "نصوص مشروحة", "نصّاً مشروحاً"),
             Routes.SUBMISSIONS,
+            submissionsTab = 1,
         ),
         HealthEntry(
             supportUnread,
@@ -426,8 +437,11 @@ private fun TodayHealthCard(isOwner: Boolean, nav: NavHostController) {
             color = MaterialTheme.colorScheme.primary,
         )
         Spacer(Modifier.size(8.dp))
+        // تمرير أفقي: الشاشات الضيّقة كانت تقصّ الرقاقات الزائدة.
         Row(
-            Modifier.weight(1f),
+            Modifier
+                .weight(1f)
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             entries.forEach { entry ->
@@ -445,11 +459,7 @@ private fun TodayHealthCard(isOwner: Boolean, nav: NavHostController) {
                         )
                         .clickable {
                             // تبويب المساهمات المناسب قبل التنقّل (صوت/نصوص).
-                            if (entry.route == Routes.SUBMISSIONS) {
-                                SubmissionsTarget.set(
-                                    if (entry.label.contains("مشروح")) 1 else 0,
-                                )
-                            }
+                            entry.submissionsTab?.let { SubmissionsTarget.set(it) }
                             nav.navigate(entry.route)
                         }
                         .padding(horizontal = 10.dp, vertical = 5.dp),

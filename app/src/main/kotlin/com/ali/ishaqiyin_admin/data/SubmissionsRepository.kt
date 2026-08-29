@@ -2,9 +2,11 @@ package com.ali.ishaqiyin_admin.data
 
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
 import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
@@ -95,22 +97,52 @@ object SubmissionsRepository {
     private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
     const val COLLECTION = "lesson_submissions"
 
+    /** حجم صفحة المحسوم — والزيادة عبر [loadMoreDecided] (نمط سلة المحذوفات). */
+    private const val DECIDED_PAGE = 50L
+    private val decidedLimit = kotlinx.coroutines.flow.MutableStateFlow(DECIDED_PAGE)
+
+    /** هل بقي محسومٌ أقدم لم يُنزَّل؟ — تُظهر الشاشة زرّ «تحميل المزيد». */
+    val hasMoreDecided = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    fun loadMoreDecided() {
+        decidedLimit.value += DECIDED_PAGE
+    }
+
     /**
      * بثّ مباشر لكل الطلبات (المعلّقة أولاً ثم الأحدث قراراً).
+     *
+     * 💸 مستمعان بدل مستمع المجموعة كاملة: المعلّق (بلا سقف — هو العمل
+     * الفعلي) + الأحدث إنشاءً `limit(50)` تتوسّع بزرّ «تحميل المزيد» —
+     * فلا تُنزَّل مئات القرارات القديمة بنصوصها الضخمة مع كل فتح للشاشة.
+     * النتيجتان تُدمجان في التدفّق نفسه فلا يتغيّر شكل الشاشة.
      *
      * ⚠️ `flowOn(Default)` ليس ترفاً: Firestore يسلّم اللقطة على **الخيط
      * الرئيسي**، وهذه المجموعة تحمل حقولاً نصّية كبيرة (نصّ مشروح يبلغ عشرين
      * ألف حرف)، فتحليلها وفرزها كانا يقعان على خيط الواجهة عند كل انبعاث.
      * نظيرتها في `TranscriptsRepository` تحمله أصلاً — وسقط هنا وحده.
      */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun watchAll(): Flow<List<LessonSubmission>> =
-        db.collection(COLLECTION).querySnapshots().map { snap ->
-            snap.documents
-                .map { LessonSubmission.fromDoc(it) }
-                .sortedWith(
+        decidedLimit.flatMapLatest { limit ->
+            kotlinx.coroutines.flow.combine(
+                db.collection(COLLECTION)
+                    .whereEqualTo("status", "pending")
+                    .querySnapshots(),
+                db.collection(COLLECTION)
+                    .orderBy("createdAt", Query.Direction.DESCENDING)
+                    .limit(limit)
+                    .querySnapshots(),
+            ) { pending, recent ->
+                hasMoreDecided.value = recent.size() >= limit
+                val merged = LinkedHashMap<String, LessonSubmission>()
+                (pending.documents + recent.documents).forEach { doc ->
+                    merged[doc.id] = LessonSubmission.fromDoc(doc)
+                }
+                merged.values.sortedWith(
                     compareByDescending<LessonSubmission> { it.isPending }
                         .thenByDescending { it.createdAtMs },
                 )
+            }
         }.flowOn(Dispatchers.Default)
 
     /** عدد الطلبات المعلّقة (شارة اللوحة). */

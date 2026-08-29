@@ -101,4 +101,22 @@ object AppPrefs {
     var legacyTopicUnsubscribed: Boolean
         get() = prefs.getBoolean("legacy_topic_unsubscribed_v1", false)
         set(value) = prefs.edit().putBoolean("legacy_topic_unsubscribed_v1", value).apply()
+
+    /** بصمة آخر عضويّة كُتبت فعلاً (upsertSelf) — اكتب فقط إن تغيّرت القيمة. */
+    var lastChatMemberSig: String?
+        get() = readId("chat_member_sig_v1")
+        set(value) = writeId("chat_member_sig_v1", value)
+
+    /** لحظة آخر كتابة عضويّة كاملة — لإعادة الكتابة الدوريّة رغم ثبات البصمة. */
+    var lastChatMemberWriteMs: Long
+        get() = prefs.getLong("chat_member_write_ms_v1", 0L)
+        set(value) = prefs.edit().putLong("chat_member_write_ms_v1", value).apply()
+
+    /**
+     * آخر قيمة `chatMuted` كُتبت فعلاً في وثيقة رمز الجهاز
+     * ("" = لم تُكتب بعد) — اكتب فقط إن تغيّرت القيمة.
+     */
+    var lastChatMutedWritten: String?
+        get() = readId("chat_muted_written_v1")
+        set(value) = writeId("chat_muted_written_v1", value)
 }
