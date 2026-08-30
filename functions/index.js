@@ -3665,6 +3665,9 @@ function inspectLesson(raw) {
         || host.endsWith(".googleapis.com")
         || host.endsWith(".firebasestorage.app")
         || host === "storage.cloud.google.com"
+        // نطاق وسائط منبر (مرآة R2 خلف Cloudflare) — التقديم القانوني منذ
+        // معمارية «المكتبة الكاملة» 2026-08-30؛ غيابه كان يعلّم المكتبة كلها.
+        || host === "media.menbar.app"
         || host.endsWith("res.cloudinary.com")
         || host.endsWith("archive.org");
       if (!approved) {
@@ -3766,6 +3769,10 @@ async function recordSuspiciousLesson(
     checks.push(
       db.collection("lessons").where("audioUrl", "==", result.fields.audioUrl)
         .limit(3).get().then((snap) => {
+          // مسار `serving/` معنون بمحتواه (SHA-256): تشارُك الرابط بين درسين
+          // متطابقي البايتات هو عين تصميم «المكتبة الكاملة» لا شبهةً — يبقى
+          // التحذير للمسارات القديمة وحدها حيث كان التشارك خطأ نسخ فعلياً.
+          if (result.fields.audioUrl.includes("/serving/")) return;
           if (snap.docs.some((doc) => doc.id !== lessonId)) {
             addHygieneSignal(result, "رابط الصوت نفسه مستخدم في درس آخر", 2);
           }
@@ -5815,7 +5822,49 @@ async function processLessonAudioCanonical(lessonId) {
       const [meta] = await servingFile.getMetadata();
       if (Number(meta.size) !== sizeBytes) throw new Error("upload size mismatch");
     }
-    const servingUrl = MEDIA_BASE_URL
+    // 🪞 مرآة R2 (متى كانت أسرارها مضبوطة): الكائن نفسه بالمفتاح نفسه —
+    // idempotent (الموجود بحجمه يُتخطى)، والتحقق بالحجم بعد الرفع. فشل
+    // المرآة لا يكسر النشر: يُرمى فيُسجَّل في audio_jobs ويُعاد لاحقاً،
+    // والدرس يبقى على رابطه الصالح — فلا يُنشر رابط نطاقٍ كائنُه غائب أبداً.
+    let onMediaDomain = false;
+    if (MEDIA_BASE_URL && process.env.R2_ACCESS_KEY_ID) {
+      const { S3Client, HeadObjectCommand, PutObjectCommand } =
+        require("@aws-sdk/client-s3");
+      const s3 = new S3Client({
+        region: "auto",
+        endpoint: process.env.R2_ENDPOINT,
+        credentials: {
+          accessKeyId: process.env.R2_ACCESS_KEY_ID,
+          secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+        },
+      });
+      const r2Bucket = process.env.R2_BUCKET;
+      let mirrored = false;
+      try {
+        const head = await s3.send(new HeadObjectCommand({
+          Bucket: r2Bucket, Key: servingPath,
+        }));
+        mirrored = Number(head.ContentLength) === sizeBytes;
+      } catch (e) { /* غير موجود بعد */ }
+      if (!mirrored) {
+        await s3.send(new PutObjectCommand({
+          Bucket: r2Bucket,
+          Key: servingPath,
+          Body: fs.readFileSync(canonicalPath),
+          ContentType: "audio/ogg",
+          CacheControl: "public, max-age=31536000, immutable",
+          Metadata: { canonicalsha256: sha256 },
+        }));
+        const verify = await s3.send(new HeadObjectCommand({
+          Bucket: r2Bucket, Key: servingPath,
+        }));
+        if (Number(verify.ContentLength) !== sizeBytes) {
+          throw new Error("r2 mirror size mismatch");
+        }
+      }
+      onMediaDomain = true;
+    }
+    const servingUrl = onMediaDomain
       ? MEDIA_BASE_URL.replace(/\/$/, "") + "/" + servingPath
       : "https://firebasestorage.googleapis.com/v0/b/" + encodeURIComponent(bucket.name)
         + "/o/" + encodeURIComponent(servingPath) + "?alt=media&token=" + token;

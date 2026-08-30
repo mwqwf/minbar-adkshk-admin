@@ -22,3 +22,4 @@
 
 # تبعيات الدوال الخادمية
 functions/node_modules/
+functions/.env
