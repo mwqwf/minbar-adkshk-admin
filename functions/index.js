@@ -83,7 +83,16 @@ function assertSignedIn(context) {
 }
 
 async function assertAuthorized(context) {
-  assertAppCheck(context);
+  // ⚖️ App Check **ليّن** للمسارات الإدارية (حادثة 2026-08-30): هوية المشرف
+  // موثّقة بالبريد المُعدَّد في dashboard_admins — وهي أقوى من شهادة العتاد.
+  // رمزُ Play Integrity يتعطّل أحياناً على أجهزة شرعية (خدمات Play/الشبكة)
+  // فيصل تالفاً، وكان الفرض الصلب يقفل السلة وأزرار المالك كلها بـ400
+  // بينما الهوية سليمة تماماً. يبقى الفرض **صلباً** كما هو للنداءات العامة
+  // (المشاهدات/المساهمات/الدعم) حيث لا هوية إدارية تحمي.
+  if (!context.app) {
+    console.warn("admin call without valid App Check token — identity-gated",
+      contextEmail(context));
+  }
   assertSignedIn(context);
   const email = contextEmail(context);
   if (!email) {
@@ -102,7 +111,10 @@ async function assertAuthorized(context) {
 }
 
 async function assertOwner(context) {
-  assertAppCheck(context);
+  // نفس تليين assertAuthorized: بريد المالك الموثّق هو الحارس الحقيقي.
+  if (!context.app) {
+    console.warn("owner call without valid App Check token — identity-gated");
+  }
   assertSignedIn(context);
   if (contextEmail(context) !== OWNER_EMAIL) {
     throw new functions.https.HttpsError(
@@ -3772,7 +3784,11 @@ async function recordSuspiciousLesson(
           // مسار `serving/` معنون بمحتواه (SHA-256): تشارُك الرابط بين درسين
           // متطابقي البايتات هو عين تصميم «المكتبة الكاملة» لا شبهةً — يبقى
           // التحذير للمسارات القديمة وحدها حيث كان التشارك خطأ نسخ فعلياً.
-          if (result.fields.audioUrl.includes("/serving/")) return;
+          // ⚠️ رابط Firebase يحمل المسار **مرمَّزاً** (`o/serving%2F...`) لا
+          // بشرطة صريحة — فالفحص على الشكلين وإلا بقيت الإشارة الكاذبة
+          // تعلّم كل الدروس المتشاركة القانونية ما دام MEDIA_BASE_URL معطّلاً.
+          if (result.fields.audioUrl.includes("/serving/")
+            || result.fields.audioUrl.includes("serving%2F")) return;
           if (snap.docs.some((doc) => doc.id !== lessonId)) {
             addHygieneSignal(result, "رابط الصوت نفسه مستخدم في درس آخر", 2);
           }
@@ -4901,7 +4917,13 @@ exports.cleanupDeletedIds = functions
     // حذفه أقدم من هذه الأرضية لا يستطيع الاستمرار بالدلتا حتمياً (قد فاتته
     // شواهد ممسوحة) فيجب عليه جلبٌ كامل — يقرؤها المسبار من content_meta.
     try {
-      await CONTENT_META_REF.set({ deltaFloorMs: cutoff }, { merge: true });
+      // ⚠️ لا إنشاء لوثيقة ناقصة: لو أنشأناها هنا بحقل واحد لظنّها
+      // bumpContentMeta مهيّأةً فلا يجري الملء الكامل أبداً وتبقى العدادات
+      // والطوابع مفقودة. غيابها = computeContentMeta هو من يضع الأرضية.
+      const metaSnap = await CONTENT_META_REF.get();
+      if (metaSnap.exists) {
+        await CONTENT_META_REF.set({ deltaFloorMs: cutoff }, { merge: true });
+      }
     } catch (error) {
       console.error("cleanupDeletedIds deltaFloor failed", error);
     }
@@ -5888,8 +5910,13 @@ async function processLessonAudioCanonical(lessonId) {
         sha256,
         sourceSha256,
         sizeBytes,
-        durationSeconds: Math.round(finalProbe.durationSec),
-        audioCodec: "opus",
+        // المُبقى كما هو قد يكون vorbis لا opus — الوصف يطابق البايتات حرفياً.
+        audioCodec: keepAsIs ? (probe.codec || "opus") : "opus",
+        // ⚠️ لا كتابة عمياء للمدة: ffprobe قد يعجز (0) والوثيقة قد تحمل
+        // مدةً صحيحة من اللوحة — الصفر كان يمحوها فيختفي وسم المدة من التطبيق.
+        ...(Math.round(finalProbe.durationSec) > 0
+          ? { durationSeconds: Math.round(finalProbe.durationSec) }
+          : {}),
         audioServingPath: servingPath,
         audioUrlAtSha: servingUrl,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -5967,11 +5994,16 @@ exports.audioJobsSweep = functions
   .runWith({ timeoutSeconds: 540, memory: "1GB" })
   .pubsub.schedule("every 6 hours")
   .onRun(async () => {
+    // ⚠️ مساواة + متباينة على حقلين تستلزم فهرساً مركّباً غير موجود —
+    // كانت الكنسة تفشل FAILED_PRECONDITION كل دورة. المساواة وحدها تكفي
+    // والترشيح بعدد المحاولات يتم في الذاكرة (المجموعة صغيرة بطبيعتها).
     const failed = await db.collection("audio_jobs")
       .where("status", "==", "failed")
-      .where("attempts", "<", AUDIO_JOB_MAX_ATTEMPTS)
-      .limit(5).get();
-    for (const doc of failed.docs) {
+      .limit(25).get();
+    const retryable = failed.docs
+      .filter((doc) => Number((doc.data() || {}).attempts || 0) < AUDIO_JOB_MAX_ATTEMPTS)
+      .slice(0, 5);
+    for (const doc of retryable) {
       try {
         await processLessonAudioCanonical(doc.id);
       } catch (error) {
