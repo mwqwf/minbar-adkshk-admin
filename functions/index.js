@@ -2608,7 +2608,13 @@ function lessonStoragePaths(value) {
     value && value.storagePath,
     value && value.audioStoragePath,
     value && value.audioUrl,
-  ].map(storagePathFromUrl).filter(Boolean))];
+  ].map(storagePathFromUrl).filter(Boolean))]
+    // ⛔ حصانة `serving/` المطلقة (حادثة 2026-08-30): هذه الكائنات معنونة
+    // بمحتواها (SHA-256) و**متشاركة** — الدروس المتطابقة البايتات تشير إلى
+    // الكائن نفسه عمداً، فحذفُ درسٍ نهائياً كان يحذف الملف فيقتل روابط
+    // إخوته الأحياء (11 درساً ماتت روابطها يوم تفريغ سلة التكرارات).
+    // اليتيم منها بضعة سنتات، والحذف الجارح كارثة — لا تُحذف في أي تعاقب.
+    .filter((path) => !path.startsWith("serving/"));
 }
 
 async function deletePathsBestEffort(paths, reason, targetId) {
