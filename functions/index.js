@@ -5774,6 +5774,10 @@ async function processLessonAudioCanonical(lessonId) {
     }
     const srcSize = fs.statSync(srcPath).size;
     if (srcSize <= 0) throw new Error("empty source");
+    // بصمة **الأصل الخام** قبل التطبيع: بها يصطاد حارس اللوحة إعادةَ رفع
+    // نفس الملف الأصلي ولو اختلفت نسخته المُقدَّمة بعد الترميز.
+    const sourceSha256 = crypto.createHash("sha256")
+      .update(fs.readFileSync(srcPath)).digest("hex");
 
     // 2) التطبيع: Opus/Ogg مضغوط أصلاً يُبقى بايتاً ببايت، وغيره يُرمَّز.
     const probe = probeAudioFile(ffprobe, srcPath);
@@ -5882,6 +5886,7 @@ async function processLessonAudioCanonical(lessonId) {
       const update = {
         audioUrl: servingUrl,
         sha256,
+        sourceSha256,
         sizeBytes,
         durationSeconds: Math.round(finalProbe.durationSec),
         audioCodec: "opus",

@@ -297,6 +297,12 @@ fun AddLessonScreen(onBack: () -> Unit) {
     // الطابور فيفرغ النموذج فوراً ويستطيع المشرف تعبئة درس آخر بينما
     // يُرفع الأوّل في الخلفية (ويستأنف وحده إن انقطع الاتصال).
     var queuing by remember { mutableStateOf(false) }
+    // 🛡️ حارس تكرار المحتوى: مطابقة بصمة الملف مع درس قائم تُعرض حواراً
+    // يلزمه تأكيد ثانٍ؛ والبصمات المؤكَّدة تُحفظ كي لا يُسأل عنها مرتين.
+    var dupWarning by remember {
+        mutableStateOf<com.ali.ishaqiyin_admin.data.DuplicateAudioGuard.Match?>(null)
+    }
+    val confirmedDupShas = remember { mutableSetOf<String>() }
     /**
      * الانشغال الحقيقيّ: الحارس المحلّيّ **زائد** علم الدفعة المشترك — إعادة
      * إنشاء النشاط تعيد `queuing` صفراً بينما حلقة الإدراج ماضية في الخلفية.
@@ -579,6 +585,21 @@ fun AddLessonScreen(onBack: () -> Unit) {
         AppPrefs.lastAddCategoryId = categoryId
         AppPrefs.lastAddSubcategoryId = subcategoryId
         scope.launch {
+            // 🛡️ فحص بصمة المحتوى قبل أي عمل دائم: مطابقٌ في المكتبة ⇒ حوار
+            // تأكيد ويُلغى هذا المسار (التأكيد يعيد استدعاء queueLesson وقد
+            // سُجّلت بصمته في المؤكَّد فيمرّ). فشل الفحص لا يعطّل الرفع أبداً.
+            val dup = withContext(Dispatchers.IO) {
+                com.ali.ishaqiyin_admin.data.DuplicateAudioGuard.firstMatch(
+                    context,
+                    files.map { it.uri to it.name },
+                    confirmedDupShas,
+                )
+            }
+            if (dup != null) {
+                queuing = false
+                dupWarning = dup
+                return@launch
+            }
             try {
                 // ⛔ كلّ العمل الدائم (دمج ← إدراج ← إيقاظ العامل) داخل
                 // NonCancellable على IO: مغادرة الشاشة أو تدويرها أثناء التجهيز
@@ -1427,6 +1448,42 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+
+    // 🛡️ حوار تأكيد التكرار: بصمة الملف مطابقة لدرس قائم في المكتبة —
+    // بلاغ فوري بعنوانه وقسمه ومدته، والمضيّ يحتاج ضغطة تأكيد ثانية صريحة.
+    dupWarning?.let { dup ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { dupWarning = null },
+            title = { Text("هذا الدرس موجود في التطبيق") },
+            text = {
+                val minutes = dup.existingDurationSeconds / 60
+                val seconds = dup.existingDurationSeconds % 60
+                val durationLabel = if (dup.existingDurationSeconds > 0L) {
+                    "\nالمدة: %d:%02d".format(minutes, seconds)
+                } else {
+                    ""
+                }
+                Text(
+                    "ملف «${dup.fileName}» بصمته مطابقة تماماً لدرس منشور:\n\n" +
+                        "«${dup.existingTitle}»" +
+                        (dup.existingSection.takeIf { it.isNotBlank() }
+                            ?.let { "\nالقسم: $it" } ?: "") +
+                        durationLabel +
+                        "\n\nهل تريد رفعه مكرَّراً رغم ذلك؟",
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    confirmedDupShas += dup.sha256
+                    dupWarning = null
+                    queueLesson()
+                }) { Text("أكّد الرفع مكرَّراً") }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { dupWarning = null }) { Text("إلغاء") }
+            },
+        )
     }
 }
 
