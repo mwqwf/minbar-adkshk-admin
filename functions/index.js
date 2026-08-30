@@ -5852,8 +5852,11 @@ async function processLessonAudioCanonical(lessonId) {
     // idempotent (الموجود بحجمه يُتخطى)، والتحقق بالحجم بعد الرفع. فشل
     // المرآة لا يكسر النشر: يُرمى فيُسجَّل في audio_jobs ويُعاد لاحقاً،
     // والدرس يبقى على رابطه الصالح — فلا يُنشر رابط نطاقٍ كائنُه غائب أبداً.
+    // المرآة تعمل ما دامت أسرار R2 موجودة — كانت مربوطة خطأً بمتغير النطاق
+    // المعطّل (حادثة الحجب) فتوقفت مرآة الجديد كلياً؛ اختيار الرابط وحده
+    // هو ما يتبع MEDIA_BASE_URL.
     let onMediaDomain = false;
-    if (MEDIA_BASE_URL && process.env.R2_ACCESS_KEY_ID) {
+    if (process.env.R2_ACCESS_KEY_ID) {
       const { S3Client, HeadObjectCommand, PutObjectCommand } =
         require("@aws-sdk/client-s3");
       const s3 = new S3Client({
@@ -5890,7 +5893,7 @@ async function processLessonAudioCanonical(lessonId) {
       }
       onMediaDomain = true;
     }
-    const servingUrl = onMediaDomain
+    const servingUrl = (onMediaDomain && MEDIA_BASE_URL)
       ? MEDIA_BASE_URL.replace(/\/$/, "") + "/" + servingPath
       : "https://firebasestorage.googleapis.com/v0/b/" + encodeURIComponent(bucket.name)
         + "/o/" + encodeURIComponent(servingPath) + "?alt=media&token=" + token;
@@ -5934,11 +5937,66 @@ async function processLessonAudioCanonical(lessonId) {
       }
       tx.update(ref, update);
     });
+    // 5) «النقل» للمحتوى الجديد (قرار المالك 2026-08-30: كل سنت ذو قيمة):
+    // الأصل الخام يُؤرشف إلى R2 `originals/{sha}_{اسم}` بتحقق حجم، وعند
+    // نجاح الأرشفة **فقط** يُحذف من دلو Firebase — فلا يبقى أصلٌ بنسخة
+    // واحدة قط، ولا يُدفع سنت تخزين لملفٍ له مرآة مجانية. فشل الأرشفة لا
+    // يمس نجاح النشر: يُسجَّل archivePending ويعيده الكنّاس.
+    let archived = false;
+    if (process.env.R2_ACCESS_KEY_ID
+      && storagePath && !storagePath.startsWith(AUDIO_SERVING_PREFIX)) {
+      try {
+        const { S3Client, HeadObjectCommand, PutObjectCommand } =
+          require("@aws-sdk/client-s3");
+        const s3 = new S3Client({
+          region: "auto",
+          endpoint: process.env.R2_ENDPOINT,
+          credentials: {
+            accessKeyId: process.env.R2_ACCESS_KEY_ID,
+            secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+          },
+        });
+        const r2Bucket = process.env.R2_BUCKET;
+        const baseName = storagePath.split("/").pop().slice(0, 120);
+        const archiveKey = `originals/${sourceSha256}_${baseName}`;
+        let ok = false;
+        try {
+          const head = await s3.send(new HeadObjectCommand({
+            Bucket: r2Bucket, Key: archiveKey,
+          }));
+          ok = Number(head.ContentLength) === srcSize;
+        } catch (e) { /* غير مؤرشف بعد */ }
+        if (!ok) {
+          await s3.send(new PutObjectCommand({
+            Bucket: r2Bucket, Key: archiveKey,
+            Body: fs.readFileSync(srcPath),
+            ContentType: "application/octet-stream",
+          }));
+          const verify = await s3.send(new HeadObjectCommand({
+            Bucket: r2Bucket, Key: archiveKey,
+          }));
+          if (Number(verify.ContentLength) !== srcSize) {
+            throw new Error("archive size mismatch");
+          }
+        }
+        await bucket.file(storagePath).delete({ ignoreNotFound: true });
+        await ref.set({
+          legacyAudio: { archivedR2: archiveKey, storageDeleted: true },
+        }, { merge: true });
+        archived = true;
+      } catch (error) {
+        console.error("original archive failed", lessonId, error);
+        await db.collection("audio_jobs").doc(lessonId).set({
+          archivePending: true,
+          archiveError: String(error && error.message || error).slice(0, 300),
+        }, { merge: true });
+      }
+    }
     await db.collection("audio_jobs").doc(lessonId).set({
-      status: "done", sha256, sizeBytes, attempts: 0,
+      status: "done", sha256, sizeBytes, attempts: 0, archived,
       finishedAtMs: Date.now(),
     }, { merge: true });
-    return { ok: true, sha256, sizeBytes, keepAsIs };
+    return { ok: true, sha256, sizeBytes, keepAsIs, archived };
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) { /* تنظيف */ }
   }
@@ -5989,6 +6047,72 @@ exports.onLessonAudioCanonical = functions
     return null;
   });
 
+/// إعادة أرشفة أصلٍ فشلت أرشفته (الأصل ما زال في Firebase — الحذف مشروط
+/// بنجاحها) — يستدعيها الكنّاس فلا تبقى أرشفة معلقة بلا يدٍ بشرية أبداً.
+async function archiveLessonOriginalOnly(lessonId) {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const snap = await db.collection("lessons").doc(lessonId).get();
+  if (!snap.exists) {
+    await db.collection("audio_jobs").doc(lessonId)
+      .set({ archivePending: false }, { merge: true });
+    return;
+  }
+  const raw = snap.data() || {};
+  const legacy = raw.legacyAudio || {};
+  const storagePath = cleanString(legacy.storagePath || raw.audioStoragePath
+    || raw.storagePath, 600);
+  if (!storagePath || storagePath.startsWith(AUDIO_SERVING_PREFIX)
+    || legacy.storageDeleted === true) {
+    await db.collection("audio_jobs").doc(lessonId)
+      .set({ archivePending: false }, { merge: true });
+    return;
+  }
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "minbar-arch-"));
+  try {
+    const srcPath = path.join(tmpDir, "orig.bin");
+    await bucket.file(storagePath).download({ destination: srcPath });
+    const bytes = fs.readFileSync(srcPath);
+    const sha = crypto.createHash("sha256").update(bytes).digest("hex");
+    const { S3Client, HeadObjectCommand, PutObjectCommand } =
+      require("@aws-sdk/client-s3");
+    const s3 = new S3Client({
+      region: "auto",
+      endpoint: process.env.R2_ENDPOINT,
+      credentials: {
+        accessKeyId: process.env.R2_ACCESS_KEY_ID,
+        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+      },
+    });
+    const r2Bucket = process.env.R2_BUCKET;
+    const key = `originals/${sha}_${storagePath.split("/").pop().slice(0, 120)}`;
+    let ok = false;
+    try {
+      const head = await s3.send(new HeadObjectCommand({ Bucket: r2Bucket, Key: key }));
+      ok = Number(head.ContentLength) === bytes.length;
+    } catch (e) { /* غير موجود */ }
+    if (!ok) {
+      await s3.send(new PutObjectCommand({
+        Bucket: r2Bucket, Key: key, Body: bytes,
+        ContentType: "application/octet-stream",
+      }));
+      const verify = await s3.send(new HeadObjectCommand({ Bucket: r2Bucket, Key: key }));
+      if (Number(verify.ContentLength) !== bytes.length) {
+        throw new Error("archive size mismatch");
+      }
+    }
+    await bucket.file(storagePath).delete({ ignoreNotFound: true });
+    await snap.ref.set({
+      legacyAudio: { archivedR2: key, storageDeleted: true },
+    }, { merge: true });
+    await db.collection("audio_jobs").doc(lessonId)
+      .set({ archivePending: false, archived: true }, { merge: true });
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) { /* تنظيف */ }
+  }
+}
+
 // كنّاس دوري: يلتقط ما فشل (بمحاولات دون السقف) وما فات المشغّل لأي سبب.
 exports.audioJobsSweep = functions
   .runWith({ timeoutSeconds: 540, memory: "1GB" })
@@ -6003,6 +6127,20 @@ exports.audioJobsSweep = functions
     const retryable = failed.docs
       .filter((doc) => Number((doc.data() || {}).attempts || 0) < AUDIO_JOB_MAX_ATTEMPTS)
       .slice(0, 5);
+    // أرشفات الأصول المعلّقة (نجح النشر وتعثر النقل لR2) — تُلتقط ذاتياً
+    // حتى لا يبقى أصلٌ يدفع تخزين Firebase أو بنسخة واحدة، بلا أي تدخل.
+    if (process.env.R2_ACCESS_KEY_ID) {
+      const pendingArchives = await db.collection("audio_jobs")
+        .where("archivePending", "==", true)
+        .limit(10).get();
+      for (const doc of pendingArchives.docs) {
+        try {
+          await archiveLessonOriginalOnly(doc.id);
+        } catch (error) {
+          console.error("archive retry failed", doc.id, error);
+        }
+      }
+    }
     for (const doc of retryable) {
       try {
         await processLessonAudioCanonical(doc.id);
