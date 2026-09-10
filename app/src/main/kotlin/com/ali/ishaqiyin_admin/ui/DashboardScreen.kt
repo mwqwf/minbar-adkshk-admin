@@ -79,9 +79,6 @@ import com.ali.ishaqiyin_admin.data.AdminAlertsFeed
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.AnalyticsRepository
 import com.ali.ishaqiyin_admin.data.AuthService
-import com.ali.ishaqiyin_admin.data.ChatNotifications
-import com.ali.ishaqiyin_admin.data.ChatRepository
-import com.ali.ishaqiyin_admin.data.DmRepository
 import com.ali.ishaqiyin_admin.data.Lesson
 import com.ali.ishaqiyin_admin.data.OwnerReviewRepository
 import com.ali.ishaqiyin_admin.data.SuspiciousLessonReview
@@ -91,10 +88,6 @@ import com.ali.ishaqiyin_admin.data.SubmissionsRepository
 import com.ali.ishaqiyin_admin.data.SupportRepository
 import com.ali.ishaqiyin_admin.data.UploadQueue
 import com.ali.ishaqiyin_admin.data.needsAttention
-import com.ali.ishaqiyin_admin.ui.chat.ProfileDialog
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.AggregateSource
-import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -137,19 +130,13 @@ internal object DashboardBadges {
         sharing: SharingStarted = started,
         create: () -> Flow<T>,
     ): StateFlow<T> {
-        val uid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
+        val uid = AuthService.currentUser?.email.orEmpty()
         if (uid != boundUid) {
             boundUid = uid
             cache.clear()
         }
         return cache.getOrPut(key) { create().stateIn(scope, sharing, initial) } as StateFlow<T>
     }
-
-    fun chatUnread(): StateFlow<Int> =
-        shared("chat", 0) { ChatRepository.unreadCountStream() }
-
-    fun dmUnread(): StateFlow<Int> =
-        shared("dm", 0) { DmRepository.unreadThreadsStream() }
 
     fun pendingAudio(): StateFlow<Int> =
         shared("submissions", 0) { SubmissionsRepository.watchPendingCount() }
@@ -219,13 +206,16 @@ private fun saveCounts(context: Context, counts: DashboardCounts) {
         .apply()
 }
 
-/**
- * عدّ تجميعي على الخادم: يعيد رقماً واحداً بدل تنزيل المجموعة كاملة —
- * اللوحة كانت تجلب آلاف الوثائق لتعرض ثلاثة أرقام.
- */
-private suspend fun countOf(collection: String): Int =
-    FirebaseFirestore.getInstance().collection(collection).count()
-        .get(AggregateSource.SERVER).await().count.toInt()
+/** عدّ المحتوى من `minbar-api` بطلبٍ واحد (بديل العدّ التجميعي في Firestore). */
+private suspend fun countOf(collection: String): Int {
+    val stats = com.ali.ishaqiyin_admin.core.MinbarAdminApi.get("/admin/stats")
+    return when (collection) {
+        "lessons" -> stats.optInt("lessons")
+        "books" -> stats.optInt("books")
+        "lesson_transcripts", "transcripts" -> stats.optInt("transcripts")
+        else -> 0
+    }
+}
 
 @Composable
 fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
@@ -241,7 +231,6 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var reloadTrigger by remember { mutableIntStateOf(0) }
-    var showProfileDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(reloadTrigger) {
         // آخر الأعداد المحفوظة — مرّة واحدة عند أوّل تركيب لا مع كلّ «تحديث».
@@ -267,15 +256,6 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
         }
     }
 
-    // انضمام تلقائي للمجموعة، ثم حوار «اسمك وصورتك» مرة واحدة أول دخول
-    // (نمط نبراس) — لا يُلحّ إن تعذّر الجلب أو سبق ضبط الملف الشخصي.
-    LaunchedEffect(Unit) {
-        ChatRepository.upsertSelf(role = if (isOwner) "owner" else "supervisor")
-        val me = ChatRepository.fetchSelf()
-        if (me != null && !me.profileSet) showProfileDialog = true
-        ChatNotifications.syncSubscription()
-    }
-
     // 📤 ملفّات صوتيّة وصلت بالمشاركة — افتح نموذج «إضافة درس» معبّأً بها.
     val pendingShared by ShareIntake.pending.collectAsState()
     LaunchedEffect(pendingShared.size) {
@@ -285,10 +265,6 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
     // تدفّق واحد للتنبيهات: منه شارة الجرس ومنه سطر البطاقة — لا لقطة ثانية.
     val alerts by DashboardBadges.alerts(isOwner).collectAsState()
     val unreadAlerts = alerts.size
-
-    if (showProfileDialog) {
-        ProfileDialog(firstRun = true, onDismiss = { showProfileDialog = false })
-    }
 
     AdminScaffold(
         title = "لوحة الإدارة",
@@ -798,8 +774,6 @@ private fun gridColors(): GridColors {
 private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
     // كلّ الشارات من التدفّقات المشتركة (WhileSubscribed): لا إعادة ربط
     // كاملة لمستمعي Firestore مع كلّ رجوع إلى اللوحة.
-    val chatUnread by DashboardBadges.chatUnread().collectAsState()
-    val dmUnread by DashboardBadges.dmUnread().collectAsState()
     val pendingAudioSubmissions by DashboardBadges.pendingAudio().collectAsState()
     val pendingTranscripts by DashboardBadges.pendingTranscripts().collectAsState()
     val trashCount by DashboardBadges.trash().collectAsState()
@@ -829,16 +803,6 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
     )
 
     val cards = buildList {
-        // بطاقة واحدة للمحادثات كلّها: المجموعة والخاصّ في قائمة واحدة
-        // كواتساب. بطاقتان منفصلتان كانتا تُخفيان محادثات المشرف الخاصّة
-        // خلف باب لا يتذكّره أحد.
-        add(
-            ActionSpec(
-                Icons.Filled.Forum, c.teal, "المحادثات",
-                "مجموعة الإدارة والرسائل الخاصّة",
-                chatUnread + dmUnread, Routes.DM_LIST,
-            ),
-        )
         // 📚 **المحتوى** — كلّ ما يخصّ الدروس والأقسام في باب واحد: إضافةً
         // وتنظيماً وتعديلاً وتمييزاً واستعادةً. كانت خمس بطاقات متجاورة
         // تؤدّي كلّها إلى الشيء نفسه (المحتوى) فتُغرق الشاشة بلا معنى.

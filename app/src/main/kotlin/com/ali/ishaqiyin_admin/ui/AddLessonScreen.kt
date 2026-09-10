@@ -591,8 +591,9 @@ fun AddLessonScreen(onBack: () -> Unit) {
             val dup = withContext(Dispatchers.IO) {
                 com.ali.ishaqiyin_admin.data.DuplicateAudioGuard.firstMatch(
                     context,
-                    files.map { it.uri to it.name },
-                    confirmedDupShas,
+                    files.map { it.uri },
+                    files.map { it.name },
+                    confirmedDupShas.toList(),
                 )
             }
             if (dup != null) {

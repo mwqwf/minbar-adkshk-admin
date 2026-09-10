@@ -85,7 +85,6 @@ import com.ali.ishaqiyin_admin.data.SubmissionsRepository
 import com.ali.ishaqiyin_admin.data.TranscriptSubmission
 import com.ali.ishaqiyin_admin.data.TranscriptsRepository
 import com.ali.ishaqiyin_admin.data.arabicReason
-import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -1201,12 +1200,9 @@ private fun TranscriptSubmissionsContent(targetId: String = "") {
         }
         scope.launch {
             try {
-                val doc = FirebaseFirestore.getInstance()
-                    .collection("lessons").document(lessonId).get().await()
-                val raw = doc.data ?: emptyMap()
-                @Suppress("UNCHECKED_CAST")
-                val unwrapped = (raw["data"] as? Map<String, Any?>) ?: raw
-                val url = (unwrapped["audioUrl"] ?: raw["audioUrl"])?.toString().orEmpty()
+                val url = com.ali.ishaqiyin_admin.core.MinbarAdminApi
+                    .get("/v1/lessons/" + java.net.URLEncoder.encode(lessonId, "UTF-8"), auth = false)
+                    .optString("audioUrl")
                 if (url.isEmpty()) {
                     snack("لم يُعثر على صوتية هذا الدرس.")
                 } else {

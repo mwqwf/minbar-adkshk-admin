@@ -43,11 +43,7 @@ import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.Lesson
 import com.ali.ishaqiyin_admin.data.arabicReason
-import com.ali.ishaqiyin_admin.data.dataMap
-import com.google.firebase.firestore.FieldPath
-import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 
 /** هدف حذف مؤكَّد — نحتفظ بوصفه العربيّ كي يذكره الحوار بدقّة. */
 private data class PendingFeedbackDelete(
@@ -84,16 +80,11 @@ fun FeedbackScreen(onBack: () -> Unit) {
                 .mapNotNull { it["lessonId"]?.toString()?.trim() }
                 .filter { it.isNotEmpty() }
                 .distinct()
-            val db = FirebaseFirestore.getInstance()
-            val fetchedTitles = buildMap<String, String> {
-                lessonIds.chunked(30).forEach { chunk ->
-                    val snap = db.collection("lessons")
-                        .whereIn(FieldPath.documentId(), chunk).get().await()
-                    snap.documents.forEach { doc ->
-                        put(doc.id, Lesson.fromDoc(doc.id, doc.dataMap()).title)
-                    }
-                }
-            }
+            // عناوين الدروس من قائمة الدروس نفسها (طلبٌ واحد إلى minbar-api).
+            val byId = AdminRepository.fetchLessons().associateBy { it.id }
+            val fetchedTitles = lessonIds.mapNotNull { id ->
+                byId[id]?.let { id to it.title }
+            }.toMap()
             items = fetchedItems
             titles = fetchedTitles
         }.onFailure { error = "تعذّر جلب البيانات. تحقّق من الاتصال." }

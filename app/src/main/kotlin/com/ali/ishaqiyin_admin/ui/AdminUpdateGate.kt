@@ -34,7 +34,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ali.ishaqiyin_admin.data.AdminAppConfigRepository
-import com.ali.ishaqiyin_admin.data.ChatRepository
 import com.ali.ishaqiyin_admin.data.UpdateConfigRepository
 
 /**
@@ -72,17 +71,7 @@ fun AdminUpdateGate(isOwner: Boolean, content: @Composable () -> Unit) {
             // شاشة تذكير التحديث. تعدادُ المزايا حين كان مثبَّتاً هنا بقي
             // يسرد مزايا إصدارٍ مضى عليه أربع نسخ في كل إعلان.
             runCatching {
-                val notes = runCatching {
-                    UpdateConfigRepository.load(UpdateConfigRepository.Target.AdminApp).message
-                }.getOrDefault("").trim()
-                ChatRepository.sendText(
-                    "📣 صدر إصدار جديد من لوحة الإدارة (رقم " +
-                        "${com.ali.ishaqiyin_admin.BuildConfig.VERSION_CODE}).\n\n" +
-                        // فارغ ⇒ سطر محايد وحده، فلا يُعلَن «جديد» لا وجود له.
-                        (if (notes.isEmpty()) "" else "$notes\n\n") +
-                        "حدِّث اللوحة من صفحة الاختبار المغلق:\n" +
-                        AdminAppConfigRepository.PLAY_URL,
-                )
+                // (إعلان الإصدار في مجموعة الإدارة أُلغي مع الدردشة — 2026-09-10.)
             }
         }
         // 2) ثم الفحص المعتاد لهذا الجهاز.

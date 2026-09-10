@@ -1,7 +1,6 @@
 package com.ali.ishaqiyin_admin.data
 
 import android.util.Log
-import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -235,11 +234,7 @@ object ChatMediaStore {
         for (attempt in 0 until 3) {
             if (attempt > 0) delay(1500L * attempt)
             try {
-                val file = if (att.url.isNotEmpty()) {
-                    downloadOverHttp(att, target, partial, flow)
-                } else {
-                    downloadViaSdk(att, target, flow)
-                }
+                val file = downloadOverHttp(att, target, partial, flow)
                 pending.remove(keyOf(att))
                 flow.value = MediaStatus(MediaState.Downloaded, file = file)
                 return@withContext file
@@ -252,17 +247,8 @@ object ChatMediaStore {
                     waitingForNetwork = true,
                 )
             } catch (e: Exception) {
+                // خطأ دائم (رابط باطل أو ملفّ مفقود): لا فائدة من إعادة المحاولة.
                 lastError = e
-                // 403/404 من الرابط المُوقَّع: جرّب SDK مرّة واحدة (رسائل قديمة
-                // أو رمز تنزيل أُبطل)، فإن فشل أيضاً أظهر الخطأ.
-                if (att.path.isNotEmpty() && e is HttpStatusException && e.code in listOf(401, 403, 404)) {
-                    runCatching {
-                        val file = downloadViaSdk(att, target, flow)
-                        pending.remove(keyOf(att))
-                        flow.value = MediaStatus(MediaState.Downloaded, file = file)
-                        return@withContext file
-                    }.onFailure { lastError = it }
-                }
                 break
             }
         }
@@ -282,8 +268,7 @@ object ChatMediaStore {
     private class HttpStatusException(val code: Int) : Exception("HTTP $code")
 
     /**
-     * تنزيل عبر رابط Firebase المُوقَّع مع استئناف Range — يعمل لكلّ مشرف
-     * (لا يمرّ بقاعدة تخزين تعتمد على نداء Firestore عابر للخدمات).
+     * تنزيل عبر رابط الملفّ المباشر (R2 عبر minbar-api) مع استئناف Range.
      */
     private fun downloadOverHttp(
         att: ChatAttachment,
@@ -350,36 +335,6 @@ object ChatMediaStore {
     }
 
     /** المسار البديل: Firebase Storage SDK (رسائل بلا رابط، أو رمز مُبطَل). */
-    private suspend fun downloadViaSdk(
-        att: ChatAttachment,
-        target: File,
-        flow: MutableStateFlow<MediaStatus>,
-    ): File {
-        val tmp = File("${target.path}.sdk")
-        if (tmp.exists()) tmp.delete()
-        val storage = FirebaseStorage.getInstance()
-        val ref = if (att.path.isNotEmpty()) {
-            storage.reference.child(att.path)
-        } else {
-            storage.getReferenceFromUrl(att.url)
-        }
-        val task = ref.getFile(tmp)
-        task.addOnProgressListener { snapshot ->
-            val total = if (snapshot.totalByteCount > 0) snapshot.totalByteCount else att.size
-            if (total > 0) {
-                flow.value = MediaStatus(
-                    MediaState.Downloading,
-                    progress = snapshot.bytesTransferred * 100.0 / total,
-                )
-            }
-        }
-        task.await()
-        check(tmp.length() > 0L) { "الملفّ المُنزَّل فارغ." }
-        if (target.exists()) target.delete()
-        check(tmp.renameTo(target)) { "تعذّر تثبيت الملفّ المُنزَّل." }
-        return target
-    }
-
     private fun friendlyError(e: Throwable?): String {
         val s = e?.toString().orEmpty()
         return when {

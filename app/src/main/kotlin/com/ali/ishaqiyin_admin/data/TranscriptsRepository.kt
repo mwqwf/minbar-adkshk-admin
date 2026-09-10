@@ -2,18 +2,12 @@ package com.ali.ishaqiyin_admin.data
 
 import android.content.Context
 import android.net.Uri
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Source
-import com.google.firebase.functions.FirebaseFunctions
-import com.google.firebase.storage.FirebaseStorage
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 
@@ -55,33 +49,9 @@ data class TranscriptSubmission(
             )
         }
 
-        fun fromDoc(doc: DocumentSnapshot): TranscriptSubmission {
-            val d = doc.dataMap()
-            return TranscriptSubmission(
-                id = doc.id,
-                uid = str(d["uid"]),
-                submitterName = str(d["submitterName"]),
-                lessonId = str(d["lessonId"]),
-                lessonTitle = str(d["lessonTitle"]),
-                text = str(d["text"]),
-                bookTitle = str(d["bookTitle"]),
-                sourceRef = str(d["sourceRef"]),
-                note = str(d["note"]),
-                imagePaths = (d["imagePaths"] as? List<*>)
-                    .orEmpty().map { str(it) }.filter { it.isNotEmpty() },
-                status = str(d["status"]).ifEmpty { "pending" },
-                rejectReason = str(d["rejectReason"]),
-                createdAtMs = parseDateMs(d["createdAt"]),
-            )
-        }
     }
 }
 
-/**
- * حصيلة قرار جماعي على اقتراحات النصوص: كم اعتُمد/رُفض، وكم أخفق، وكم
- * اقتراحاً تُخطّي لأن درسه سبق أن حُسم في الدفعة نفسها (اعتماد نصّين لدرس
- * واحد يمحو أوّلهما بلا رجعة — فالتخطّي هنا حماية لا نقص).
- */
 data class BulkTranscriptResult(
     val done: Int,
     val failed: Int,
@@ -103,33 +73,8 @@ data class LessonTranscript(
     val contributorName: String,
     val updatedBy: String,
 ) {
-    companion object {
-        fun fromDoc(doc: DocumentSnapshot): LessonTranscript {
-            val d = doc.dataMap()
-            return LessonTranscript(
-                lessonId = doc.id,
-                text = str(d["text"]),
-                bookTitle = str(d["bookTitle"]),
-                sourceRef = str(d["sourceRef"]),
-                images = (d["images"] as? List<*>).orEmpty().mapNotNull { item ->
-                    val m = item as? Map<*, *> ?: return@mapNotNull null
-                    val path = str(m["path"])
-                    val url = str(m["url"])
-                    if (url.isEmpty()) null else TranscriptImage(path, url)
-                },
-                contributorName = str(d["contributorName"]),
-                updatedBy = str(d["updatedBy"]),
-            )
-        }
-    }
 }
 
-/**
- * 📖 «النص المشروح»: المتن/المقطع الأصلي الذي تشرحه الصوتية.
- * - اقتراحات المستمعين تُراجَع هنا (اعتماد/تعديل/رفض) بنفس دورة «شارك درساً».
- * - والمشرف يضيف أو يعدّل النص مباشرة من شاشة إدارة الدروس.
- * الكتابة الفعلية كلها عبر Cloud Functions (تحقّق + تدقيق + روابط صور).
- */
 object TranscriptsRepository {
     /** صفّ `transcripts` من minbar-api (snake_case) → النموذج. */
     private fun fromRow(row: org.json.JSONObject): LessonTranscript {
@@ -149,9 +94,6 @@ object TranscriptsRepository {
         )
     }
 
-    private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
-    private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
-    private val storage: FirebaseStorage get() = FirebaseStorage.getInstance()
     const val COLLECTION = "transcript_submissions"
     const val TRANSCRIPTS = "lesson_transcripts"
     const val MAX_IMAGES = 4
@@ -269,10 +211,8 @@ object TranscriptsRepository {
         urlCache[path]?.let { (at, url) ->
             if (now - at < URL_TTL_MS) return url
         }
-        val url = storage.reference.child(path).downloadUrl.await().toString()
-        pruneUrlCache()
-        urlCache[path] = System.currentTimeMillis() to url
-        return url
+        // ما بقي مسارٌ قديم من Firebase — لا رابط له بعد إطفاء التخزين.
+        return ""
     }
 
     /** تنظيف المنتهي أوّلاً، ثم الأقدم إن تجاوزت الخريطة سقفها. */
@@ -382,22 +322,12 @@ object TranscriptsRepository {
         // ضغط صورة الصفحة قبل الرفع (2400px/85 — نمط ChatUploader): النص يبقى
         // مقروءاً تماماً والحجم ينخفض أضعافاً. عند تعذّر الضغط تُرفع كما هي.
         val bytes = com.ali.ishaqiyin_admin.util.ImageCompressor.compressTranscriptImage(raw)
-        val metadata = com.google.firebase.storage.StorageMetadata.Builder()
-            .setContentType(
-                if (bytes !== raw) {
-                    "image/jpeg"
-                } else {
-                    context.contentResolver.getType(uri) ?: "image/jpeg"
-                },
-            )
-            // المسار مختوم زمنيّاً فلا يُستبدل — كاش دائم يوفّر إعادة التنزيل.
-            .setCacheControl("public, max-age=31536000, immutable")
-            .build()
+        val contentType = if (bytes !== raw) "image/jpeg" else (context.contentResolver.getType(uri) ?: "image/jpeg")
         val key = "images/$path"
         val temp = java.io.File(context.cacheDir, "tx_${System.currentTimeMillis()}.jpg")
         temp.writeBytes(bytes)
         try {
-            MinbarAdminApi.upload("/admin/upload/$key", temp, metadata.contentType ?: "image/jpeg")
+            MinbarAdminApi.upload("/admin/upload/$key", temp, contentType)
         } finally {
             temp.delete()
         }

@@ -26,10 +26,6 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ali.ishaqiyin_admin.R
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageException
-import com.google.firebase.storage.StorageMetadata
-import com.google.firebase.storage.StorageReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -543,12 +539,6 @@ class LessonUploadWorker(
                 is SocketException,
                 is SSLException,
                 -> return true
-                is StorageException ->
-                    if (current.errorCode == StorageException.ERROR_RETRY_LIMIT_EXCEEDED &&
-                        !NetworkMonitor.online.value
-                    ) {
-                        return true
-                    }
                 else -> Unit
             }
             cause = current.cause
@@ -570,11 +560,6 @@ class LessonUploadWorker(
             val message = current.message.orEmpty()
             if (message.contains("terminated the upload session", ignoreCase = true) ||
                 message.contains("resumable session", ignoreCase = true)
-            ) {
-                return true
-            }
-            if (current is StorageException &&
-                (current.httpResultCode == 404 || current.httpResultCode == 410)
             ) {
                 return true
             }
@@ -637,21 +622,6 @@ class LessonUploadWorker(
         return "" to key
     }
 
-    private suspend fun downloadUrlWithRetry(ref: StorageReference): String {
-        var last: Throwable? = null
-        for (attempt in 1..3) {
-            try {
-                return ref.downloadUrl.await().toString()
-            } catch (cancel: CancellationException) {
-                throw cancel
-            } catch (e: Exception) {
-                last = e
-                Log.w(TAG, "downloadUrl retry $attempt: $e")
-                if (attempt < 3) delay(1_500L * attempt)
-            }
-        }
-        throw last ?: IllegalStateException("downloadUrl failed")
-    }
 
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return

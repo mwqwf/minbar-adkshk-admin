@@ -2,7 +2,6 @@ package com.ali.ishaqiyin_admin.ui
 
 import android.content.Context
 import android.net.Uri
-import com.ali.ishaqiyin_admin.data.guessContentType
 import com.ali.ishaqiyin_admin.util.PickedFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -12,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.ali.ishaqiyin_admin.data.guessContentType
 
 /** ملفّ مشترَك بعد نسخه إلى كاش التطبيق — جاهز لرفع لا يعتمد على إذن مؤقّت. */
 data class PreparedShare(

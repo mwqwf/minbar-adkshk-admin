@@ -37,7 +37,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.core.AppConfig
 import com.ali.ishaqiyin_admin.data.AdminAppConfigRepository
-import com.ali.ishaqiyin_admin.data.ChatRepository
 import com.ali.ishaqiyin_admin.data.UpdateConfig
 import com.ali.ishaqiyin_admin.data.UpdateConfigRepository
 import com.ali.ishaqiyin_admin.data.arabicReason
@@ -291,19 +290,7 @@ fun UpdateConfigScreen(onBack: () -> Unit) {
                                         target == UpdateConfigRepository.Target.AdminApp &&
                                             announce
                                     if (announced) {
-                                        ChatRepository.sendText(
-                                            buildString {
-                                                append("📣 صدر إصدار جديد من لوحة الإدارة ")
-                                                append("(رقم $latestCode).\n")
-                                                val custom = message.trim()
-                                                if (custom.isNotEmpty()) {
-                                                    append(custom)
-                                                    append("\n")
-                                                }
-                                                append("حدِّث اللوحة من صفحة الاختبار المغلق:\n")
-                                                append(AdminAppConfigRepository.PLAY_URL)
-                                            },
-                                        )
+                                        // (الإعلان في مجموعة الإدارة أُلغي مع الدردشة — 2026-09-10.)
                                     }
                                     snack(
                                         if (announced) {

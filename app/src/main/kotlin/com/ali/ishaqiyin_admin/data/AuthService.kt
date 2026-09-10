@@ -16,22 +16,15 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
-import com.google.firebase.firestore.DocumentReference
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Source
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.tasks.await
-import kotlinx.coroutines.withTimeout
 import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 
 /**
@@ -175,102 +168,46 @@ object AuthService {
         }
     }
 
-    private fun revalidateInBackground(ref: DocumentReference) {
-        backgroundScope.launch {
-            runCatching {
-                val fresh = ref.get(Source.SERVER).await()
-                val data = fresh.takeIf { it.exists() }?.dataMap()
-                val stillAllowed = data != null &&
-                    data["blocked"] != true &&
-                    str(data["role"]) == "supervisor"
-                if (!stillAllowed) auth.signOut()
-            }
-        }
-    }
-
-    // ─── رمز اعتماد المشرف (نظير /api/auth/request-code و verify-code) ───
-    // لا تتوفّر صلاحية استدعاء عامّة لدوالّ onCall في هذا المشروع، فالتنفيذ
-    // عبر "طلب بوثيقة": نكتب وثيقة بمعرّف = بريدنا، ومُشغِّل Firestore على
-    // الخادم يكتب النتيجة (result) رجوعاً في نفس الوثيقة، ونحذفها بعد القراءة.
-    // المهلة تلفّ العملية كاملة (الحذف والكتابة والانتظار): بلا اتصال تعلّق
-    // كتابة Firestore نفسها بلا نهاية فتُجمَّد الشاشة.
-    private suspend fun requestResponse(
-        ref: DocumentReference,
-        payload: Map<String, Any?>,
-    ): Map<String, Any?> = withTimeout(25_000) {
-        runCatching { ref.delete().await() }
-        ref.set(payload).await()
-        try {
-            ref.docSnapshots()
-                .filter { it.exists() && it.dataMap()["result"] != null }
-                .first()
-                .dataMap()
-        } finally {
-            runCatching { ref.delete().await() }
-        }
-    }
-
+    /**
+     * يطلب رمز اعتماد للمرشّح الحالي — يصل المالكَ تنبيهاً فورياً باسمه ورمزه.
+     * (على `minbar-api` منذ 2026-09-10 — بلا Firestore.)
+     */
     suspend fun requestOwnerCode(): OwnerCodeResult {
-        val user = auth.currentUser
-        val email = user?.email.orEmpty().trim().lowercase()
-        if (user == null || email.isEmpty()) {
-            return OwnerCodeResult(ok = false, reason = "send_failed")
-        }
+        val user = auth.currentUser ?: return OwnerCodeResult(ok = false, reason = "send_failed")
         return try {
-            val ref = FirebaseFirestore.getInstance()
-                .collection("dashboard_code_requests").document(email)
-            val data = requestResponse(
-                ref,
-                mapOf(
-                    "uid" to user.uid,
-                    "name" to user.displayName.orEmpty(),
-                    "photoURL" to user.photoUrl?.toString().orEmpty(),
-                    "requestedAt" to nowIso(),
-                ),
+            val data = MinbarAdminApi.post(
+                "/access/request-code",
+                org.json.JSONObject()
+                    .put("name", user.displayName.orEmpty())
+                    .put("photoURL", user.photoUrl?.toString().orEmpty()),
             )
-            val result = data["result"]?.toString()
-            if (result == "ok") {
-                OwnerCodeResult(ok = true)
-            } else {
-                OwnerCodeResult(
-                    ok = false,
-                    reason = result ?: "send_failed",
-                    retryAfterSec = (data["retryAfterSec"] as? Number)?.toInt(),
+            when (val result = data.optString("result")) {
+                "ok" -> OwnerCodeResult(ok = true)
+                "rate_limited" -> OwnerCodeResult(
+                    ok = false, reason = "rate_limited",
+                    retryAfterSec = data.optInt("retryAfterSec").takeIf { it > 0 },
                 )
+                else -> OwnerCodeResult(ok = false, reason = result.ifEmpty { "send_failed" })
             }
-        } catch (_: TimeoutCancellationException) {
-            // انتهاء مهلة requestResponse = فشل عادي لا تعليق للشاشة.
-            OwnerCodeResult(ok = false, reason = "send_failed")
         } catch (e: CancellationException) {
-            // إلغاء الكوروتين ليس فشلَ خادم — يُعاد رميه (مهلة `withTimeout`
-            // تُلتقط قبله صراحةً فلا تتأثّر).
             throw e
         } catch (_: Exception) {
             OwnerCodeResult(ok = false, reason = "send_failed")
         }
     }
 
+    /** يتحقّق من الرمز؛ ونجاحُه يعتمد صاحبَه مشرفاً في الحال. */
     suspend fun verifyOwnerCode(code: String): OwnerCodeResult {
-        val user = auth.currentUser
-        val email = user?.email.orEmpty().trim().lowercase()
-        if (user == null || email.isEmpty()) {
-            return OwnerCodeResult(ok = false, reason = "server")
-        }
+        if (auth.currentUser == null) return OwnerCodeResult(ok = false, reason = "server")
         return try {
-            val ref = FirebaseFirestore.getInstance()
-                .collection("dashboard_code_verify").document(email)
-            val data = requestResponse(ref, mapOf("code" to code.trim()))
-            val result = data["result"]?.toString()
-            if (result == "ok") {
-                OwnerCodeResult(ok = true)
-            } else {
-                OwnerCodeResult(ok = false, reason = result ?: "server")
-            }
-        } catch (_: TimeoutCancellationException) {
-            // انتهاء مهلة requestResponse = فشل عادي لا تعليق للشاشة.
-            OwnerCodeResult(ok = false, reason = "server")
+            val data = MinbarAdminApi.post(
+                "/access/verify-code",
+                org.json.JSONObject().put("code", code.trim()),
+            )
+            val result = data.optString("result")
+            if (result == "ok") OwnerCodeResult(ok = true)
+            else OwnerCodeResult(ok = false, reason = result.ifEmpty { "server" })
         } catch (e: CancellationException) {
-            // كما في [sendOwnerCode]: الإلغاء يُعاد رميه ولا يُترجم إلى فشل خادم.
             throw e
         } catch (_: Exception) {
             OwnerCodeResult(ok = false, reason = "server")
@@ -280,7 +217,7 @@ object AuthService {
     suspend fun signOut(context: Context) {
         // دون اتصال لا يكتمل حذف الرمز أبداً (await لا يرمي بل ينتظر)،
         // فيُحتجز تسجيل الخروج — مهلة قصيرة تضمن الوصول إلى signOut.
-        runCatching { withTimeout(3_000) { AdminNotificationService.unregisterCurrentDevice() } }
+        runCatching { AdminNotificationService.unregisterCurrentDevice() }
         runCatching {
             CredentialManager.create(context)
                 .clearCredentialState(ClearCredentialStateRequest())

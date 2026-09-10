@@ -68,22 +68,12 @@ import androidx.navigation.NavOptions
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.ali.ishaqiyin_admin.call.CallEngine
 import com.ali.ishaqiyin_admin.data.AccessState
 import com.ali.ishaqiyin_admin.data.AccessVerificationException
 import com.ali.ishaqiyin_admin.data.AdminNotificationService
 import com.ali.ishaqiyin_admin.data.AuthService
-import com.ali.ishaqiyin_admin.data.ChatRepository
-import com.ali.ishaqiyin_admin.data.ChatUploadTarget
-import com.ali.ishaqiyin_admin.data.ChatUploader
-import com.ali.ishaqiyin_admin.data.DmRepository
 import com.ali.ishaqiyin_admin.data.chatTypeForMime
 import com.ali.ishaqiyin_admin.data.isVideoMime
-import com.ali.ishaqiyin_admin.ui.chat.ChatScreen
-import com.ali.ishaqiyin_admin.ui.chat.ChatsHomeScreen
-import com.ali.ishaqiyin_admin.ui.chat.DmScreen
-import com.ali.ishaqiyin_admin.ui.chat.GroupInfoScreen
-import com.ali.ishaqiyin_admin.ui.chat.MemberAvatar
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -113,20 +103,12 @@ object Routes {
     const val TRASH = "trash"
     const val OWNER_REVIEW = "owner_review"
     const val FEATURED = "featured"
-    const val CHAT = "chat"
-    const val GROUP_INFO = "group_info"
-    const val DM_LIST = "dm_list"
-    const val DM = "dm/{threadId}/{otherUid}/{otherName}"
-
     /** 📬 صندوق «رسائل المستخدمين» ومحادثاته — للمالك وحده. */
     const val SUPPORT = "support"
 
     /** 📬 صندوق «رسائل مصحفك» — تطبيقٌ آخر وصاحبُه واحد، وللمالك وحده (أمر المالك 2026-09-10). */
     const val MUSHAFAK = "mushafak_inbox"
     const val SUPPORT_THREAD = "support/{threadId}/{userUid}/{userName}/{kind}"
-
-    fun dm(threadId: String, otherUid: String, otherName: String): String =
-        "dm/${Uri.encode(threadId)}/${Uri.encode(otherUid)}/${Uri.encode(otherName)}"
 
     fun supportThread(threadId: String, userUid: String, userName: String, kind: String): String =
         "support/${Uri.encode(threadId)}/${Uri.encode(userUid)}/" +
@@ -244,7 +226,6 @@ object NotificationRoute {
             "support" -> return Routes.SUPPORT
             "analytics" -> return Routes.ANALYTICS
             "featured" -> return Routes.FEATURED
-            "chat" -> return Routes.CHAT
         }
 
         return when (value(KEY_TYPE)) {
@@ -259,24 +240,6 @@ object NotificationRoute {
             }
 
             "support" -> Routes.SUPPORT
-
-            "admin_chat" -> Routes.CHAT
-
-            "admin_dm" -> {
-                val threadId = value(KEY_THREAD)
-                val otherUid = value(KEY_SENDER)
-                // بلا معرّفين لا يقوم مسار المحادثة (مقطع فارغ لا يطابق
-                // النمط) — فنفتح قائمة المحادثات بدل السقوط على اللوحة.
-                if (threadId.isEmpty() || otherUid.isEmpty()) {
-                    Routes.DM_LIST
-                } else {
-                    Routes.dm(
-                        threadId,
-                        otherUid,
-                        value(KEY_SENDER_NAME).ifEmpty { "مشرف" },
-                    )
-                }
-            }
 
             "engagement", "milestone", "digest", "weekly_digest" -> Routes.ANALYTICS
             "suspicious_lesson", "suspicious_scan" -> Routes.OWNER_REVIEW
@@ -356,18 +319,6 @@ fun AdminApp() {
         loading = false
         error = (lastError as? AccessVerificationException)?.message
             ?: "تعذّر التحقق من الصلاحية. تحقق من الاتصال ثم أعد المحاولة."
-    }
-
-    // 📞 كشف المكالمات الواردة داخل التطبيق بلا انتظار FCM: الدفعة ترجع
-    // مبكّراً إن عُطّلت الإشعارات أو رُفض إذنها، وتتأخّر في Doze أو عند إبطال
-    // الرمز. المراقبة هنا على مستوى التطبيق لا داخل قسم المحادثات وحده،
-    // وحارس openedIncomingIds يمنع فتح شاشتين مع مسار FCM.
-    LaunchedEffect(access) {
-        if (access == AccessState.Owner || access == AccessState.Supervisor) {
-            CallEngine.startIncomingWatch(context)
-        } else {
-            CallEngine.stopIncomingWatch()
-        }
     }
 
     val showSnack: (String) -> Unit = { message ->
@@ -531,19 +482,6 @@ private fun AdminNavHost(isOwner: Boolean) {
         }
         composable(Routes.OWNER_REVIEW) { OwnerReviewScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.FEATURED) { FeaturedScreen(onBack = { nav.popBackStack() }) }
-        composable(Routes.CHAT) { ChatScreen(isOwner = isOwner, nav = nav) }
-        composable(Routes.GROUP_INFO) {
-            GroupInfoScreen(isOwner = isOwner, nav = nav, onBack = { nav.popBackStack() })
-        }
-        composable(Routes.DM_LIST) { ChatsHomeScreen(nav = nav, onBack = { nav.popBackStack() }) }
-        composable(Routes.DM) { entry ->
-            DmScreen(
-                threadId = entry.arguments?.getString("threadId").orEmpty(),
-                otherUid = entry.arguments?.getString("otherUid").orEmpty(),
-                otherName = entry.arguments?.getString("otherName").orEmpty(),
-                onBack = { nav.popBackStack() },
-            )
-        }
     }
 
     // 📤 ورقة وجهة المشاركة الخارجية — فوق أيّ شاشة، فالمشاركة قد تصل
@@ -552,9 +490,12 @@ private fun AdminNavHost(isOwner: Boolean) {
 }
 
 /**
- * 📤 خيارات المشاركة الخارجية (نمط واتساب): تظهر فور وصول ملفّات من تطبيق
- * آخر، وتترك للمستخدم اختيار الوجهة — نموذج الدرس الصوتي، أو مجموعة
- * الإدارة، أو محادثة خاصّة مع مشرف. لا شيء يُرسَل قبل الاختيار.
+ * 📤 خيارات المشاركة الخارجية: تظهر فور وصول ملفّات من تطبيق آخر وتترك
+ * للمستخدم اختيار الوجهة — نموذج الدرس الصوتي أو النصّ المشروح. لا شيء
+ * يُرسَل قبل الاختيار.
+ *
+ * (وجهتا «مجموعة الإدارة» و«محادثة خاصّة» أُلغيتا مع الدردشة كلّها بأمر
+ * المالك 2026-09-10.)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -562,12 +503,8 @@ private fun ShareDestinationSheets(nav: NavHostController) {
     val context = LocalContext.current
     val snack = LocalSnack.current
     val incoming by ShareIntake.incoming.collectAsState()
-
-    // لا مستمع أعضاء ولا ورقة ما لم تصل مشاركة — والخروج المبكر يُسقط حالة
-    // «قائمة المشرفين» فتبدأ كلّ دفعة جديدة من قائمة الوجهات.
     if (incoming.isEmpty()) return
 
-    var pickAdmin by remember { mutableStateOf(false) }
     val preparing by ShareIntake.preparing.collectAsState()
     val hasAudio = remember(incoming) {
         incoming.any { context.shareContentType(it).startsWith("audio/") }
@@ -575,200 +512,35 @@ private fun ShareDestinationSheets(nav: NavHostController) {
     val hasImage = remember(incoming) {
         incoming.any { context.shareContentType(it).startsWith("image/") }
     }
-    val label = if (incoming.size == 1) {
-        incoming.first().name
-    } else {
-        filesCountLabel(incoming.size)
-    }
+    val label = if (incoming.size == 1) incoming.first().name else filesCountLabel(incoming.size)
 
-    // ⚠️ النسخ إلى الكاش قبل الرفع مقصود: إذن قراءة الـUri الوارد مع
-    // ACTION_SEND مؤقّت ومربوط بحياة النشاط ولا يقبل التثبيت، بينما
-    // ChatUploader يرفع في نطاق على مستوى العمليّة — فمغادرة التطبيق أثناء
-    // رفع ملفّ كبير كانت تُسقط الإذن ويضيع الملفّ بصمت.
-    fun send(target: ChatUploadTarget, notice: String, onSent: () -> Unit) {
-        if (preparing) return
-        val files = incoming
-        ShareIntake.prepareForChat(
-            context = context,
-            files = files,
-            onReady = { prepared ->
-                // نوع المحتوى يُقرأ من الوارد الأصلي: اسم النسخة هو نفسه
-                // والـContentResolver لا يفيد مع `file://`.
-                val typed = prepared.map { it to context.shareContentType(it.source) }
-                // ⛔ الفيديو ملغى: مرشِّح المشاركة لم يعد يعلن `video/*`، لكن
-                // قد يصل ملفّ فيديو بنوع معلَن آخر — فيُسقط هنا صراحةً مع
-                // إخبار المستخدم (لا إسقاط صامت).
-                val (videos, sendable) = typed.partition { isVideoMime(it.second) }
-                videos.forEach { (item, _) -> runCatching { item.cached.delete() } }
-                sendable.forEach { (item, contentType) ->
-                    ChatUploader.enqueue(
-                        target = target,
-                        file = item.file,
-                        type = chatTypeForMime(contentType),
-                        contentType = contentType,
-                        deleteAfter = item.cached,
-                    )
-                }
-                ShareIntake.consumeIncoming(files)
-                snack(
-                    when {
-                        sendable.isEmpty() && videos.isNotEmpty() ->
-                            "إرسال الفيديو غير مدعوم في الدردشة."
-
-                        videos.isNotEmpty() ->
-                            "أُرسل ${sendable.size} من ${files.size} — الفيديو غير مدعوم."
-
-                        sendable.size < files.size ->
-                            "تعذّر تجهيز بعض الملفّات — يُرسَل ${sendable.size} من ${files.size}."
-
-                        else -> notice
-                    },
-                )
-                runCatching { onSent() }
-            },
-            onFailure = { message -> snack(message) },
-        )
-    }
-
-    if (!pickAdmin) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(
-            // الصرف ممنوع أثناء التجهيز كي لا تختفي الورقة وسط نسخ الملفّ.
-            onDismissRequest = { if (!preparing) ShareIntake.clearIncoming() },
-            sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
-        ) {
-            Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-                Text(
-                    "مشاركة إلى إدارة منبر",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
-                )
-                Text(
-                    label,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
-                )
-                if (preparing) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Spin(color = MaterialTheme.colorScheme.primary, size = 16)
-                        Spacer(Modifier.size(10.dp))
-                        Text("جارٍ التجهيز…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-                HorizontalDivider()
-                if (hasAudio) {
-                    ShareOptionRow(
-                        icon = Icons.Filled.LibraryMusic,
-                        tint = adminOrange,
-                        title = "إضافة درس صوتي",
-                        subtitle = "تعبئة نموذج الدرس بالملفّ المشترَك",
-                        enabled = !preparing,
-                    ) {
-                        ShareIntake.chooseLesson()
-                        // انتقال مباشر إلى النموذج: الرجوع القسري إلى اللوحة
-                        // كان يمحو مكدّس التنقّل ومعه أيّ نموذج قيد التعبئة.
-                        // واللوحة نفسها تفتح النموذج عند امتلاء الطابور، فلا
-                        // ننتقل مرّتين حين تكون هي الشاشة الحاليّة.
-                        if (nav.currentDestination?.route != Routes.DASHBOARD) {
-                            nav.navigate(
-                                Routes.ADD_LESSON,
-                                NavOptions.Builder().setLaunchSingleTop(true).build(),
-                            )
-                        }
-                    }
-                }
-                if (hasImage) {
-                    ShareOptionRow(
-                        icon = Icons.AutoMirrored.Filled.MenuBook,
-                        tint = adminGreen,
-                        title = "النص المشروح لدرس",
-                        subtitle = "إرفاق صورة صفحة الكتاب بنص درس (مع القصّ والدمج)",
-                        enabled = !preparing,
-                    ) {
-                        // نسخ الصور للكاش أولاً (إذن الـUri الوارد مؤقت) ثم فتح
-                        // اختيار الدرس معبّأً بها.
-                        val files = incoming.filter {
-                            context.shareContentType(it).startsWith("image/")
-                        }
-                        ShareIntake.prepareForChat(
-                            context = context,
-                            files = files,
-                            onReady = { prepared ->
-                                TranscriptIntake.set(
-                                    text = "",
-                                    images = prepared.map { it.file.uri },
-                                )
-                                ShareIntake.consumeIncoming(files)
-                                if (ShareIntake.incoming.value.isEmpty()) {
-                                    ShareIntake.clearIncoming()
-                                }
-                                nav.navigate(
-                                    Routes.TRANSCRIPT_INTAKE,
-                                    NavOptions.Builder().setLaunchSingleTop(true).build(),
-                                )
-                            },
-                            onFailure = { failure -> snack(failure) },
-                        )
-                    }
-                }
-                ShareOptionRow(
-                    icon = Icons.Filled.Groups,
-                    tint = MaterialTheme.colorScheme.primary,
-                    title = "إرسال إلى مجموعة الإدارة",
-                    subtitle = "يظهر للمشرفين جميعاً في دردشة المجموعة",
-                    enabled = !preparing,
-                ) {
-                    send(ChatUploadTarget.Group, "جارٍ الإرسال إلى مجموعة الإدارة…") {
-                        nav.navigate(Routes.CHAT)
-                    }
-                }
-                ShareOptionRow(
-                    icon = Icons.Filled.Person,
-                    tint = adminBlue,
-                    title = "إرسال إلى محادثة خاصّة",
-                    subtitle = "اختر مشرفاً واحداً لإرسال الملفّ إليه",
-                    enabled = !preparing,
-                ) {
-                    pickAdmin = true
-                }
-            }
-        }
-        return
-    }
-
-    // ⚠️ remember إلزاميّ: بلاه يُنشأ تدفّق جديد مع كل إعادة تركيب
-    // فيُعاد ربط مستمع Firestore في كلّ مرّة.
-    val membersList by remember { ChatRepository.membersStream() }
-        .collectAsState(initial = emptyList())
-    val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
-    val others = membersList.filter { it.uid != myUid }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
-        onDismissRequest = { if (!preparing) pickAdmin = false },
+        // الصرف ممنوع أثناء التجهيز كي لا تختفي الورقة وسط نسخ الملفّ.
+        onDismissRequest = { if (!preparing) ShareIntake.clearIncoming() },
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
-        Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             Text(
-                "إرسال إلى مشرف",
+                "مشاركة إلى إدارة منبر",
                 fontWeight = FontWeight.Bold,
+                fontSize = 16.sp,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(14.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+            )
+            Text(
+                label,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
             )
             if (preparing) {
                 Row(
-                    Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    Modifier.fillMaxWidth().padding(vertical = 8.dp),
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -778,79 +550,58 @@ private fun ShareDestinationSheets(nav: NavHostController) {
                 }
             }
             HorizontalDivider()
-            if (others.isEmpty()) {
-                Text(
-                    "لا يوجد مشرفون آخرون بعد.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth().padding(20.dp),
-                    textAlign = TextAlign.Center,
-                )
-            }
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 380.dp)
-                    .verticalScroll(rememberScrollState()),
-            ) {
-                others.forEach { member ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable(enabled = !preparing) {
-                                val threadId = DmRepository.ensureThread(member.uid)
-                                send(
-                                    ChatUploadTarget.Dm(threadId, member.uid),
-                                    "جارٍ الإرسال إلى ${member.displayName}…",
-                                ) {
-                                    nav.navigate(
-                                        Routes.dm(threadId, member.uid, member.displayName),
-                                    )
-                                }
-                            }
-                            .padding(horizontal = 20.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        MemberAvatar(
-                            uid = member.uid,
-                            name = member.displayName,
-                            photo = member.displayPhoto,
-                            radius = 20,
-                            showOnline = true,
-                            online = member.isOnline,
+            if (hasAudio) {
+                ShareOptionRow(
+                    icon = Icons.Filled.LibraryMusic,
+                    tint = adminOrange,
+                    title = "إضافة درس صوتي",
+                    subtitle = "تعبئة نموذج الدرس بالملفّ المشترَك",
+                    enabled = !preparing,
+                ) {
+                    ShareIntake.chooseLesson()
+                    if (nav.currentDestination?.route != Routes.DASHBOARD) {
+                        nav.navigate(
+                            Routes.ADD_LESSON,
+                            NavOptions.Builder().setLaunchSingleTop(true).build(),
                         )
-                        Spacer(Modifier.size(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    member.displayName,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                if (member.isOwner) {
-                                    Spacer(Modifier.size(5.dp))
-                                    Text("👑", fontSize = 12.sp)
-                                }
-                            }
-                            Text(
-                                if (member.isOnline) "متصل الآن" else member.email,
-                                fontSize = 11.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = if (member.isOnline) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                            )
-                        }
                     }
                 }
             }
-            TextButton(
-                onClick = { pickAdmin = false },
-                modifier = Modifier.align(Alignment.CenterHorizontally),
-            ) {
-                Text("رجوع إلى الخيارات")
+            if (hasImage) {
+                ShareOptionRow(
+                    icon = Icons.AutoMirrored.Filled.MenuBook,
+                    tint = adminGreen,
+                    title = "النص المشروح لدرس",
+                    subtitle = "إرفاق صورة صفحة الكتاب بنص درس (مع القصّ والدمج)",
+                    enabled = !preparing,
+                ) {
+                    // نسخ الصور للكاش أولاً (إذن الـUri الوارد مؤقّت) ثم فتح
+                    // اختيار الدرس معبّأً بها.
+                    val files = incoming.filter { context.shareContentType(it).startsWith("image/") }
+                    ShareIntake.prepareForChat(
+                        context = context,
+                        files = files,
+                        onReady = { prepared ->
+                            TranscriptIntake.set(text = "", images = prepared.map { it.file.uri })
+                            ShareIntake.consumeIncoming(files)
+                            if (ShareIntake.incoming.value.isEmpty()) ShareIntake.clearIncoming()
+                            nav.navigate(
+                                Routes.TRANSCRIPT_INTAKE,
+                                NavOptions.Builder().setLaunchSingleTop(true).build(),
+                            )
+                        },
+                        onFailure = { failure -> snack(failure) },
+                    )
+                }
+            }
+            if (!hasAudio && !hasImage) {
+                Text(
+                    "لا يمكن استعمال هذا الملفّ هنا — الصوت لدرسٍ جديد، والصور لنصٍّ مشروح.",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(20.dp),
+                )
             }
         }
     }

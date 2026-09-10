@@ -47,10 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AnalyticsRepository
 import com.ali.ishaqiyin_admin.data.AnalyticsSnapshot
-import com.ali.ishaqiyin_admin.data.ChatMember
-import com.ali.ishaqiyin_admin.data.ChatRepository
 import com.ali.ishaqiyin_admin.data.HonorRange
-import com.ali.ishaqiyin_admin.ui.chat.MemberAvatar
 
 /**
  * «التحليلات والأثر» — بكاش محلّي: تفتح فوراً من آخر لقطة محفوظة (حتى بلا
@@ -73,8 +70,7 @@ fun AnalyticsScreen(
     var honorRange by remember { mutableStateOf(HonorRange.ALL) }
 
     // أسماء المشرفين وصورهم من مجموعة الدردشة — البريد الخام لا يُعرَف.
-    val members by remember { ChatRepository.membersStream() }
-        .collectAsState(initial = emptyList())
+    val members = emptyList<String>()
 
     LaunchedEffect(reload) {
         error = null
@@ -256,11 +252,7 @@ fun AnalyticsScreen(
 }
 
 /** مطابقة بريد المشرف بعضو المجموعة (البريد يُقارَن مطبَّعاً). */
-private fun memberFor(members: List<ChatMember>, email: String): ChatMember? {
-    val key = email.trim().lowercase()
-    if (key.isEmpty()) return null
-    return members.firstOrNull { it.email.trim().lowercase() == key }
-}
+private fun memberFor(members: List<String>, email: String): String? = null
 
 @Composable
 private fun HonorRangeBar(current: HonorRange, onSelect: (HonorRange) -> Unit) {
@@ -289,7 +281,7 @@ private fun HonorRangeBar(current: HonorRange, onSelect: (HonorRange) -> Unit) {
 private fun AdminRankTile(
     rank: Int,
     email: String,
-    member: ChatMember?,
+    member: String?,
     trailing: String,
 ) {
     Card(
@@ -308,20 +300,10 @@ private fun AdminRankTile(
                 fontSize = 13.sp,
                 modifier = Modifier.padding(end = 8.dp),
             )
-            if (member != null) {
-                MemberAvatar(
-                    uid = member.uid,
-                    name = member.displayName,
-                    photo = member.displayPhoto,
-                    radius = 16,
-                )
-            } else {
-                Icon(Icons.Filled.EmojiEvents, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            }
+            Icon(Icons.Filled.EmojiEvents, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                 Text(
-                    member?.displayName?.takeIf { it.isNotBlank() }
-                        ?: email.ifEmpty { "مشرف" },
+                    email.ifEmpty { "مشرف" },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     fontWeight = FontWeight.SemiBold,

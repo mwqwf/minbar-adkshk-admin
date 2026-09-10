@@ -5,8 +5,6 @@ import android.app.Application
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.media.AudioAttributes
-import android.media.RingtoneManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -19,11 +17,6 @@ import com.ali.ishaqiyin_admin.data.UploadWorkWatcher
 import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
-import com.google.firebase.appcheck.FirebaseAppCheck
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.FirebaseFirestoreSettings
-import com.google.firebase.firestore.PersistentCacheSettings
-import com.google.firebase.storage.FirebaseStorage
 
 class AdminApplication : Application() {
     override fun onCreate() {
@@ -34,7 +27,6 @@ class AdminApplication : Application() {
         // يُنشأ إلا في initializeFirebase — وأي إيقاظ للعامل قبله يصل إلى
         // Firestore/Storage غير مهيّأين وبإعدادات الشبكة الضعيفة غير مضبوطة.
         initializeFirebase()
-        tuneForWeakNetworks()
         createNotificationChannels()
         // طابور رفع الدروس: يُستأنف وحده إن بقيت فيه دروس من جلسة سابقة
         // (انقطاع اتصال أو إغلاق التطبيق أثناء الرفع).
@@ -106,43 +98,6 @@ class AdminApplication : Application() {
         )
     }
 
-    /**
-     * 📶 صلابة على الشبكات الضعيفة جدّاً:
-     * • Firestore: كاش دائم بلا حدّ — اللوحة والدردشة تفتحان من الذاكرة
-     *   فوراً بلا انتظار الشبكة، والرسائل المُرسَلة تُحفظ وتُبعث تلقائياً
-     *   عند عودة الاتصال.
-     * • Storage: توسيع نوافذ إعادة المحاولة بدل الفشل عند أوّل انقطاع
-     *   (الافتراضي قصير جدّاً لشبكة متقطّعة).
-     */
-    private fun tuneForWeakNetworks() {
-        runCatching {
-            FirebaseFirestore.getInstance().firestoreSettings =
-                FirebaseFirestoreSettings.Builder()
-                    .setLocalCacheSettings(
-                        PersistentCacheSettings.newBuilder()
-                            .setSizeBytes(FirebaseFirestoreSettings.CACHE_SIZE_UNLIMITED)
-                            .build(),
-                    )
-                    .build()
-        }.onFailure {
-            // فشل ضبط الكاش كان يضيع صامتاً فيبدو البطء لاحقاً بلا سبب ظاهر.
-            Log.w("AdminApplication", "تعذّر ضبط كاش Firestore", it)
-        }
-        runCatching {
-            FirebaseStorage.getInstance().apply {
-                maxDownloadRetryTimeMillis = 10 * 60 * 1000L
-                // ⚠️ كانت 10 دقائق — وهي **القيمة الافتراضيّة نفسها** في
-                // Firebase Storage، فالسطر كان بلا أثر رغم أنّ التعليق فوقه
-                // يَعِد بتوسيع النوافذ. ونافذة العشر دقائق هي بالضبط ما كان
-                // يحوّل انقطاعاً عابراً إلى ERROR_RETRY_LIMIT_EXCEEDED فيخرج
-                // الأمر من Firebase إلى WorkManager ويبدأ تأخير طويل.
-                maxUploadRetryTimeMillis = 30 * 60 * 1000L
-                maxOperationRetryTimeMillis = 3 * 60 * 1000L
-            }
-        }.onFailure {
-            Log.w("AdminApplication", "تعذّر ضبط نوافذ إعادة محاولة التخزين", it)
-        }
-    }
 
     /**
      * نفس مشروع التطبيق العام (mxqp-8d1e8) بحزمة اللوحة — بلا
@@ -163,10 +118,6 @@ class AdminApplication : Application() {
             )
             // الخادم في وضع مراقبة (غير مُنفِذ بعد) — فشل تفعيل App Check لا
             // يبرر حجب اللوحة كلها خلف شاشة خطأ توحي بالانهيار.
-            runCatching {
-                FirebaseAppCheck.getInstance(app)
-                    .installAppCheckProviderFactory(AdminAppCheckProvider.factory())
-            }
         }
     }
 
@@ -185,40 +136,6 @@ class AdminApplication : Application() {
                     getString(R.string.admin_urgent_channel_name),
                     NotificationManager.IMPORTANCE_HIGH,
                 ).apply { description = getString(R.string.admin_urgent_channel_desc) },
-                // 📞 قناة المكالمات: أهميّة قصوى + نغمة رنين النظام واهتزاز،
-                // وإلّا وصلت المكالمة الواردة صامتة فلا يراها المشرف.
-                NotificationChannel(
-                    AdminChannels.CALLS,
-                    "مكالمات الإدارة",
-                    NotificationManager.IMPORTANCE_HIGH,
-                ).apply {
-                    description = "مكالمات صوتيّة واردة من المشرفين"
-                    setSound(
-                        RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .build(),
-                    )
-                    enableVibration(true)
-                    vibrationPattern = longArrayOf(0, 700, 700, 700, 700)
-                    setBypassDnd(true)
-                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                },
-                // 📞 المكالمة **الجارية**: إشعار حالة لا تنبيه — أهميّة منخفضة
-                // بلا صوت ولا اهتزاز ولا شارة. لو بقي على قناة الرنين لرنّ
-                // مجدّداً عند بدء المكالمة وتخطّى «عدم الإزعاج» معها.
-                NotificationChannel(
-                    AdminChannels.CALL_ONGOING,
-                    "مكالمة جارية",
-                    NotificationManager.IMPORTANCE_LOW,
-                ).apply {
-                    description = "إشعار المكالمة القائمة"
-                    setSound(null, null)
-                    enableVibration(false)
-                    setShowBadge(false)
-                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                },
             ),
         )
     }

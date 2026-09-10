@@ -42,7 +42,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AdminRepository
 import com.ali.ishaqiyin_admin.data.AuthService
-import com.ali.ishaqiyin_admin.data.ChatRepository
 import com.ali.ishaqiyin_admin.data.DashAdmin
 import com.ali.ishaqiyin_admin.data.arabicReason
 import kotlinx.coroutines.launch
@@ -137,7 +136,6 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                     }
                     if (blocked) {
                         try {
-                            ChatRepository.removeMemberByEmail(action.admin.email)
                         } catch (e: Exception) {
                             snack(
                                 "تمّ الحظر، لكن تعذّرت إزالته من مجموعة الدردشة: " +
@@ -173,7 +171,6 @@ fun SupervisorsScreen(onBack: () -> Unit) {
                     }
                     if (removed) {
                         try {
-                            ChatRepository.removeMemberByEmail(action.admin.email)
                         } catch (e: Exception) {
                             snack(
                                 "تمّ الحذف، لكن تعذّرت إزالته من مجموعة الدردشة: " +

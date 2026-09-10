@@ -1,8 +1,5 @@
 package com.ali.ishaqiyin_admin.data
 
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageException
-import kotlinx.coroutines.tasks.await
 import java.net.URLDecoder
 
 /**
@@ -14,7 +11,6 @@ import java.net.URLDecoder
  * إشعار اكتمال كان يغري بالبناء عليه فتعود المشكلة التي حُلّت.
  */
 object StorageService {
-    private val storage: FirebaseStorage get() = FirebaseStorage.getInstance()
 
     /**
      * نوع المحتوى من الامتداد.
@@ -70,10 +66,7 @@ object StorageService {
             )
             return
         }
-        try {
-            storage.reference.child(path).delete().await()
-        } catch (e: StorageException) {
-            if (e.errorCode != StorageException.ERROR_OBJECT_NOT_FOUND) throw e
-        }
+        // ما بقي من مسارات Firebase القديمة (lessons/ وbooks/) لم يعد يُحذف:
+        // التخزين انتقل إلى R2 كاملاً، وما هناك أثرٌ قديم لا يُقرأ ولا يُكتب.
     }
 }

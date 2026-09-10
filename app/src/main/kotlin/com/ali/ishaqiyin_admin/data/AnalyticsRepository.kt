@@ -1,14 +1,11 @@
 package com.ali.ishaqiyin_admin.data
 
 import android.content.Context
-import com.google.firebase.firestore.AggregateSource
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.tasks.await
 import org.json.JSONArray
 import org.json.JSONObject
+import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 
 /**
  * مقاييس «هل تغيّر شيء؟» الخفيفة. الأعداد وحدها لا تكفي: تعديل عنوان درس
@@ -86,7 +83,6 @@ object AnalyticsRepository {
     /** حارس: لقطة عمرها أقلّ من خمس دقائق لا تستحقّ حتى مسبار قراءة. */
     private const val PROBE_GUARD_MS = 5L * 60 * 1000
 
-    private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
 
     fun loadCache(context: Context): AnalyticsSnapshot? = runCatching {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -144,35 +140,20 @@ object AnalyticsRepository {
      * `updatedAt`) يعيد صفراً فلا يُبطل شيئاً بغير حقّ.
      */
     private suspend fun latestLessonUpdateMs(): Long = runCatching {
-        val snap = db.collection("lessons")
-            .orderBy("updatedAt", Query.Direction.DESCENDING)
-            .limit(1)
-            .get()
-            .await()
-        snap.documents.firstOrNull()?.let { parseDateMs(it.dataMap()["updatedAt"]) } ?: 0L
+        MinbarAdminApi.get("/admin/stats").optLong("lastUpdatedMs")
     }.getOrDefault(0L)
 
-    /**
-     * عدّادات خفيفة من الخادم (استعلام count تجميعي — لا يجلب الوثائق).
-     * الاستعلامات الأربعة مستقلّة فتُطلق **متوازيةً**: أربع جولات شبكة
-     * متتابعة كانت تضاعف انتظار فتح الشاشة على الشبكات البطيئة.
-     */
-    suspend fun fetchCounts(): ContentCounts = coroutineScope {
-        val lessons = async {
-            db.collection("lessons").count().get(AggregateSource.SERVER).await().count.toInt()
-        }
-        val books = async {
-            db.collection("books").count().get(AggregateSource.SERVER).await().count.toInt()
-        }
-        val transcripts = async {
-            db.collection("lesson_transcripts").count()
-                .get(AggregateSource.SERVER).await().count.toInt()
-        }
-        val latest = async { latestLessonUpdateMs() }
-        ContentCounts(lessons.await(), books.await(), transcripts.await(), latest.await())
+    /** أعداد المحتوى من `minbar-api` بطلبٍ واحد (بديل ثلاث عدّات Firestore). */
+    suspend fun fetchCounts(): ContentCounts {
+        val o = MinbarAdminApi.get("/admin/stats")
+        return ContentCounts(
+            lessons = o.optInt("lessons"),
+            books = o.optInt("books"),
+            transcripts = o.optInt("transcripts"),
+            lastUpdatedMs = o.optLong("lastUpdatedMs"),
+        )
     }
 
-    /** هل تطابق اللقطة المحفوظة مقاييس الخادم الحالية؟ */
     fun matches(s: AnalyticsSnapshot, c: ContentCounts): Boolean =
         s.lessonsCount == c.lessons &&
             s.booksCount == c.books &&

@@ -1,14 +1,12 @@
 package com.ali.ishaqiyin_admin.data
 
 import com.ali.ishaqiyin_admin.core.MinbarAdminApi
-import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,8 +22,6 @@ import java.security.MessageDigest
  * - لم يبقَ لـFirestore هنا إلا رموز اعتماد المرشّحين (تنتقل في المرحلة الثانية).
  */
 object AdminRepository {
-    private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
-    private const val OWNER_CODES_COL = "dashboard_owner_codes"
     private const val SECTIONS_TTL_MS = 5 * 60 * 1000L
     private const val WATCH_POLL_MS = 30_000L
 
@@ -61,6 +57,11 @@ object AdminRepository {
     internal fun lessonFromRow(row: JSONObject): Lesson {
         val sha = row.optString("sha256")
         val originalKey = row.optString("original_key")
+        // مَن أضاف الدرس محفوظٌ في `extra_json` (هجرة الحقول التي لم تكن في الكتالوج).
+        val addedBy = runCatching {
+            val extra = JSONObject(row.optString("extra_json", "{}"))
+            extra.optString("addedBy").ifEmpty { extra.optString("createdByEmail") }
+        }.getOrDefault("")
         return Lesson.fromDoc(
             row.optString("id"),
             mapOf(
@@ -73,6 +74,7 @@ object AdminRepository {
                 "views" to row.optInt("views"),
                 "featured" to (row.optInt("featured") == 1),
                 "featuredUntil" to row.optLong("featured_until_ms").takeIf { it > 0L },
+                "addedBy" to addedBy,
             ),
         )
     }
@@ -169,29 +171,34 @@ object AdminRepository {
         MinbarAdminApi.put("/admin/admins", JSONObject().put("email", id).put("role", "supervisor"))
     }
 
-    // رموز اعتماد المرشّحين — ما زالت على Firestore حتى المرحلة الثانية.
-    fun watchPendingOwnerCodes(): Flow<List<PendingOwnerCode>> =
-        db.collection(OWNER_CODES_COL).querySnapshots().map { snap ->
-            snap.documents
-                .filter { it.id != "current" }
-                .map { PendingOwnerCode.fromDoc(it.dataMap()) }
-                .filter { !it.isExpired && it.code.isNotEmpty() }
-                .sortedByDescending { it.expiresAtMs }
+    // رموز اعتماد المرشّحين — على `minbar-api` (للمالك وحده).
+    fun watchPendingOwnerCodes(): Flow<List<PendingOwnerCode>> = flow {
+        while (true) {
+            emit(
+                runCatching {
+                    val items = MinbarAdminApi.get("/admin/owner-codes").optJSONArray("items") ?: JSONArray()
+                    (0 until items.length()).mapNotNull { items.optJSONObject(it) }.map { o ->
+                        PendingOwnerCode.fromDoc(
+                            mapOf(
+                                "code" to o.optString("code"),
+                                "candidateEmail" to o.optString("candidateEmail"),
+                                "candidateName" to o.optString("candidateName"),
+                                "candidatePhotoURL" to o.optString("candidatePhotoURL"),
+                                "expiresAt" to o.optLong("expiresAtMs"),
+                            ),
+                        )
+                    }.filter { !it.isExpired && it.code.isNotEmpty() }
+                        .sortedByDescending { it.expiresAtMs }
+                }.getOrDefault(emptyList()),
+            )
+            delay(WATCH_POLL_MS)
         }
+    }.flowOn(Dispatchers.IO)
 
     suspend fun cancelOwnerCode(code: PendingOwnerCode) {
         val email = code.candidateEmail.trim().lowercase()
-        if (email.isNotEmpty()) {
-            db.collection(OWNER_CODES_COL).document(email).delete().await()
-        }
-        runCatching {
-            val mirrorRef = db.collection(OWNER_CODES_COL).document("current")
-            val mirror = mirrorRef.get().await()
-            val mirrorEmail = str(mirror.dataMap()["candidateEmail"]).lowercase()
-            if (mirror.exists() && (mirrorEmail.isEmpty() || mirrorEmail == email)) {
-                mirrorRef.delete().await()
-            }
-        }
+        if (email.isEmpty()) return
+        MinbarAdminApi.delete("/admin/owner-codes/${java.net.URLEncoder.encode(email, "UTF-8")}")
     }
 
     // ---------------- إضافة ----------------

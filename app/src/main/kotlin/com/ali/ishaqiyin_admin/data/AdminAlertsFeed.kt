@@ -1,28 +1,24 @@
 package com.ali.ishaqiyin_admin.data
 
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
+import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
+import org.json.JSONArray
+import org.json.JSONObject
 
-/** تنبيه إداري واحد كما يُعرض في «تنبيهاتك». */
 data class AdminAlert(
     val id: String,
     val email: String, // '' = عامّ لكل المشرفين.
-    /** يُخفى عن هذا البريد (منعاً للتكرار مع تنبيهه الشخصي). */
     val excludeEmail: String,
     val title: String,
     val body: String,
-    val type: String, // submission | milestone | owner_code | digest | ...
+    val type: String, // submission | transcript | support | owner_code | ...
     val refId: String,
     val createdAtMs: Long,
     val readBy: List<String>,
@@ -30,175 +26,78 @@ data class AdminAlert(
     fun isReadBy(email: String): Boolean = readBy.contains(email.lowercase())
 
     companion object {
-        fun fromDoc(doc: DocumentSnapshot): AdminAlert {
-            val d = doc.dataMap()
-
-            @Suppress("UNCHECKED_CAST")
-            val metadata = (d["data"] as? Map<String, Any?>) ?: emptyMap()
+        fun fromJson(o: JSONObject): AdminAlert {
+            val read = o.optJSONArray("readBy") ?: JSONArray()
             return AdminAlert(
-                id = doc.id,
-                email = str(d["email"]).lowercase(),
-                excludeEmail = str(d["excludeEmail"] ?: metadata["excludeEmail"]).lowercase(),
-                title = str(d["title"]),
-                body = str(d["body"]),
-                type = str(d["type"] ?: metadata["type"]),
-                refId = str(
-                    d["refId"] ?: metadata["refId"] ?: metadata["submissionId"]
-                        ?: metadata["lessonId"] ?: metadata["candidateEmail"],
-                ),
-                createdAtMs = (d["createdAtMs"] as? Number)?.toLong() ?: 0L,
-                readBy = (d["readBy"] as? List<*>)?.map { it.toString().lowercase() } ?: emptyList(),
+                id = o.optString("id"),
+                email = o.optString("email"),
+                excludeEmail = o.optString("excludeEmail"),
+                title = o.optString("title"),
+                body = o.optString("body"),
+                type = o.optString("type"),
+                refId = o.optString("refId"),
+                createdAtMs = o.optLong("createdAtMs"),
+                readBy = (0 until read.length()).map { read.optString(it) },
             )
         }
     }
 }
 
-/** مصدر تنبيهات الإدارة الحيّ + عمليّات القراءة/الحذف. */
+/**
+ * 🔔 تنبيهات المشرفين — على `minbar-api` (قرار 2026-09-10): الخادم يسجّلها عند
+ * كل فعلٍ يعني المشرفين (مساهمة جديدة، نصّ مقترَح، رسالة مستمع، طلب اعتماد)
+ * ويدفعها إلى أجهزتهم بـFCM. الترشيح (عامّ/خاصّ/استثناء صاحب الفعل) على الخادم.
+ * القراءة استطلاعٌ كل نصف دقيقة ما دامت الشاشة تجمع.
+ */
 object AdminAlertsFeed {
-    private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
+    private const val POLL_MS = 30_000L
 
-    /**
-     * عمر التنبيه: 24 ساعة فقط. التنبيه إشعار لحظيّ لا سجلّ دائم، وبقاؤه
-     * أطول كان يحوّل «تنبيهاتك» إلى أرشيف لا يُقرأ.
-     */
+    /** التنبيه يُعرض يوماً واحداً — الشاشة تعتمد هذا الحدّ أيضاً. */
     const val TTL_MS = 24L * 60 * 60 * 1000
-
-    /** سقف ما يُنزَّل من المجموعة — أكثر من هذا لا يُعرض بحكم [TTL_MS]. */
-    private const val ALERTS_LIMIT = 200L
-
-    /** دفعات صغيرة كي لا يُسقط عنصرٌ واحد مرفوض بقيّة التمييز. */
-    private const val MARK_BATCH_SIZE = 50
-    private const val MARK_ALL_CAP = 400
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val myEmail: String
         get() = AuthService.currentUser?.email.orEmpty().trim().lowercase()
 
-    /**
-     * بثّ التنبيهات المرئيّة لي: المالك يرى الكلّ، والمشرف تنبيهاته والعامّة
-     * (مع استبعاد excludeEmail الموجَّه لغيره).
-     */
-    fun stream(isOwner: Boolean): Flow<List<AdminAlert>> {
-        val me = myEmail
-
-        fun visible(docs: Iterable<DocumentSnapshot>): List<AdminAlert> {
-            // يُحسب مع كل انبعاث: حسابه مرّة عند إنشاء التدفّق يجمّد حدّ
-            // الـ24 ساعة على لحظة الفتح فلا يسقط التنبيه أبداً بعدها.
-            val cutoff = System.currentTimeMillis() - TTL_MS
-            return docs.map { AdminAlert.fromDoc(it) }
-                .filter { alert ->
-                    when {
-                        alert.excludeEmail == me -> false
-                        !isOwner && alert.email.isNotEmpty() && alert.email != me -> false
-                        // أقدم من 24 ساعة ⇒ لم يعد تنبيهاً.
-                        alert.createdAtMs in 1 until cutoff -> false
-                        // اطّلع عليه صاحبه ⇒ يختفي عنه هو وحده (يبقى عند غيره).
-                        alert.isReadBy(me) -> false
-                        else -> true
-                    }
-                }
-                .sortedByDescending { it.createdAtMs }
+    fun stream(isOwner: Boolean): Flow<List<AdminAlert>> = flow {
+        while (true) {
+            emit(
+                runCatching {
+                    val items = MinbarAdminApi.get("/admin/alerts").optJSONArray("items") ?: JSONArray()
+                    (0 until items.length()).mapNotNull { items.optJSONObject(it) }
+                        .map(AdminAlert::fromJson)
+                        .sortedByDescending(AdminAlert::createdAtMs)
+                }.getOrDefault(emptyList()),
+            )
+            delay(POLL_MS)
         }
+    }.flowOn(Dispatchers.IO)
 
-        // سقف خادميّ: المجموعة تتراكم (التنظيف الخادمي لا يمسّ milestone/digest)
-        // فبلا حدٍّ تُنزَّل كاملةً في المزامنة الأولى ويُعاد ترشيحها محليّاً مع
-        // كل كتابة readBy. و‏TTL الـ24 ساعة يجعل ما وراء أحدث 200 غير مرئيّ أصلاً.
-        //
-        // 💸 وشرط `createdAtMs >= الآن - TTL` خادميّاً أيضاً: ما هو أقدم من
-        // 24 ساعة لا يُعرض بحكم الفلتر المحلي أدناه أصلاً، فتنزيله هدر محض.
-        // (writeAdminAlert تكتب createdAtMs رقماً دائماً — تحقّقنا.) الفلتر
-        // المحلي يبقى كما هو: هو الذي يُسقط ما انقضى أثناء بقاء الشاشة مفتوحة.
-        val serverCutoff = System.currentTimeMillis() - TTL_MS
-        if (isOwner) {
-            return db.collection("admin_alerts")
-                .whereGreaterThanOrEqualTo("createdAtMs", serverCutoff)
-                .orderBy("createdAtMs", Query.Direction.DESCENDING)
-                .limit(ALERTS_LIMIT)
-                .querySnapshots()
-                .map { visible(it.documents) }
-        }
-        if (me.isEmpty()) return flowOf(emptyList())
-
-        // ⛔ فرع المشرف كان بلا `orderBy`: مع `limit(200)` يُرجِع Firestore أوّل
-        // 200 وثيقة بترتيب المعرّف (عشوائيّ فعليّاً) لا الأحدث، ثمّ يُسقطها
-        // فلتر الـ24 ساعة كلّها ⇒ المشرف لا يرى تنبيهاته أبداً. الترتيب
-        // التنازليّ يجعل المقتطع هو الأحدث كما في فرع المالك تماماً.
-        val personal = db.collection("admin_alerts")
-            .whereEqualTo("email", me)
-            .whereGreaterThanOrEqualTo("createdAtMs", serverCutoff)
-            .orderBy("createdAtMs", Query.Direction.DESCENDING)
-            .limit(ALERTS_LIMIT).querySnapshots()
-        val general = db.collection("admin_alerts")
-            .whereEqualTo("email", "")
-            .whereGreaterThanOrEqualTo("createdAtMs", serverCutoff)
-            .orderBy("createdAtMs", Query.Direction.DESCENDING)
-            .limit(ALERTS_LIMIT).querySnapshots()
-        return personal.combine(general) { a, b ->
-            val merged = LinkedHashMap<String, DocumentSnapshot>()
-            (a.documents + b.documents).forEach { merged[it.id] = it }
-            visible(merged.values)
-        }
-    }
-
-    /** تمييز تنبيه مقروءاً (إضافة بريدي إلى readBy — تسمح به القواعد). */
     fun markRead(alert: AdminAlert) {
-        val e = myEmail
-        if (e.isEmpty() || alert.isReadBy(e)) return
-        // بلا await: الكتابة تُطبَّق محليّاً فيختفي التنبيه فوراً حتى دون
-        // اتصال، وتُرسَل للخادم تلقائياً عند عودة الشبكة.
-        runCatching {
-            db.collection("admin_alerts").document(alert.id)
-                .update("readBy", FieldValue.arrayUnion(e))
-        }
+        if (alert.isReadBy(myEmail)) return
+        scope.launch { runCatching { MinbarAdminApi.post("/admin/alerts/${alert.id}/read") } }
     }
 
-    /**
-     * تمييز كلّ الظاهر مقروءاً.
-     *
-     * ⚠️ كان `runCatching { batch.commit() }` لا يلتقط شيئاً: `commit()` يعيد
-     * `Task` وفشلُه غير متزامن، فيسقط التمييز كلّه بصمت وتعود التنبيهات
-     * كما كانت بعد أوّل مزامنة. والدفعة ذرّيّة أيضاً: عنصر واحد ترفضه
-     * القواعد كان يُسقط الباقي. الآن تُقسَّم دفعات صغيرة، وتُنتظر نتيجة كلّ
-     * دفعة فعلاً، ويُبلَّغ المستدعي بالحصيلة عبر [onResult].
-     */
     fun markAllRead(alerts: List<AdminAlert>, onResult: (Boolean) -> Unit = {}) {
-        val e = myEmail
-        if (e.isEmpty()) {
-            onResult(false)
-            return
-        }
-        val targets = alerts.filter { !it.isReadBy(e) }.take(MARK_ALL_CAP)
-        if (targets.isEmpty()) {
+        val ids = alerts.map { it.id }.filter { it.isNotEmpty() }
+        if (ids.isEmpty()) {
             onResult(true)
             return
         }
         scope.launch {
-            var allOk = true
-            targets.chunked(MARK_BATCH_SIZE).forEach { chunk ->
-                val batch = db.batch()
-                chunk.forEach { alert ->
-                    batch.update(
-                        db.collection("admin_alerts").document(alert.id),
-                        "readBy",
-                        FieldValue.arrayUnion(e),
-                    )
-                }
-                val ok = runCatching { batch.commit().await() }.isSuccess
-                if (!ok) allOk = false
-            }
-            onResult(allOk)
+            val ok = runCatching {
+                MinbarAdminApi.post("/admin/alerts/read-all", JSONObject().put("ids", JSONArray(ids)))
+            }.isSuccess
+            onResult(ok)
         }
     }
 
-    /**
-     * حذف تنبيه — القواعد تسمح للمالك بحذف أيّ تنبيه، وللمشرف بحذف
-     * تنبيهه الشخصي فقط.
-     */
     suspend fun delete(alert: AdminAlert) {
-        db.collection("admin_alerts").document(alert.id).delete().await()
+        MinbarAdminApi.delete("/admin/alerts/${alert.id}")
     }
 
+    /** المالك يحذف أيّ تنبيه؛ والمشرف يحذف ما كان موجَّهاً إليه وحده. */
     fun canDelete(alert: AdminAlert, isOwner: Boolean): Boolean =
-        isOwner || (alert.email.isNotEmpty() && alert.email == myEmail)
+        isOwner || alert.email.isNotEmpty()
 }

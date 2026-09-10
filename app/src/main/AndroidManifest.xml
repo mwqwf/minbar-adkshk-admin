@@ -113,16 +113,7 @@
              ⚠️ رأسيّة إلزاماً: في الوضع الأفقي تُقصّ أزرار القبول/الرفض خارج
              الشاشة، وتثبيتها رأسيّاً يمنع كذلك إعادة إنشاء الشاشة عند التدوير
              (مصدر عطلَين سابقين في المكالمة الجارية). -->
-        <activity
-            android:name=".call.CallActivity"
-            android:exported="false"
-            android:excludeFromRecents="true"
-            android:launchMode="singleTask"
-            android:screenOrientation="portrait"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"
-            android:taskAffinity=""
-            android:theme="@style/Theme.MinbarAdmin" />
+        
 
         <!-- رفع الدروس يستمرّ في الخلفية عبر WorkManager. -->
         <service
@@ -131,10 +122,7 @@
             tools:node="merge" />
 
         <!-- دورة حياة WebRTC والصوت أثناء المكالمة. -->
-        <service
-            android:name=".call.CallService"
-            android:exported="false"
-            android:foregroundServiceType="microphone" />
+        
 
         <service
             android:name=".data.AdminMessagingService"

@@ -1,26 +1,17 @@
 package com.ali.ishaqiyin_admin.ui
 
-import com.ali.ishaqiyin_admin.data.dataMap
-import com.ali.ishaqiyin_admin.data.querySnapshots
-import com.ali.ishaqiyin_admin.data.str
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
-import com.google.firebase.functions.FirebaseFunctions
+import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.tasks.await
+import org.json.JSONArray
+import org.json.JSONObject
 
-/**
- * 🗂️ قسم محذوف في السلة — كانت وثيقة القسم تُمحى نهائياً بينما دروسه
- * تنجو في السلة، فيُعيد المشرف بناء القسم يدوياً ثم يستعيد دروسه واحداً
- * واحداً ثم ينقلها إليه. الآن يعود القسم بمعرّفه الأصلي بنقرة واحدة،
- * فيرجع إليه كلّ درس مستعاد تلقائياً.
- */
+/** قسمٌ (رئيسي أو فرعي) في السلة — يُستعاد أو يُتلَف نهائياً. */
 data class TrashedSection(
-    /** معرّف وثيقة السلة (مركّب: النوع + معرّف القسم). */
+    /** معرّف مركّب للعرض (النوع + معرّف القسم). */
     val entryId: String,
     /** "category" أو "subcategory". */
     val kind: String,
@@ -36,57 +27,57 @@ data class TrashedSection(
     val daysLeft: Int
         get() = (((purgeAfterMs - System.currentTimeMillis()) / 86_400_000L) + 1)
             .coerceAtLeast(0L).toInt()
-
-    companion object {
-        fun fromDoc(doc: DocumentSnapshot): TrashedSection {
-            val d = doc.dataMap()
-            return TrashedSection(
-                entryId = doc.id,
-                kind = str(d["kind"]).ifEmpty { "subcategory" },
-                docId = str(d["docId"]),
-                name = str(d["name"]),
-                parentCategoryId = str(d["parentCategoryId"]),
-                deletedBy = str(d["deletedBy"]),
-                deletedAtMs = (d["deletedAtMs"] as? Number)?.toLong() ?: 0L,
-                purgeAfterMs = (d["purgeAfterMs"] as? Number)?.toLong() ?: 0L,
-            )
-        }
-    }
 }
 
 /**
- * سلّة الأقسام — بنفس نمط `TrashRepository` تماماً: بثّ محدود بالأحدث،
- * واستعادة/محو عبر دوالّ السحابة (الكتابة المباشرة ممنوعة بالقواعد).
+ * 🗑️ أقسام السلة — على `minbar-api` (قرار 2026-09-10). الحذف ناعمٌ في D1
+ * ومتسلسل (القسم يجرّ فرعياته ودروسها)، والاستعادة تُرجع الصفّ نفسه.
  */
 object DeletedSectionsRepository {
-    private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
-    private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
-    const val COLLECTION = "deleted_sections"
+    private const val POLL_MS = 20_000L
+    private const val RETENTION_MS = 30L * 24 * 60 * 60 * 1000
 
-    // سقف كسقف سلّة الدروس: بثّ حيّ بلا حدّ يكبر بلا نهاية مع كل حذف.
-    private const val WATCH_LIMIT = 100L
+    private fun JSONArray?.rows(): List<JSONObject> =
+        if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 
-    fun watchAll(): Flow<List<TrashedSection>> =
-        db.collection(COLLECTION)
-            .orderBy("deletedAtMs", Query.Direction.DESCENDING)
-            .limit(WATCH_LIMIT)
-            .querySnapshots()
-            .map { snap -> snap.documents.map { TrashedSection.fromDoc(it) } }
-            .flowOn(Dispatchers.Default)
+    private suspend fun fetchAll(): List<TrashedSection> {
+        val json = MinbarAdminApi.get("/admin/trash")
+        val categories = json.optJSONArray("categories").rows()
+        val subcategories = json.optJSONArray("subcategories").rows()
+        val out = categories.map { row ->
+            TrashedSection(
+                entryId = "category_" + row.optString("id"), kind = "category",
+                docId = row.optString("id"), name = row.optString("name"), parentCategoryId = "",
+                deletedBy = "", deletedAtMs = row.optLong("deleted_at_ms"),
+                purgeAfterMs = row.optLong("deleted_at_ms") + RETENTION_MS,
+            )
+        } + subcategories.map { row ->
+            TrashedSection(
+                entryId = "subcategory_" + row.optString("id"), kind = "subcategory",
+                docId = row.optString("id"), name = row.optString("name"),
+                parentCategoryId = row.optString("category_id"),
+                deletedBy = "", deletedAtMs = row.optLong("deleted_at_ms"),
+                purgeAfterMs = row.optLong("deleted_at_ms") + RETENTION_MS,
+            )
+        }
+        return out.sortedByDescending { it.deletedAtMs }
+    }
+
+    fun watchAll(): Flow<List<TrashedSection>> = flow {
+        while (true) {
+            emit(runCatching { fetchAll() }.getOrDefault(emptyList()))
+            delay(POLL_MS)
+        }
+    }.flowOn(Dispatchers.IO)
+
+    private fun table(item: TrashedSection) =
+        if (item.kind == "category") "categories" else "subcategories"
 
     suspend fun restore(item: TrashedSection) {
-        functions.getHttpsCallable("restoreDeletedSection")
-            .call(mapOf("entryId" to item.entryId)).await()
-        // القسم عاد للحياة — كاش الأقسام يجب ألّا يخفيه 5 دقائق.
-        com.ali.ishaqiyin_admin.data.AdminRepository.invalidateSectionsCache()
+        MinbarAdminApi.post("/admin/${table(item)}/${item.docId}/restore")
     }
 
     suspend fun purge(item: TrashedSection) {
-        functions.getHttpsCallable("purgeDeletedSection")
-            .call(mapOf("entryId" to item.entryId)).await()
+        MinbarAdminApi.post("/admin/${table(item)}/${item.docId}/purge")
     }
 }
-
-/** «قسم واحد»/«قسمان»/«ن أقسام»/«ن قسماً». */
-fun sectionsCountLabel(count: Int): String =
-    arabicCount(count, "قسم واحد", "قسمان", "أقسام", "قسماً")

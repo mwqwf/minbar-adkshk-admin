@@ -1,13 +1,14 @@
 package com.ali.ishaqiyin_admin.data
 
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.functions.FirebaseFunctions
+import com.ali.ishaqiyin_admin.core.MinbarAdminApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import org.json.JSONArray
+import org.json.JSONObject
 
-/** نتيجة فحص أمني خاصة بالمالك. المجموعة وقواعدها لا تُقرأ من المشرفين. */
 data class SuspiciousLessonReview(
     val id: String,
     val lessonId: String,
@@ -24,91 +25,54 @@ data class SuspiciousLessonReview(
     val isPending: Boolean get() = status == "pending" || status == "flagged"
 
     companion object {
-        fun fromDoc(doc: DocumentSnapshot): SuspiciousLessonReview {
-            val data = doc.dataMap()
-            val rawSnapshot = data["lessonSnapshot"] ?: data["lesson"]
-
-            @Suppress("UNCHECKED_CAST")
-            val lesson = (rawSnapshot as? Map<String, Any?>) ?: emptyMap()
-
-            fun text(key: String): String =
-                str(data[key]).ifEmpty { str(lesson[key]) }
-
-            fun reasonText(value: Any?): String {
-                if (value is Map<*, *>) {
-                    return str(value["message"] ?: value["label"] ?: value["code"])
-                }
-                return str(value)
-            }
-
-            val rawReasons = data["reasons"] ?: data["reasonCodes"]
-            val reasons = (rawReasons as? Iterable<*>)
-                ?.map(::reasonText)
-                ?.filter { it.isNotEmpty() }
-                ?: emptyList()
-
+        fun fromJson(o: JSONObject): SuspiciousLessonReview {
+            val reasons = o.optJSONArray("reasons") ?: JSONArray()
             return SuspiciousLessonReview(
-                id = doc.id,
-                lessonId = text("lessonId").ifEmpty { doc.id },
-                title = text("title"),
-                audioUrl = text("audioUrl"),
-                categoryId = text("categoryId"),
-                subcategoryId = text("subcategoryId"),
-                addedBy = text("addedBy"),
-                riskScore = (data["riskScore"] as? Number)?.toInt()
-                    ?: (data["score"] as? Number)?.toInt() ?: 0,
-                reasons = reasons,
-                status = str(data["status"]).ifEmpty { "pending" },
-                detectedAtMs = parseDateMs(data["detectedAt"] ?: data["createdAt"]),
+                id = o.optString("id"),
+                lessonId = o.optString("lessonId"),
+                title = o.optString("title"),
+                audioUrl = o.optString("audioUrl"),
+                categoryId = o.optString("categoryId"),
+                subcategoryId = o.optString("subcategoryId"),
+                addedBy = o.optString("addedBy"),
+                riskScore = o.optInt("riskScore"),
+                reasons = (0 until reasons.length()).map { reasons.optString(it) }.filter { it.isNotEmpty() },
+                status = o.optString("status").ifEmpty { "pending" },
+                detectedAtMs = o.optLong("detectedAtMs"),
             )
         }
     }
 }
 
-/** حصيلة الاعتماد الجماعي: كم مراجعة حُسمت، وكم منها لدرس لم يعد موجوداً. */
 data class BulkVerifyResult(val verified: Int, val missingLessons: Int)
 
+/**
+ * 🕵️ فحص الشبهات — على `minbar-api` (قرار 2026-09-10).
+ *
+ * القواعد صارت أدقّ ممّا كانت: هويّة المحتوى (SHA-256) تكشف الصوت المكرَّر
+ * قطعاً لا ظنّاً، والفحص يسأل التخزين نفسه عن وجود الملفّ. النتائج تُخزَّن في
+ * D1 ويُغلَق تلقائياً ما زالت أسبابه.
+ */
 object OwnerReviewRepository {
-    private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
-    private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
+    private const val POLL_MS = 60_000L
 
-    fun watchPending(): Flow<List<SuspiciousLessonReview>> =
-        // ترشيح خادميّ بدل جلب المجموعة كاملة ثمّ ترشيحها محليّاً.
-        // `whereIn` لا `whereEqualTo("pending")`: isPending تشمل "flagged"
-        // أيضاً، فقصرُها على "pending" كان يُسقط المراجعات المُعلَّمة صامتاً.
-        // الفرز يبقى محليّاً فلا يلزم فهرس مركّب.
-        db.collection("owner_lesson_reviews")
-            .whereIn("status", listOf("pending", "flagged"))
-            .querySnapshots().map { snapshot ->
-            snapshot.documents
-                .map { SuspiciousLessonReview.fromDoc(it) }
-                .filter { it.isPending }
-                .sortedWith(
-                    compareByDescending<SuspiciousLessonReview> { it.riskScore }
-                        .thenByDescending { it.detectedAtMs },
-                )
+    fun watchPending(): Flow<List<SuspiciousLessonReview>> = flow {
+        while (true) {
+            emit(
+                runCatching {
+                    val items = MinbarAdminApi.get("/admin/suspicions").optJSONArray("items") ?: JSONArray()
+                    (0 until items.length()).mapNotNull { items.optJSONObject(it) }
+                        .map(SuspiciousLessonReview::fromJson)
+                }.getOrDefault(emptyList()),
+            )
+            delay(POLL_MS)
         }
+    }.flowOn(Dispatchers.IO)
 
-    /**
-     * ⚠️ المفتاح الذي تعيده الدالة اسمه `suspicious`؛ قراءة `flagged` وحدها
-     * كانت تُرجع صفراً دائماً فتقول الشاشة «لم تُكتشف نتائج» بعد كل فحص.
-     */
-    suspend fun scanAll(): Int {
-        val result = functions.getHttpsCallable("scanSuspiciousLessons").call().await()
-        val data = result.getData()
-        if (data is Map<*, *>) {
-            val value = data["suspicious"] ?: data["flagged"]
-                ?: data["created"] ?: data["count"]
-            return (value as? Number)?.toInt() ?: 0
-        }
-        return 0
-    }
+    /** يعيد الفحص كاملاً ويُرجع عدد الدروس المشبوهة. */
+    suspend fun scanAll(): Int =
+        MinbarAdminApi.post("/admin/suspicions/scan").optInt("suspicious", 0)
 
-    /**
-     * اعتماد جماعي لكل ما يعرضه المالك على الشاشة — نداء واحد لكل 400 عنصر
-     * بدل نداء لكل درس. الحذف لا جماعيّ له بقصد: قرار لا رجعة فيه.
-     * [onProgress] يتلقّى (المنجز، الإجمالي) لتحريك شريط التقدّم.
-     */
     suspend fun bulkVerify(
         reviewIds: List<String>,
         onProgress: (Int, Int) -> Unit = { _, _ -> },
@@ -117,13 +81,13 @@ object OwnerReviewRepository {
         if (ids.isEmpty()) return BulkVerifyResult(0, 0)
         var verified = 0
         var missing = 0
-        ids.chunked(400).forEach { chunk ->
-            val result = functions.getHttpsCallable("bulkResolveSuspiciousLessons")
-                .call(mapOf("action" to "verified", "reviewIds" to chunk))
-                .await()
-            val data = result.getData() as? Map<*, *>
-            verified += (data?.get("verified") as? Number)?.toInt() ?: chunk.size
-            missing += (data?.get("missingLessons") as? Number)?.toInt() ?: 0
+        ids.chunked(200).forEach { chunk ->
+            val result = MinbarAdminApi.post(
+                "/admin/suspicions/resolve",
+                JSONObject().put("action", "verified").put("ids", JSONArray(chunk)),
+            )
+            verified += result.optInt("verified", chunk.size)
+            missing += result.optInt("missingLessons", 0)
             onProgress(verified, ids.size)
         }
         return BulkVerifyResult(verified, missing)
@@ -131,12 +95,9 @@ object OwnerReviewRepository {
 
     suspend fun resolve(review: SuspiciousLessonReview, action: String) {
         require(action == "verified" || action == "delete") { "إجراء غير معروف: $action" }
-        functions.getHttpsCallable("resolveSuspiciousLesson").call(
-            mapOf(
-                "reviewId" to review.id,
-                "lessonId" to review.lessonId,
-                "action" to action,
-            ),
-        ).await()
+        MinbarAdminApi.post(
+            "/admin/suspicions/resolve",
+            JSONObject().put("action", action).put("ids", JSONArray(listOf(review.id))),
+        )
     }
 }
