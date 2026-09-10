@@ -1,22 +1,15 @@
 package com.ali.ishaqiyin_admin.data
 
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
-import com.google.firebase.functions.FirebaseFunctions
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageMetadata
+import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.tasks.await
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 
-/**
- * 📬 نوع رسالة المستخدم — نفس القيم النصّيّة التي يكتبها الخادم حرفاً بحرف.
- * ⚠️ نصّها العربيّ يُعرض للمالك، فلا كلمة إنجليزيّة واحدة في الواجهة.
- */
 enum class SupportKind(val key: String, val label: String) {
     Suggestion("suggestion", "اقتراح"),
     Bug("bug", "بلاغ عطل"),
@@ -31,7 +24,6 @@ enum class SupportKind(val key: String, val label: String) {
     }
 }
 
-/** خيط محادثة واحد بين مستخدم من التطبيق العام والمالك. */
 data class SupportThread(
     val id: String,
     val uid: String,
@@ -46,44 +38,30 @@ data class SupportThread(
     val messageCount: Int,
     val closed: Boolean,
     val blocked: Boolean,
-    /** وصف جهاز المرسِل — يرافق بلاغ العطل، وقد يأتي على أوّل رسالة بدله. */
     val deviceInfo: String,
 ) {
     val name: String get() = displayName.ifBlank { "مستخدم" }
 
     companion object {
-        fun fromDoc(doc: DocumentSnapshot): SupportThread {
-            val d = doc.dataMap()
-            return SupportThread(
-                id = doc.id,
-                uid = str(d["uid"]),
-                displayName = str(d["displayName"]),
-                kind = SupportKind.of(str(d["kind"])),
-                status = str(d["status"]),
-                createdAtMs = parseDateMs(d["createdAtMs"]),
-                lastMessageAtMs = parseDateMs(d["lastMessageAtMs"]),
-                lastMessagePreview = str(d["lastMessagePreview"]),
-                // ⚠️ الخادم يكتبه **عدداً** (`increment(1)` ثم `0` عند القراءة)
-                // لا قيمةً منطقيّة، فمقارنته بـ`true` كانت تُرجع false دائماً
-                // فلا تظهر شارة «غير مقروء» على محادثةٍ واردة أبداً.
-                ownerUnread = int(d["ownerUnread"]) > 0,
-                ownerReplied = d["ownerReplied"] == true,
-                messageCount = int(d["messageCount"]),
-                closed = d["closed"] == true,
-                blocked = d["blocked"] == true,
-                deviceInfo = str(d["deviceInfo"]),
-            )
-        }
+        fun fromRow(o: JSONObject): SupportThread = SupportThread(
+            id = o.optString("id"),
+            uid = o.optString("deviceId"),
+            displayName = o.optString("displayName"),
+            kind = SupportKind.of(o.optString("kind")),
+            status = o.optString("status"),
+            createdAtMs = o.optLong("createdAtMs"),
+            lastMessageAtMs = o.optLong("lastMessageAtMs"),
+            lastMessagePreview = o.optString("lastMessagePreview"),
+            ownerUnread = o.optBoolean("ownerUnread", false),
+            ownerReplied = o.optBoolean("ownerReplied", false),
+            messageCount = o.optInt("messageCount"),
+            closed = o.optBoolean("closed", false),
+            blocked = o.optBoolean("blocked", false),
+            deviceInfo = o.optString("deviceInfo"),
+        )
     }
 }
 
-/**
- * رسالة واحدة داخل الخيط.
- *
- * ⚠️ الصوت والصور تُحفظ **مسارات تخزين** لا روابط: الرابط الموقَّت ينتهي،
- * والمسار يبقى — ولذلك يُترجَم إلى رابط عند العرض وحده (وبمخزون روابط
- * مشترك فلا يتكرّر الطلب لكلّ فتح للشاشة).
- */
 data class SupportMessage(
     val id: String,
     val senderUid: String,
@@ -92,159 +70,92 @@ data class SupportMessage(
     val audioPath: String,
     val imagePaths: List<String>,
     val createdAtMs: Long,
-    /** وصف الجهاز — يُرسله التطبيق العام مع بلاغ العطل وحده. */
     val deviceInfo: String,
 ) {
     companion object {
-        fun fromDoc(doc: DocumentSnapshot): SupportMessage {
-            val d = doc.dataMap()
+        fun fromRow(o: JSONObject): SupportMessage {
+            val images = o.optJSONArray("imagePaths") ?: JSONArray()
             return SupportMessage(
-                id = doc.id,
-                senderUid = str(d["senderUid"]),
-                fromOwner = d["fromOwner"] == true,
-                text = str(d["text"]),
-                audioPath = str(d["audioPath"]),
-                imagePaths = (d["imagePaths"] as? List<*>).orEmpty()
-                    .map { str(it) }.filter { it.isNotEmpty() },
-                createdAtMs = parseDateMs(d["createdAtMs"]),
-                deviceInfo = str(d["deviceInfo"]),
+                id = o.optString("id"),
+                senderUid = "",
+                fromOwner = o.optBoolean("fromOwner", false),
+                text = o.optString("text"),
+                audioPath = o.optString("audioPath"),
+                imagePaths = (0 until images.length()).map { images.optString(it) }.filter { it.isNotEmpty() },
+                createdAtMs = o.optLong("createdAtMs"),
+                deviceInfo = "",
             )
         }
     }
 }
 
-/** طلب إشراف: ثلاثة أسئلة يجيب عنها صاحب الطلب في التطبيق العام. */
 data class SupervisionRequest(
     val id: String,
     val uid: String,
     val displayName: String,
-    /** «من أنت؟» */
     val about: String,
-    /** «ما صلتك بالمنبر؟» */
     val relation: String,
-    /** «ماذا تريد أن تعمل؟» */
     val wants: String,
     val status: String,
     val createdAtMs: Long,
     val threadId: String,
-    /** ملاحظة المالك المرافقة للقرار (إن كتبها). */
     val note: String,
 ) {
     val isPending: Boolean get() = status.isEmpty() || status == "pending"
     val name: String get() = displayName.ifBlank { "مستخدم" }
-
-    companion object {
-        fun fromDoc(doc: DocumentSnapshot): SupervisionRequest {
-            val d = doc.dataMap()
-            return SupervisionRequest(
-                id = doc.id,
-                uid = str(d["uid"]),
-                displayName = str(d["displayName"]),
-                about = str(d["about"]),
-                relation = str(d["relation"]),
-                wants = str(d["wants"]),
-                status = str(d["status"]),
-                createdAtMs = parseDateMs(d["createdAtMs"]),
-                threadId = str(d["threadId"]),
-                note = str(d["note"]),
-            )
-        }
-    }
 }
 
 /**
- * 📬 «رسائل المستخدمين» — صندوق المالك وحده.
- *
- * كلّ فعل يغيّر شيئاً يمرّ بدالّة سحابيّة (الردّ، الإغلاق، الحظر، قرار طلب
- * الإشراف): القواعد على الخادم هي الحارس، والواجهة لا تكتب في وثائق الخيوط
- * إلّا علامة «قرأتُها» — وهي وحدها ما يُبتلع فشله بلا إزعاج المالك.
+ * «راسِل المطوّر» في اللوحة — على `minbar-api` (قرار 2026-09-10): المحادثات
+ * والرسائل في D1، المرفقات في R2، والردّ يُخطر المستخدم بـFCM من الخادم.
+ * القوائم استطلاعٌ (نصف دقيقة للقائمة، ربع دقيقة للمحادثة) بدل مستمعي Firestore.
+ * `uid` في النماذج = معرّف جهاز المستخدم (هو ما يُحظر به).
  */
 object SupportRepository {
-    private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
-    private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
-    private val storage: FirebaseStorage get() = FirebaseStorage.getInstance()
+    private const val THREADS_POLL_MS = 30_000L
+    private const val MESSAGES_POLL_MS = 15_000L
 
-    const val THREADS = "support_threads"
-    const val MESSAGES = "messages"
-    const val REQUESTS = "supervision_requests"
+    private fun JSONArray?.rows(): List<JSONObject> =
+        if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 
-    /**
-     * مساحة مرفقات الخيط: `support/{uid}/{threadId}/…`.
-     *
-     * ⛔ الشكل ليس اختيارياً: قواعد التخزين تسمح بالقراءة **للمالك وصاحب
-     * الخيط وحدهما** وتشتقّ ذلك من `uid` في المسار — فأيّ شكل آخر يجعل
-     * الملفّ غير مقروء لأحد.
-     */
-    private const val MEDIA_DIR = "support"
+    private suspend fun fetchThreads(): List<SupportThread> =
+        MinbarAdminApi.get("/admin/support/threads").optJSONArray("items").rows().map(SupportThread::fromRow)
 
-    /** الخيوط كلّها، الأحدث رسالةً أوّلاً (وغير المقروء يعلو داخل الواجهة). */
-    fun watchThreads(): Flow<List<SupportThread>> =
-        db.collection(THREADS)
-            .orderBy("lastMessageAtMs", Query.Direction.DESCENDING)
-            // سقف وقائيّ: أحدث 200 محادثة تكفي الصندوق بلا تنزيل الأرشيف كله.
-            .limit(200)
-            .querySnapshots()
-            .map { snap -> snap.documents.map { SupportThread.fromDoc(it) } }
-            // اللقطة تصل على الخيط الرئيسيّ: التحليل والفرز لا يقعان عليه.
-            .flowOn(Dispatchers.Default)
-
-    /** عدد الخيوط التي لم يقرأها المالك — شارة اللوحة و«مهامّي اليوم». */
-    fun watchUnreadCount(): Flow<Int> =
-        // `ownerUnread` عددٌ لا قيمة منطقيّة (انظر `fromDoc`)، فالاستعلام
-        // بـ`== true` كان يُرجع صفراً دائماً وتبقى اللوحة بلا شارة.
-        db.collection(THREADS).whereGreaterThan("ownerUnread", 0)
-            .querySnapshots().map { it.size() }
-            .flowOn(Dispatchers.Default)
-
-    /** رسائل خيط واحد بترتيب زمنيّ صاعد (الأقدم أعلى، كالدردشة). */
-    fun watchMessages(threadId: String): Flow<List<SupportMessage>> =
-        db.collection(THREADS).document(threadId).collection(MESSAGES)
-            .orderBy("createdAtMs", Query.Direction.ASCENDING)
-            .querySnapshots()
-            .map { snap -> snap.documents.map { SupportMessage.fromDoc(it) } }
-            .flowOn(Dispatchers.Default)
-
-    /**
-     * طلبات الإشراف — المعلَّق أوّلاً ثمّ الأحدث.
-     *
-     * الترتيب على الخادم بـ`createdAtMs` تنازلياً (فهرسه منشور)، وتقديمُ
-     * المعلَّق يتمّ هنا: هو ترتيب عرض لا استعلام، ودمجه في الاستعلام كان
-     * سيحتاج فهرساً مركّباً ثانياً بلا فائدة.
-     */
-    fun watchSupervisionRequests(): Flow<List<SupervisionRequest>> =
-        db.collection(REQUESTS)
-            .orderBy("createdAtMs", Query.Direction.DESCENDING)
-            // سقف وقائيّ — كما في watchThreads.
-            .limit(200)
-            .querySnapshots()
-            .map { snap ->
-                snap.documents.map { SupervisionRequest.fromDoc(it) }
-                    .sortedByDescending { it.isPending }
-            }
-            .flowOn(Dispatchers.Default)
-
-    /** عدد طلبات الإشراف المعلَّقة — تُعرض شارةً على تبويبها. */
-    fun watchPendingRequestsCount(): Flow<Int> =
-        db.collection(REQUESTS).whereEqualTo("status", "pending")
-            .querySnapshots().map { it.size() }
-            .flowOn(Dispatchers.Default)
-
-    /**
-     * تعليم الخيط مقروءاً عند فتحه.
-     *
-     * ⚠️ عبر دالّة سحابية لا كتابةً مباشرة: قواعد `support_threads` تمنع
-     * الكتابة على العميل مطلقاً (`write: if false`) حتى للمالك، فالكتابة
-     * المباشرة كانت تُرفض بصمت وتبقى الشارة على محادثةٍ قُرئت فعلاً.
-     * ويبقى الفشل مبتلَعاً: لا يجوز خطأ أحمر فوق محادثة فُتحت بنجاح.
-     */
-    suspend fun markRead(threadId: String) {
-        runCatching {
-            functions.getHttpsCallable("markSupportThreadRead")
-                .call(mapOf("threadId" to threadId)).await()
+    fun watchThreads(): Flow<List<SupportThread>> = flow {
+        while (true) {
+            emit(runCatching { fetchThreads() }.getOrDefault(emptyList()))
+            delay(THREADS_POLL_MS)
         }
+    }.flowOn(Dispatchers.IO)
+
+    fun watchUnreadCount(): Flow<Int> = flow {
+        while (true) {
+            emit(runCatching { MinbarAdminApi.get("/admin/community/counts").optInt("unreadThreads", 0) }.getOrDefault(0))
+            delay(THREADS_POLL_MS)
+        }
+    }.flowOn(Dispatchers.IO)
+
+    fun watchMessages(threadId: String): Flow<List<SupportMessage>> = flow {
+        while (true) {
+            emit(
+                runCatching {
+                    MinbarAdminApi.get("/admin/support/threads/$threadId/messages").optJSONArray("items").rows()
+                        .map(SupportMessage::fromRow)
+                }.getOrDefault(emptyList()),
+            )
+            delay(MESSAGES_POLL_MS)
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /** طلبات الإشراف — تنتقل في مرحلة لاحقة؛ لا طلبات معلّقة الآن. */
+    fun watchSupervisionRequests(): Flow<List<SupervisionRequest>> = flow { emit(emptyList()) }
+
+    fun watchPendingRequestsCount(): Flow<Int> = flow { emit(0) }
+
+    suspend fun markRead(threadId: String) {
+        runCatching { MinbarAdminApi.post("/admin/support/threads/$threadId/read") }
     }
 
-    /** ردّ المالك: نصّ، أو صوت، أو صور — أو مزيج منها. */
     suspend fun reply(
         threadId: String,
         text: String = "",
@@ -252,97 +163,38 @@ object SupportRepository {
         imagePaths: List<String> = emptyList(),
     ) {
         val body = text.trim()
-        require(body.isNotEmpty() || audioPath.isNotEmpty() || imagePaths.isNotEmpty()) {
-            "لا شيء لإرساله."
-        }
-        functions.getHttpsCallable("replySupportThread").call(
-            buildMap {
-                put("threadId", threadId)
-                if (body.isNotEmpty()) put("text", body)
-                if (audioPath.isNotEmpty()) put("audioPath", audioPath)
-                if (imagePaths.isNotEmpty()) put("imagePaths", imagePaths)
-            },
-        ).await()
+        require(body.isNotEmpty() || audioPath.isNotEmpty() || imagePaths.isNotEmpty()) { "لا شيء لإرساله." }
+        MinbarAdminApi.post(
+            "/admin/support/threads/$threadId/reply",
+            JSONObject().put("text", body).put("audioKey", audioPath).put("imageKeys", JSONArray(imagePaths)),
+        )
     }
 
-    /** إغلاق المحادثة — لا حذف: تبقى معروضة ولا يُكتب فيها. */
     suspend fun close(threadId: String) {
-        functions.getHttpsCallable("closeSupportThread")
-            .call(mapOf("threadId" to threadId)).await()
+        MinbarAdminApi.post("/admin/support/threads/$threadId/close")
     }
 
-    /** حظر المرسِل (أو رفع الحظر عنه بـ[blocked] = false). */
     suspend fun blockUser(uid: String, blocked: Boolean) {
-        functions.getHttpsCallable("blockSupportUser")
-            .call(mapOf("uid" to uid, "blocked" to blocked)).await()
+        MinbarAdminApi.post("/admin/support/block", JSONObject().put("deviceId", uid).put("blocked", blocked))
     }
 
-    /**
-     * قرار في طلب إشراف.
-     *
-     * ⛔ القبول **لا يُنشئ مشرفاً**: اعتماد الحساب يبقى في شاشة «المشرفون»
-     * بيد المالك. هذه رسالة قبول لصاحب الطلب لا أكثر — والواجهة تقول ذلك
-     * صراحةً كي لا يظنّ المالك أنّ الصلاحية مُنحت.
-     */
     suspend fun decideSupervision(requestId: String, approved: Boolean, note: String = "") {
-        functions.getHttpsCallable("decideSupervisionRequest").call(
-            buildMap {
-                put("requestId", requestId)
-                put("decision", if (approved) "approved" else "rejected")
-                val trimmed = note.trim()
-                if (trimmed.isNotEmpty()) put("note", trimmed)
-            },
-        ).await()
+        throw IllegalStateException("طلبات الإشراف تنتقل في مرحلة لاحقة — اعتمد المشرف من شاشة المشرفين مباشرة.")
     }
 
-    /**
-     * 🔗 مسار تخزين ⇐ رابط عرض، بمخزون يوم كامل.
-     *
-     * بلاه كان كلّ رجوع إلى المحادثة يطلب رابطاً جديداً لكلّ صوت وصورة —
-     * وهو ما لا يُحتمل على إنترنت ضعيف.
-     */
-    private val urlCache = LinkedHashMap<String, Pair<Long, String>>()
-    private const val URL_TTL_MS = 24L * 60 * 60 * 1000
-    private const val URL_CACHE_MAX = 300
+    /** مفتاح مرفق في R2 → رابط قراءة عبر minbar-api. */
+    suspend fun mediaUrl(path: String): String =
+        if (path.isEmpty()) "" else MinbarAdminApi.mediaUrl(path)
 
-    suspend fun mediaUrl(path: String): String {
-        if (path.isEmpty()) return ""
-        val now = System.currentTimeMillis()
-        synchronized(urlCache) {
-            urlCache[path]?.let { (at, url) -> if (now - at < URL_TTL_MS) return url }
-        }
-        val url = storage.reference.child(path).downloadUrl.await().toString()
-        synchronized(urlCache) {
-            urlCache.entries.removeAll { System.currentTimeMillis() - it.value.first >= URL_TTL_MS }
-            while (urlCache.size >= URL_CACHE_MAX) {
-                urlCache.remove(urlCache.keys.firstOrNull() ?: break)
-            }
-            urlCache[path] = System.currentTimeMillis() to url
-        }
-        return url
-    }
-
-    /**
-     * رفع ملفّ ردّ المالك ثمّ إعادة **مساره** (لا رابطه): العقد الخادميّ
-     * يستقبل `audioPath` و`imagePaths`، والرابط يُشتقّ عند العرض.
-     */
     suspend fun uploadReplyMedia(
-        /** صاحب الخيط — جزء من المسار الذي تحكم به قواعد التخزين. */
         userUid: String,
         threadId: String,
         file: File,
         contentType: String,
     ): String {
         val safeName = file.name.replace(Regex("[^\\p{L}\\p{N}._-]"), "_").takeLast(80)
-        val path = "$MEDIA_DIR/$userUid/$threadId/${System.currentTimeMillis()}_$safeName"
-        // المسار مختوم زمنيّاً فلا يُستبدل — كاش دائم يوفّر إعادة التنزيل.
-        val metadata = StorageMetadata.Builder()
-            .setContentType(contentType)
-            .setCacheControl("public, max-age=31536000, immutable")
-            .build()
-        storage.reference.child(path)
-            .putFile(android.net.Uri.fromFile(file), metadata)
-            .await()
-        return path
+        val key = "support/$threadId/${System.currentTimeMillis()}_$safeName"
+        MinbarAdminApi.upload("/admin/upload/$key", file, contentType)
+        return key
     }
 }

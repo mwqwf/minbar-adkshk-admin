@@ -36,6 +36,25 @@ data class TranscriptSubmission(
     val isPending: Boolean get() = status == "pending"
 
     companion object {
+        fun fromRow(row: org.json.JSONObject): TranscriptSubmission {
+            val keys = runCatching { org.json.JSONArray(row.optString("image_keys_json", "[]")) }.getOrDefault(org.json.JSONArray())
+            return TranscriptSubmission(
+                id = row.optString("id"),
+                uid = row.optString("device_id"),
+                submitterName = row.optString("submitter_name"),
+                lessonId = row.optString("lesson_id"),
+                lessonTitle = row.optString("lesson_title"),
+                text = row.optString("text"),
+                bookTitle = row.optString("book_title"),
+                sourceRef = row.optString("source_ref"),
+                note = row.optString("note"),
+                imagePaths = (0 until keys.length()).map { keys.optString(it) }.filter { it.isNotEmpty() },
+                status = row.optString("status").ifEmpty { "pending" },
+                rejectReason = row.optString("reject_reason"),
+                createdAtMs = row.optLong("created_at_ms"),
+            )
+        }
+
         fun fromDoc(doc: DocumentSnapshot): TranscriptSubmission {
             val d = doc.dataMap()
             return TranscriptSubmission(
@@ -170,55 +189,41 @@ object TranscriptsRepository {
     }
 
     /** حجم صفحة المحسوم — والزيادة عبر [loadMoreDecided] (نمط سلة المحذوفات). */
-    private const val DECIDED_PAGE = 50L
+    private const val DECIDED_PAGE = 50
+    private const val POLL_MS = 30_000L
     private val decidedLimit = kotlinx.coroutines.flow.MutableStateFlow(DECIDED_PAGE)
-
-    /** هل بقي محسومٌ أقدم لم يُنزَّل؟ — تُظهر الشاشة زرّ «تحميل المزيد». */
     val hasMoreDecided = kotlinx.coroutines.flow.MutableStateFlow(false)
 
     fun loadMoreDecided() {
         decidedLimit.value += DECIDED_PAGE
     }
 
-    // Firestore يسلّم اللقطة على الخيط الرئيسي؛ التحليل والفرز يجريان هنا
-    // بعيداً عنه كي لا يتقطّع التمرير عند كل تحديث للمجموعة.
-    //
-    // 💸 مستمعان بدل مستمع المجموعة كاملة: المعلّق (بلا سقف) + الأحدث إنشاءً
-    // `limit(50)` تتوسّع بزرّ «تحميل المزيد» — فلا تُنزَّل مئات الاقتراحات
-    // المحسومة بنصوصها الضخمة مع كل فتح للشاشة. الدمج في التدفّق نفسه.
-    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    fun watchAll(): Flow<List<TranscriptSubmission>> =
-        decidedLimit.flatMapLatest { limit ->
-            kotlinx.coroutines.flow.combine(
-                db.collection(COLLECTION)
-                    .whereEqualTo("status", "pending")
-                    .querySnapshots(),
-                db.collection(COLLECTION)
-                    .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
-                    .limit(limit)
-                    .querySnapshots(),
-            ) { pending, recent ->
-                hasMoreDecided.value = recent.size() >= limit
-                val merged = LinkedHashMap<String, TranscriptSubmission>()
-                (pending.documents + recent.documents).forEach { doc ->
-                    merged[doc.id] = TranscriptSubmission.fromDoc(doc)
-                }
-                merged.values.sortedWith(
-                    compareByDescending<TranscriptSubmission> { it.isPending }
-                        .thenByDescending { it.createdAtMs },
-                )
-            }
-        }.flowOn(Dispatchers.Default)
+    private fun org.json.JSONArray?.rows(): List<org.json.JSONObject> =
+        if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 
-    fun watchPendingCount(): Flow<Int> =
-        db.collection(COLLECTION).whereEqualTo("status", "pending")
-            .querySnapshots().map { it.size() }
-            .flowOn(Dispatchers.Default)
+    private suspend fun fetchAll(limit: Int): List<TranscriptSubmission> {
+        val list = MinbarAdminApi.get("/admin/transcript-submissions?status=all").optJSONArray("items").rows()
+            .map(TranscriptSubmission::fromRow)
+        val decided = list.filter { !it.isPending }
+        hasMoreDecided.value = decided.size > limit
+        return (list.filter { it.isPending } + decided.take(limit))
+            .sortedWith(compareByDescending<TranscriptSubmission> { it.isPending }.thenByDescending { it.createdAtMs })
+    }
 
-    /**
-     * النص المعتمد الحالي لدرس — للمقارنة أثناء المراجعة وللمحرر المباشر.
-     * بكاش عمره ١٠ دقائق يُبطَل فور أيّ اعتماد/حفظ/حذف لهذا الدرس.
-     */
+    fun watchAll(): Flow<List<TranscriptSubmission>> = kotlinx.coroutines.flow.flow {
+        while (true) {
+            emit(runCatching { fetchAll(decidedLimit.value) }.getOrDefault(emptyList()))
+            kotlinx.coroutines.delay(POLL_MS)
+        }
+    }.flowOn(Dispatchers.IO)
+
+    fun watchPendingCount(): Flow<Int> = kotlinx.coroutines.flow.flow {
+        while (true) {
+            emit(runCatching { MinbarAdminApi.get("/admin/community/counts").optInt("pendingTranscripts", 0) }.getOrDefault(0))
+            kotlinx.coroutines.delay(POLL_MS)
+        }
+    }.flowOn(Dispatchers.IO)
+
     suspend fun fetchTranscript(lessonId: String): LessonTranscript? {
         if (lessonId.isEmpty()) return null
         val now = System.currentTimeMillis()
@@ -258,7 +263,7 @@ object TranscriptsRepository {
      */
     suspend fun submissionImageUrl(path: String): String {
         // صور R2 (images/…) تُقرأ عبر minbar-api مباشرة بلا رابط موقَّع.
-        if (path.startsWith("images/")) return MinbarAdminApi.mediaUrl(path)
+        if (path.startsWith("images/") || path.startsWith("user/")) return MinbarAdminApi.mediaUrl(path)
         if (path.isEmpty()) return ""
         val now = System.currentTimeMillis()
         urlCache[path]?.let { (at, url) ->
@@ -288,40 +293,26 @@ object TranscriptsRepository {
         editedSourceRef: String? = null,
         keepImages: Boolean = true,
     ) {
-        val payload = mutableMapOf<String, Any>(
-            "submissionId" to s.id,
-            "keepImages" to keepImages,
-        )
-        if (editedText != null) payload["text"] = editedText.trim()
-        if (editedBookTitle != null) payload["bookTitle"] = editedBookTitle.trim()
-        if (editedSourceRef != null) payload["sourceRef"] = editedSourceRef.trim()
-        functions.getHttpsCallable("approveTranscriptSubmission").call(payload).await()
-        // صار للدرس نصّ معتمد قطعاً — نثبّت الجواب فوراً كي يحذّر أيّ اقتراح
-        // آخر لنفس الدرس بدل أن يمحوه المشرف وهو يظنّه أوّل نص.
+        val payload = org.json.JSONObject().put("keepImages", keepImages)
+        if (editedText != null) payload.put("text", editedText.trim())
+        if (editedBookTitle != null) payload.put("bookTitle", editedBookTitle.trim())
+        if (editedSourceRef != null) payload.put("sourceRef", editedSourceRef.trim())
+        MinbarAdminApi.post("/admin/transcript-submissions/${s.id}/approve", payload)
         invalidateTranscript(s.lessonId, known = true)
         forgetImageUrls(s.imagePaths)
     }
 
     suspend fun reject(s: TranscriptSubmission, reason: String) {
-        functions.getHttpsCallable("rejectTranscriptSubmission").call(
-            mapOf("submissionId" to s.id, "reason" to reason.trim()),
-        ).await()
+        MinbarAdminApi.post("/admin/transcript-submissions/${s.id}/reject", org.json.JSONObject().put("reason", reason.trim()))
         forgetImageUrls(s.imagePaths)
     }
 
     suspend fun deleteDecided(s: TranscriptSubmission) {
         if (s.isPending) return
-        functions.getHttpsCallable("deleteTranscriptSubmission")
-            .call(mapOf("submissionId" to s.id)).await()
+        MinbarAdminApi.delete("/admin/transcript-submissions/${s.id}")
         forgetImageUrls(s.imagePaths)
     }
 
-    /**
-     * اعتماد جماعي لاقتراحات نصوص محدَّدة. [onProgress] يتلقّى (المنجز،
-     * الإجمالي) لتحريك شريط التقدّم كما في «اعتماد الكل» عند المالك.
-     * درسٌ حُسم في الدفعة لا يُعتمد له اقتراح ثانٍ — لأن الاعتماد يستبدل
-     * الوثيقة كاملة ويحذف صور النص السابق.
-     */
     suspend fun bulkApprove(
         items: List<TranscriptSubmission>,
         onProgress: (Int, Int) -> Unit = { _, _ -> },

@@ -1,17 +1,15 @@
 package com.ali.ishaqiyin_admin.data
 
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
-import com.google.firebase.functions.FirebaseFunctions
+import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.tasks.await
+import org.json.JSONArray
+import org.json.JSONObject
 
-/** طلب نشر من مستمع (تطبيق منبر العام) بانتظار قرار المشرفين. */
 data class LessonSubmission(
     val id: String,
     val uid: String,
@@ -30,131 +28,93 @@ data class LessonSubmission(
     val status: String, // pending | approved | approved_edited | rejected
     val rejectReason: String,
     val createdAtMs: Long,
-    // ⚠️ نصّ مشروح مرفق بالمساهمة: الدالّة السحابيّة تنشره في
-    // `lesson_transcripts` فور الاعتماد، فلا بدّ أن يراه المشرف **قبل**
-    // ضغط «موافقة» — التطبيق يَعِد المساهم صراحةً بعرضه على المشرفين.
     val transcriptText: String = "",
     val transcriptBookTitle: String = "",
     val transcriptSourceRef: String = "",
     val transcriptImagePaths: List<String> = emptyList(),
-    // ما أقرّ به المرسِل فعلاً — الإقرار اختياري في التطبيق، فتمييز
-    // المُقِرّ من غيره هو كلّ فائدته.
     val rightsConfirmed: Boolean = false,
     val termsAccepted: Boolean = false,
     val contentPolicyVersion: String = "",
 ) {
     val isPending: Boolean get() = status == "pending"
-
-    /** هل تحمل المساهمة نصّاً مشروحاً سيُنشر تلقائياً عند الاعتماد؟ */
     val hasTranscript: Boolean
         get() = transcriptText.isNotEmpty() || transcriptImagePaths.isNotEmpty()
 
     companion object {
-        fun fromDoc(doc: DocumentSnapshot): LessonSubmission {
-            val d = doc.dataMap()
+        /** صفّ `submissions` من minbar-api (snake_case) → النموذج. `uid` = معرّف الجهاز. */
+        fun fromRow(row: JSONObject): LessonSubmission {
+            val keys = runCatching { JSONArray(row.optString("transcript_image_keys_json", "[]")) }
+                .getOrDefault(JSONArray())
             return LessonSubmission(
-                id = doc.id,
-                uid = str(d["uid"]),
-                submitterName = str(d["submitterName"]),
-                title = str(d["title"]),
-                categoryId = str(d["categoryId"]),
-                categoryName = str(d["categoryName"]),
-                subcategoryId = str(d["subcategoryId"]),
-                subcategoryName = str(d["subcategoryName"]),
-                note = str(d["note"]),
-                audioUrl = str(d["audioUrl"]),
-                storagePath = str(d["storagePath"]),
-                fileName = str(d["fileName"]),
-                fileSize = int(d["fileSize"]),
-                fcmToken = str(d["fcmToken"]),
-                status = str(d["status"]).ifEmpty { "pending" },
-                rejectReason = str(d["rejectReason"]),
-                createdAtMs = parseDateMs(d["createdAt"]),
-                transcriptText = str(d["transcriptText"]),
-                transcriptBookTitle = str(d["transcriptBookTitle"]),
-                transcriptSourceRef = str(d["transcriptSourceRef"]),
-                transcriptImagePaths = (d["transcriptImagePaths"] as? List<*>)
-                    .orEmpty().map { str(it) }.filter { it.isNotEmpty() },
-                rightsConfirmed = d["rightsConfirmed"] == true,
-                termsAccepted = d["termsAccepted"] == true,
-                contentPolicyVersion = str(d["contentPolicyVersion"]),
+                id = row.optString("id"),
+                uid = row.optString("device_id"),
+                submitterName = row.optString("submitter_name"),
+                title = row.optString("title"),
+                categoryId = row.optString("category_id"),
+                categoryName = row.optString("category_name"),
+                subcategoryId = row.optString("subcategory_id"),
+                subcategoryName = row.optString("subcategory_name"),
+                note = row.optString("note"),
+                audioUrl = row.optString("audio_url"),
+                storagePath = row.optString("audio_key"),
+                fileName = row.optString("file_name"),
+                fileSize = row.optInt("file_size"),
+                fcmToken = row.optString("fcm_token"),
+                status = row.optString("status").ifEmpty { "pending" },
+                rejectReason = row.optString("reject_reason"),
+                createdAtMs = row.optLong("created_at_ms"),
+                transcriptText = row.optString("transcript_text"),
+                transcriptBookTitle = row.optString("transcript_book_title"),
+                transcriptSourceRef = row.optString("transcript_source_ref"),
+                transcriptImagePaths = (0 until keys.length()).map { keys.optString(it) }.filter { it.isNotEmpty() },
+                rightsConfirmed = row.optInt("rights_confirmed") == 1,
+                termsAccepted = row.optInt("rights_confirmed") == 1,
+                contentPolicyVersion = row.optString("policy_version"),
             )
         }
     }
 }
 
-/** حصيلة قرار جماعي على مساهمات صوتية: كم نُفِّذ وكم أخفق. */
 data class BulkSubmissionResult(val done: Int, val failed: Int)
 
 /**
- * 🗳️ مراجعة مساهمات المستمعين: يوافق المشرف كما هي، أو يعدّل
- * (العنوان/الأقسام) ثم ينشر، أو يرفض بسبب يصل المساهم إشعاراً.
- * النشر الفعلي يتمّ في دالة سحابية واحدة (معاملة خادمية) فتُمنع الموافقات
- * المتزامنة من إنشاء درسين مكرّرين.
+ * مراجعة «شارك درساً» — على `minbar-api` (قرار 2026-09-10). الموافقة تُنشئ
+ * درساً معلّقاً من ملفّ المساهمة وتشغّل خطّ الترميز، وتُخطر صاحبها بـFCM من
+ * الخادم. القوائم استطلاعٌ كل نصف دقيقة بدل مستمعي Firestore.
  */
 object SubmissionsRepository {
-    private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
-    private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
-    const val COLLECTION = "lesson_submissions"
-
-    /** حجم صفحة المحسوم — والزيادة عبر [loadMoreDecided] (نمط سلة المحذوفات). */
-    private const val DECIDED_PAGE = 50L
+    private const val POLL_MS = 30_000L
+    private const val DECIDED_PAGE = 50
     private val decidedLimit = kotlinx.coroutines.flow.MutableStateFlow(DECIDED_PAGE)
-
-    /** هل بقي محسومٌ أقدم لم يُنزَّل؟ — تُظهر الشاشة زرّ «تحميل المزيد». */
     val hasMoreDecided = kotlinx.coroutines.flow.MutableStateFlow(false)
 
     fun loadMoreDecided() {
         decidedLimit.value += DECIDED_PAGE
     }
 
-    /**
-     * بثّ مباشر لكل الطلبات (المعلّقة أولاً ثم الأحدث قراراً).
-     *
-     * 💸 مستمعان بدل مستمع المجموعة كاملة: المعلّق (بلا سقف — هو العمل
-     * الفعلي) + الأحدث إنشاءً `limit(50)` تتوسّع بزرّ «تحميل المزيد» —
-     * فلا تُنزَّل مئات القرارات القديمة بنصوصها الضخمة مع كل فتح للشاشة.
-     * النتيجتان تُدمجان في التدفّق نفسه فلا يتغيّر شكل الشاشة.
-     *
-     * ⚠️ `flowOn(Default)` ليس ترفاً: Firestore يسلّم اللقطة على **الخيط
-     * الرئيسي**، وهذه المجموعة تحمل حقولاً نصّية كبيرة (نصّ مشروح يبلغ عشرين
-     * ألف حرف)، فتحليلها وفرزها كانا يقعان على خيط الواجهة عند كل انبعاث.
-     * نظيرتها في `TranscriptsRepository` تحمله أصلاً — وسقط هنا وحده.
-     */
-    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    fun watchAll(): Flow<List<LessonSubmission>> =
-        decidedLimit.flatMapLatest { limit ->
-            kotlinx.coroutines.flow.combine(
-                db.collection(COLLECTION)
-                    .whereEqualTo("status", "pending")
-                    .querySnapshots(),
-                db.collection(COLLECTION)
-                    .orderBy("createdAt", Query.Direction.DESCENDING)
-                    .limit(limit)
-                    .querySnapshots(),
-            ) { pending, recent ->
-                hasMoreDecided.value = recent.size() >= limit
-                val merged = LinkedHashMap<String, LessonSubmission>()
-                (pending.documents + recent.documents).forEach { doc ->
-                    merged[doc.id] = LessonSubmission.fromDoc(doc)
-                }
-                merged.values.sortedWith(
-                    compareByDescending<LessonSubmission> { it.isPending }
-                        .thenByDescending { it.createdAtMs },
-                )
-            }
-        }.flowOn(Dispatchers.Default)
+    private suspend fun fetchAll(limit: Int): List<LessonSubmission> {
+        val items = MinbarAdminApi.get("/admin/submissions?status=all&limit=${limit + 1}").optJSONArray("items") ?: JSONArray()
+        val list = (0 until items.length()).mapNotNull { items.optJSONObject(it) }.map(LessonSubmission::fromRow)
+        val decided = list.filter { !it.isPending }
+        hasMoreDecided.value = decided.size > limit
+        return (list.filter { it.isPending } + decided.take(limit))
+            .sortedWith(compareByDescending<LessonSubmission> { it.isPending }.thenByDescending { it.createdAtMs })
+    }
 
-    /** عدد الطلبات المعلّقة (شارة اللوحة). */
-    fun watchPendingCount(): Flow<Int> =
-        db.collection(COLLECTION).whereEqualTo("status", "pending")
-            .querySnapshots().map { it.size() }
-            .flowOn(Dispatchers.Default)
+    fun watchAll(): Flow<List<LessonSubmission>> = flow {
+        while (true) {
+            emit(runCatching { fetchAll(decidedLimit.value) }.getOrDefault(emptyList()))
+            delay(POLL_MS)
+        }
+    }.flowOn(Dispatchers.IO)
 
-    /**
-     * الموافقة والنشر. مرِّر عنواناً/قسمين معدَّلين ليُنشر بالتعديل
-     * (status=approved_edited)، أو اتركها كما في الطلب (status=approved).
-     */
+    fun watchPendingCount(): Flow<Int> = flow {
+        while (true) {
+            emit(runCatching { MinbarAdminApi.get("/admin/community/counts").optInt("pendingSubmissions", 0) }.getOrDefault(0))
+            delay(POLL_MS)
+        }
+    }.flowOn(Dispatchers.IO)
+
     suspend fun approveAndPublish(
         s: LessonSubmission,
         editedTitle: String? = null,
@@ -166,48 +126,31 @@ object SubmissionsRepository {
         val title = (editedTitle ?: s.title).trim()
         val categoryId = editedCategoryId ?: s.categoryId
         val subcategoryId = editedSubcategoryId ?: s.subcategoryId
-        val edited = title != s.title.trim() ||
-            categoryId != s.categoryId ||
-            subcategoryId != s.subcategoryId
-
+        val edited = title != s.title.trim() || categoryId != s.categoryId || subcategoryId != s.subcategoryId
         require(title.isNotEmpty() && categoryId.isNotEmpty() && subcategoryId.isNotEmpty()) {
             "العنوان والقسمان مطلوبان قبل الموافقة."
         }
-        functions.getHttpsCallable("approveSubmission").call(
-            mapOf(
-                "submissionId" to s.id,
-                "title" to title,
-                "categoryId" to categoryId,
-                "categoryName" to (editedCategoryName ?: s.categoryName),
-                "subcategoryId" to subcategoryId,
-                "subcategoryName" to (editedSubcategoryName ?: s.subcategoryName),
-                "edited" to edited,
-            ),
-        ).await()
+        MinbarAdminApi.post(
+            "/admin/submissions/${s.id}/approve",
+            JSONObject()
+                .put("title", title)
+                .put("categoryId", categoryId)
+                .put("categoryName", editedCategoryName ?: s.categoryName)
+                .put("subcategoryId", subcategoryId)
+                .put("subcategoryName", editedSubcategoryName ?: s.subcategoryName)
+                .put("edited", edited),
+        )
     }
 
-    /** الرفض بسبب (يصل المساهم نصّاً في الإشعار وشاشة «مساهماتي»). */
     suspend fun reject(s: LessonSubmission, reason: String) {
-        functions.getHttpsCallable("rejectSubmission").call(
-            mapOf("submissionId" to s.id, "reason" to reason.trim()),
-        ).await()
+        MinbarAdminApi.post("/admin/submissions/${s.id}/reject", JSONObject().put("reason", reason.trim()))
     }
 
-    /**
-     * حذف طلب نهائياً (بعد قرار قديم) — يحذف ملف الصوت أيضاً إن كان
-     * الطلب مرفوضاً (الملف غير مستعمل في أيّ درس منشور).
-     */
     suspend fun deleteDecided(s: LessonSubmission) {
         if (s.isPending) return
-        functions.getHttpsCallable("deleteSubmission")
-            .call(mapOf("submissionId" to s.id)).await()
+        MinbarAdminApi.delete("/admin/submissions/${s.id}")
     }
 
-    /**
-     * نشر جماعي للمساهمات المحدَّدة كما هي. [onProgress] يتلقّى (المنجز،
-     * الإجمالي) لتحريك شريط التقدّم كما في «اعتماد الكل» عند المالك.
-     * كلّ مساهمة نداء مستقلّ فلا يُسقط فشلُ واحدة البقيّةَ.
-     */
     suspend fun bulkApprove(
         items: List<LessonSubmission>,
         onProgress: (Int, Int) -> Unit = { _, _ -> },
@@ -216,15 +159,12 @@ object SubmissionsRepository {
         var done = 0
         var failed = 0
         targets.forEachIndexed { index, s ->
-            runCatching { approveAndPublish(s) }
-                .onSuccess { done++ }
-                .onFailure { failed++ }
+            runCatching { approveAndPublish(s) }.onSuccess { done++ }.onFailure { failed++ }
             onProgress(index + 1, targets.size)
         }
         return BulkSubmissionResult(done, failed)
     }
 
-    /** رفض جماعي بسبب واحد يصل كل المساهمين المعنيّين. */
     suspend fun bulkReject(
         items: List<LessonSubmission>,
         reason: String,
@@ -234,9 +174,7 @@ object SubmissionsRepository {
         var done = 0
         var failed = 0
         targets.forEachIndexed { index, s ->
-            runCatching { reject(s, reason) }
-                .onSuccess { done++ }
-                .onFailure { failed++ }
+            runCatching { reject(s, reason) }.onSuccess { done++ }.onFailure { failed++ }
             onProgress(index + 1, targets.size)
         }
         return BulkSubmissionResult(done, failed)
