@@ -49,6 +49,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -333,6 +334,16 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
                         )
                     }
                     Spacer(Modifier.height(12.dp))
+                }
+            }
+            // 📬 **رسائل مصحفك — للمالك وحده** (أمر المالك 2026-09-10). صفٌّ واحدٌ لا بطاقة:
+            // هو مدخلٌ لا مؤشّرُ حالة، ⛔ ولا يُركَّب أصلاً لغير المالك فلا يراه مشرفٌ ولو مرّر الشاشة.
+            if (isOwner) {
+                item {
+                    TextButton(
+                        onClick = { nav.navigate(Routes.MUSHAFAK) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("📬 رسائل مصحفك") }
                 }
             }
             item {

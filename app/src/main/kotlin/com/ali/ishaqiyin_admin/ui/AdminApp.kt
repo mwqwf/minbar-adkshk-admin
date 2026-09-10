@@ -120,6 +120,9 @@ object Routes {
 
     /** 📬 صندوق «رسائل المستخدمين» ومحادثاته — للمالك وحده. */
     const val SUPPORT = "support"
+
+    /** 📬 صندوق «رسائل مصحفك» — تطبيقٌ آخر وصاحبُه واحد، وللمالك وحده (أمر المالك 2026-09-10). */
+    const val MUSHAFAK = "mushafak_inbox"
     const val SUPPORT_THREAD = "support/{threadId}/{userUid}/{userName}/{kind}"
 
     fun dm(threadId: String, otherUid: String, otherName: String): String =
@@ -483,6 +486,10 @@ private fun AdminNavHost(isOwner: Boolean) {
         // 📬 صندوق رسائل المستخدمين — حارس مزدوج كشاشة «تذكير التحديث»:
         // ⛔ قواعد التخزين لا تسمح لغير المالك بقراءة مرفقات الخيوط، فشاشةٌ
         // يفتحها مشرف تعرض صوتاً لا يعمل وصوراً لا تظهر.
+        // 📬 رسائل مصحفك — ⛔ حارسٌ في الواجهة، وحارسٌ ثانٍ في الخادم (مفتاح المالك).
+        composable(Routes.MUSHAFAK) {
+            if (isOwner) MushafakInboxScreen(onBack = { nav.popBackStack() }) else LaunchedEffect(Unit) { nav.popBackStack() }
+        }
         composable(Routes.SUPPORT) {
             if (isOwner) {
                 SupportInboxScreen(
