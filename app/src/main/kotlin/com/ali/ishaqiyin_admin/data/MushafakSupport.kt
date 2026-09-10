@@ -3,6 +3,8 @@ package com.ali.ishaqiyin_admin.data
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.tasks.await
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -15,18 +17,26 @@ import java.net.URL
  *
  * ⛔ **ولا يراها مشرفو منبر بحال** — حارسان لا واحد:
  * 1. **الواجهة**: الصفُّ والشاشة لا يُركَّبان إلا لـ`AuthService.isOwnerEmail`.
- * 2. **الخادم**: `mushafak-api` لا يُجيب إلا بترويسة `x-owner-key` الصحيحة — ومشرفٌ فتح الشاشةَ
- *    بحيلةٍ لا يجد مفتاحاً في جهازه فلا يرى حرفاً. ⇒ **الحارسُ الحقيقيّ في الخادم، والواجهةُ
- *    لطفٌ بالعين لا سياجُ أمن.**
+ * 2. **الخادم**: `mushafak-api` يتحقّق من **بريد حامل الرمز** ويقارنه ببريد المالك — ومشرفٌ فتح
+ *    الشاشةَ بحيلةٍ يمرّر رمزَ حسابه هو فيُردّ. ⇒ **الحارسُ الحقيقيّ في الخادم، والواجهةُ لطفٌ
+ *    بالعين لا سياجُ أمن.**
  *
- * ⛔ **والمفتاحُ لا يُكتب في الشيفرة أبداً**: يُدخله المالكُ مرّةً في جهازه فيُحفظ محلّياً. ولو
- * وُضع في المستودع لصار في يد كلِّ من يقرأ الشيفرة أو يفكّ الحزمة.
+ * ⛔ **ولا رمزَ يُطلب منه** (تصحيحُ المالك 2026-09-10: «لا داعي لأن يُطلب مني رمزٌ بما أني
+ * المالك — قضيّةُ هذا الرمز عبثٌ فقط»). **وهو محقّ**: اللوحةُ تعرف صاحبَها بحسابه من Firebase،
+ * فسؤالُه عن سرٍّ ثانٍ إثباتٌ لما ثبت. ⇒ يُمرَّر **رمزُ هويّة Firebase** نفسُه إلى الخادم فيتحقّق
+ * منه بمفاتيح جوجل العلنيّة ويقارن البريدَ ببريد المالك.
+ *
+ * ⭐ **وهو أقوى من المفتاح الثابت لا أضعف**: عمرُه ساعةٌ ويجدّده Firebase من نفسه، ولا سرَّ
+ * يُخزَّن في جهازٍ ولا في شيفرة — والمفتاحُ الثابت يبقى صالحاً أبداً ولا يُبطله إلا تبديلُه يدوياً.
  */
 object MushafakSupport {
 
     private const val BASE = "https://mushafak-api.mushafak.workers.dev"
-    private const val PREFS = "mushafak_owner"
-    private const val KEY = "owner_key"
+    /** ⏱️ رمزُ الهويّة يُجلب عند الحاجة — والمكتبةُ تُعيد المكاشَ ما لم يشارف الانتهاء. */
+    private suspend fun idToken(): String? = runCatching {
+        val user = FirebaseAuth.getInstance().currentUser ?: return@runCatching null
+        user.getIdToken(false).await().token
+    }.getOrNull()
 
     data class Ticket(
         val id: String,
@@ -46,17 +56,9 @@ object MushafakSupport {
             }
     }
 
-    fun key(context: Context): String? =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null)
-
-    fun setKey(context: Context, value: String?) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString(KEY, value?.trim()?.takeIf { it.isNotEmpty() }).apply()
-    }
-
-    /** `null` = مفتاحٌ مرفوضٌ أو شبكةٌ متعذّرة (‏والشاشةُ تفرّق بينهما برسالتها). */
+    /** `null` = رمزٌ مرفوضٌ أو شبكةٌ متعذّرة. */
     suspend fun tickets(context: Context): List<Ticket>? = withContext(Dispatchers.IO) {
-        val k = key(context) ?: return@withContext null
+        val k = idToken() ?: return@withContext null
         val raw = call("GET", "/v1/support/all", k, null) ?: return@withContext null
         val root = runCatching { JSONObject(raw) }.getOrNull() ?: return@withContext null
         if (root.has("error")) return@withContext null
@@ -76,24 +78,19 @@ object MushafakSupport {
 
     /** ردُّ المالك — يظهر للمستخدم **داخل تطبيقه** لا في بريدٍ ولا رسالةٍ خارجية. */
     suspend fun reply(context: Context, ticketId: String, body: String): Boolean = withContext(Dispatchers.IO) {
-        val k = key(context) ?: return@withContext false
+        val k = idToken() ?: return@withContext false
         val payload = JSONObject().put("body", body.take(4000)).toString()
         val raw = call("POST", "/v1/support/tickets/$ticketId/messages", k, payload) ?: return@withContext false
         runCatching { !JSONObject(raw).has("error") }.getOrDefault(false)
     }
 
-    /** يتحقّق من مفتاحٍ **قبل حفظه**: مفتاحٌ خاطئٌ يُحفظ يعني صندوقاً فارغاً بلا سببٍ ظاهر. */
-    suspend fun verify(key: String): Boolean = withContext(Dispatchers.IO) {
-        val raw = call("GET", "/v1/support/all", key, null) ?: return@withContext false
-        runCatching { !JSONObject(raw).has("error") }.getOrDefault(false)
-    }
-
-    private fun call(method: String, path: String, ownerKey: String, body: String?): String? = runCatching {
+    private fun call(method: String, path: String, idToken: String, body: String?): String? = runCatching {
         val c = (URL(BASE + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 15_000
             readTimeout = 20_000
-            setRequestProperty("x-owner-key", ownerKey)
+            // 🔐 هويّةُ المالك لا سرَّه — يتحقّق منها الخادمُ بمفاتيح جوجل العلنيّة.
+            setRequestProperty("x-firebase-token", idToken)
             if (body != null) {
                 doOutput = true
                 setRequestProperty("content-type", "application/json; charset=utf-8")

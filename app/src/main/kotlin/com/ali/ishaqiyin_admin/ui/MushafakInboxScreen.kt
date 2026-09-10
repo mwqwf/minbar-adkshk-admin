@@ -26,7 +26,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.MushafakSupport
@@ -44,16 +43,17 @@ import java.util.Locale
  * ولا يفتح مصحفك بصفة مطوّر — فتأتي الرسائلُ إليه حيث هو. والحسابُ واحدٌ والجهازُ واحد،
  * والفصلُ بين المنتجين لا يعني تفريقَ صاحبهما على صندوقين.
  *
- * ⛔ **حارسان لا واحد**: الشاشةُ لا تُفتح إلا للمالك (‏`AdminApp`)، **والخادمُ لا يجيب إلا بمفتاح**
- * — فلو بلغها مشرفٌ بحيلةٍ لم يجد في جهازه مفتاحاً فلا يرى حرفاً واحداً.
+ * ⛔ **حارسان لا واحد**: الشاشةُ لا تُفتح إلا للمالك (‏`AdminApp`)، **والخادمُ يتحقّق من بريد
+ * حامل رمز Firebase** — فلو بلغها مشرفٌ بحيلةٍ مرّر رمزَ حسابه هو فيُردّ ولا يرى حرفاً.
+ *
+ * ⛔ **ولا رمزَ يُطلب من المالك** (تصحيحُه 2026-09-10: «قضيّةُ هذا الرمز عبثٌ فقط»): حسابُه هو
+ * الإذن، وسؤالُه عن سرٍّ ثانٍ إثباتٌ لما ثبت.
  */
 @Composable
 fun MushafakInboxScreen(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var keyInput by remember { mutableStateOf("") }
-    var hasKey by remember { mutableStateOf(MushafakSupport.key(ctx) != null) }
     var tickets by remember { mutableStateOf<List<MushafakSupport.Ticket>?>(null) }
     var filter by remember { mutableIntStateOf(0) } // 0 مفتوحة · 1 الكلّ
     var notice by remember { mutableStateOf<String?>(null) }
@@ -61,59 +61,24 @@ fun MushafakInboxScreen(onBack: () -> Unit) {
     var replyText by remember { mutableStateOf("") }
     var reload by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(hasKey, reload) {
-        if (hasKey) tickets = MushafakSupport.tickets(ctx)
-    }
+    // ⛔ **بلا رمزٍ ولا سؤال**: هويّةُ حسابك هي الإذن (تصحيحُ المالك 2026-09-10).
+    LaunchedEffect(reload) { tickets = MushafakSupport.tickets(ctx) }
 
     AdminScaffold(title = "رسائل مصحفك", onBack = onBack) { padding ->
         Column(
             Modifier.padding(padding).fillMaxWidth().padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (!hasKey) {
-                // 🔑 المفتاحُ يُدخَل مرّةً في جهاز المالك — ⛔ ولا يُكتب في الشيفرة ولا في المستودع.
-                Text(
-                    "أدخل مفتاحَ المالك مرّةً واحدة (‏سرُّ الخادم `OWNER_KEY`). يُحفظ في هذا الجهاز وحدَه، " +
-                        "ولا يُرسل إلى أحدٍ غير خادم مصحفك.",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = keyInput,
-                    onValueChange = { keyInput = it },
-                    label = { Text("مفتاح المالك") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Button(
-                    onClick = {
-                        scope.launch {
-                            // ⛔ يُتحقّق قبل الحفظ: مفتاحٌ خاطئٌ محفوظٌ يعني صندوقاً فارغاً بلا سببٍ ظاهر.
-                            if (MushafakSupport.verify(keyInput.trim())) {
-                                MushafakSupport.setKey(ctx, keyInput.trim())
-                                hasKey = true
-                                notice = null
-                            } else {
-                                notice = "المفتاح مرفوض أو الشبكة متعذّرة."
-                            }
-                        }
-                    },
-                    enabled = keyInput.trim().length >= 8,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                ) { Text("تحقّق واحفظ") }
-            } else {
+            run {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     FilterChip(filter == 0, { filter = 0 }, { Text("المفتوحة") })
                     FilterChip(filter == 1, { filter = 1 }, { Text("الكلّ") })
                     TextButton(onClick = { reload++ }) { Text("تحديث") }
-                    TextButton(onClick = { MushafakSupport.setKey(ctx, null); hasKey = false; tickets = null }) {
-                        Text("امحُ المفتاح")
-                    }
                 }
                 val list = tickets
                 when {
                     list == null -> Text(
-                        "تعذّر الجلب — تحقّق من الشبكة أو من المفتاح.",
+                        "تعذّر الجلب — تحقّق من الشبكة.",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.error,
                     )
