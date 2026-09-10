@@ -1,7 +1,7 @@
 # إدارة منبر ادكصهك — Android أصلي بـ Kotlin
 
 > **🎧 استمع الآن على الويب:** [minbar-adkassahk.vercel.app](https://minbar-adkassahk.vercel.app) — مئات الدروس الصوتية العلمية لمشايخ ادكصهك، تُشغَّل مباشرة من المتصفّح.
-> **📱 التطبيق على أندرويد:** [Google Play](https://play.google.com/store/apps/details?id=com.ali.menbaradkshk) · **▶️ قناتنا:** [يوتيوب](https://youtube.com/@mtfail)
+> **📱 التطبيق على أندرويد:** [Google Play](https://play.google.com/store/apps/details?id=com.ali.menbaradkshk) · **▶️ قناتنا:** [يوتيوب](https://youtube.com/@Al-Mutafail)
 
 لوحة إدارة تطبيق «منبر ادكصهك»، مكتوبة بـ Kotlin وJetpack Compose، منقولة
 نقلاً أميناً عن نسخة Flutter (`ishaqiyin_admin`) بكامل شاشاتها ومزاياها.

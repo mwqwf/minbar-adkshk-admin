@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 
 /** اقتراح «نص مشروح» من مستمع (نص المتن/صور صفحاته) بانتظار قرار المشرفين. */
 data class TranscriptSubmission(
@@ -111,6 +112,24 @@ data class LessonTranscript(
  * الكتابة الفعلية كلها عبر Cloud Functions (تحقّق + تدقيق + روابط صور).
  */
 object TranscriptsRepository {
+    /** صفّ `transcripts` من minbar-api (snake_case) → النموذج. */
+    private fun fromRow(row: org.json.JSONObject): LessonTranscript {
+        val images = runCatching { org.json.JSONArray(row.optString("images_json", "[]")) }.getOrDefault(org.json.JSONArray())
+        return LessonTranscript(
+            lessonId = row.optString("lesson_id"),
+            text = row.optString("text"),
+            bookTitle = row.optString("book_title"),
+            sourceRef = row.optString("source_ref"),
+            images = (0 until images.length()).mapNotNull { i ->
+                val o = images.optJSONObject(i) ?: return@mapNotNull null
+                val url = o.optString("url")
+                if (url.isEmpty()) null else TranscriptImage(o.optString("path"), url)
+            },
+            contributorName = row.optString("contributor_name"),
+            updatedBy = "",
+        )
+    }
+
     private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
     private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
     private val storage: FirebaseStorage get() = FirebaseStorage.getInstance()
@@ -206,8 +225,11 @@ object TranscriptsRepository {
         transcriptCache[lessonId]?.let { (at, value) ->
             if (now - at < TRANSCRIPT_TTL_MS) return value
         }
-        val doc = db.collection(TRANSCRIPTS).document(lessonId).get().await()
-        val transcript = if (doc.exists()) LessonTranscript.fromDoc(doc) else null
+        val transcript = try {
+            fromRow(MinbarAdminApi.get("/admin/transcripts/$lessonId"))
+        } catch (e: MinbarAdminApi.ApiException) {
+            if (e.code == 404) null else throw e
+        }
         transcriptCache[lessonId] = System.currentTimeMillis() to transcript
         presenceCache[lessonId] = System.currentTimeMillis() to (transcript != null)
         return transcript
@@ -224,13 +246,7 @@ object TranscriptsRepository {
         presenceCache[lessonId]?.let { (at, value) ->
             if (now - at < TRANSCRIPT_TTL_MS) return value
         }
-        val ref = db.collection(TRANSCRIPTS).document(lessonId)
-        val cached = runCatching { ref.get(Source.CACHE).await() }.getOrNull()
-        val exists = if (cached != null && cached.exists()) {
-            true
-        } else {
-            ref.get().await().exists()
-        }
+        val exists = fetchTranscript(lessonId) != null
         presenceCache[lessonId] = System.currentTimeMillis() to exists
         return exists
     }
@@ -241,6 +257,8 @@ object TranscriptsRepository {
      * لكل صورة عند كل زيارة للشاشة.
      */
     suspend fun submissionImageUrl(path: String): String {
+        // صور R2 (images/…) تُقرأ عبر minbar-api مباشرة بلا رابط موقَّع.
+        if (path.startsWith("images/")) return MinbarAdminApi.mediaUrl(path)
         if (path.isEmpty()) return ""
         val now = System.currentTimeMillis()
         urlCache[path]?.let { (at, url) ->
@@ -384,8 +402,15 @@ object TranscriptsRepository {
             // المسار مختوم زمنيّاً فلا يُستبدل — كاش دائم يوفّر إعادة التنزيل.
             .setCacheControl("public, max-age=31536000, immutable")
             .build()
-        storage.reference.child(path).putBytes(bytes, metadata).await()
-        path
+        val key = "images/$path"
+        val temp = java.io.File(context.cacheDir, "tx_${System.currentTimeMillis()}.jpg")
+        temp.writeBytes(bytes)
+        try {
+            MinbarAdminApi.upload("/admin/upload/$key", temp, metadata.contentType ?: "image/jpeg")
+        } finally {
+            temp.delete()
+        }
+        key
     }
 
     /** حفظ النص المشروح مباشرة (إضافة أو تعديلاً) — يكتب عبر الخادم. */
@@ -396,31 +421,33 @@ object TranscriptsRepository {
         sourceRef: String,
         imagePaths: List<String>,
     ) {
-        functions.getHttpsCallable("upsertLessonTranscript").call(
-            mapOf(
-                "lessonId" to lessonId,
-                "text" to text.trim(),
-                "bookTitle" to bookTitle.trim(),
-                "sourceRef" to sourceRef.trim(),
-                "imagePaths" to imagePaths,
-            ),
-        ).await()
+        val images = org.json.JSONArray()
+        imagePaths.forEach { key ->
+            images.put(org.json.JSONObject().put("path", key).put("url", MinbarAdminApi.mediaUrl(key)))
+        }
+        MinbarAdminApi.put(
+            "/admin/transcripts/$lessonId",
+            org.json.JSONObject()
+                .put("text", text.trim())
+                .put("bookTitle", bookTitle.trim())
+                .put("sourceRef", sourceRef.trim())
+                .put("imagesJson", images),
+        )
         invalidateTranscript(lessonId, known = true)
     }
 
     /** حذف النص المشروح للدرس نهائياً (الوثيقة + صور مجلدها). */
     suspend fun remove(lessonId: String) {
-        functions.getHttpsCallable("upsertLessonTranscript").call(
-            mapOf("lessonId" to lessonId, "remove" to true),
-        ).await()
+        MinbarAdminApi.delete("/admin/transcripts/$lessonId")
         invalidateTranscript(lessonId, known = false)
     }
 
     /** استخراج النص من صورة صفحة (OCR عربي عبر الخادم — Cloud Vision). */
     suspend fun extractText(storagePath: String): String {
-        val result = functions.getHttpsCallable("extractImageText")
-            .call(mapOf("storagePath" to storagePath)).await()
-        val map = result.data as? Map<*, *> ?: return ""
-        return str(map["text"])
+        // OCR كان على Cloud Vision (مدفوع) عبر Functions — غير متاح بعد الاستغناء
+        // عن Firebase. يُعرض كخطأ مفهوم حتى يُستبدل بمحرّك مجاني.
+        throw IllegalStateException(
+            "استخراج النص من الصورة غير متاح حالياً بعد الانتقال عن Firebase — اكتب النص يدوياً.",
+        )
     }
 }

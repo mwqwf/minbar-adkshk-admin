@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
+import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 
 /**
  * نتيجة صلاحية الدخول — مطابقة تماماً لتدفّق لوحة نبراس:
@@ -143,54 +144,30 @@ object AuthService {
         val email = user.email.orEmpty().trim().lowercase()
         if (email.isEmpty()) return AccessState.NeedsOwnerCode
 
-        // بريد المالك وحده يملك bypass — والصلاحية تُشتق من ثابت البريد نفسه،
-        // فلا يجوز حجب المالك خلف كتابة توثيقية قد تفشل مؤقتاً (إقلاع خلف قفل
-        // الشاشة يخنق الشبكة فتظهر شاشة خطأ توحي بانهيار). القواعد على الخادم
-        // تظل الحكم النهائي لأيّ عملية كتابة لاحقة.
-        if (isOwnerEmail(email)) {
-            runCatching {
-                AdminRepository.upsertOwnerRecord(
-                    email,
-                    displayName = user.displayName.orEmpty(),
-                    photoURL = user.photoUrl?.toString().orEmpty(),
+        // بريد المالك وحده يملك bypass — الصلاحية تُشتق من ثابت البريد نفسه فلا
+        // يُحجب المالك خلف شبكة ضعيفة. الخادم يبقى الحكم لأي كتابة لاحقة.
+        if (isOwnerEmail(email)) return AccessState.Owner
+
+        // الدور من `minbar-api`: الخادم يتحقّق من رمز الجلسة بتوقيعه ويطابق البريد
+        // بجدول المشرفين — لا Firestore ولا كاش يُقدَّم على حكم الخادم.
+        return try {
+            val who = MinbarAdminApi.get("/admin/whoami")
+            when (who.optString("role")) {
+                "owner" -> AccessState.Owner
+                "blocked" -> AccessState.Blocked
+                "supervisor", "admin" -> AccessState.Supervisor
+                else -> AccessState.NeedsOwnerCode
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: MinbarAdminApi.ApiException) {
+            if (e.code == 401 || e.code == 403) {
+                AccessState.NeedsOwnerCode
+            } else {
+                throw AccessVerificationException(
+                    "تعذّر الاتصال بالخادم للتحقق من الدور والحظر. لم تُمنح أيّ صلاحية مؤقتة.",
                 )
             }
-            return AccessState.Owner
-        }
-
-        try {
-            val ref = FirebaseFirestore.getInstance()
-                .collection("dashboard_admins").document(email)
-            // مسار سريع للشبكات الضعيفة: إن كانت صلاحيتي محفوظة في الكاش
-            // ادخل فوراً وحدِّث من الخادم لاحقاً — بلا هذا ينتظر المشرف ردّ
-            // الخادم بينما يمرّ المالك بفحص رمز محض فيدخل فوراً.
-            val cached = runCatching { ref.get(Source.CACHE).await() }.getOrNull()
-            val cachedData = cached?.takeIf { it.exists() }?.dataMap()
-            if (cachedData != null && cachedData["blocked"] != true &&
-                str(cachedData["role"]) == "supervisor"
-            ) {
-                AdminRepository.touchLastSignedIn(email)
-                // الكاش يمنح دخولاً فوريّاً، لكنّه لا يجوز أن يمنح صلاحية
-                // دائمة: نعيد التحقّق من الخادم في الخلفية، وإن كان الحساب
-                // قد حُظر أو حُذف نُخرجه فوراً (بوّابة المصادقة تلتقط تغيّر
-                // حالة الدخول فتعيده إلى شاشة الدخول).
-                revalidateInBackground(ref)
-                return AccessState.Supervisor
-            }
-            val doc = ref.get().await()
-            if (!doc.exists()) return AccessState.NeedsOwnerCode
-            val data = doc.dataMap()
-            if (data["blocked"] == true) return AccessState.Blocked
-            // لا تكفي مجرد وثيقة موجودة: يجب أن يكون الدور المعتمد صريحاً.
-            if (str(data["role"]) != "supervisor") return AccessState.Blocked
-            // مصرَّح له بالفعل — حدّث وقت آخر دخول (لا يُفشل تسجيل الدخول إن تعذّر).
-            runCatching { AdminRepository.touchLastSignedIn(email) }
-            return AccessState.Supervisor
-        } catch (e: CancellationException) {
-            // ⚠️ `catch (Exception)` كان يبتلع إلغاء الكوروتين (خروج المستخدم من
-            // الشاشة أثناء التحقّق) ويترجمه إلى «تعذّر الاتصال بالخادم» — عطلٌ
-            // وهميّ يراه المشرف. الإلغاء يُعاد رميه كما في [sendBroadcast].
-            throw e
         } catch (_: Exception) {
             throw AccessVerificationException(
                 "تعذّر الاتصال بالخادم للتحقق من الدور والحظر. لم تُمنح أيّ صلاحية مؤقتة.",
@@ -198,10 +175,6 @@ object AuthService {
         }
     }
 
-    /**
-     * إعادة تحقّق صامتة من الخادم بعد منح دخول فوري من الكاش. لا تُبطئ
-     * الواجهة، وتُنهي الجلسة إن تبيّن أنّ الحساب حُظر أو أُلغي اعتماده.
-     */
     private fun revalidateInBackground(ref: DocumentReference) {
         backgroundScope.launch {
             runCatching {

@@ -1,243 +1,175 @@
 package com.ali.ishaqiyin_admin.data
 
-import com.google.firebase.Timestamp
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FieldPath
-import com.google.firebase.firestore.FieldValue
+import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
-import com.google.firebase.firestore.SetOptions
-import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
+import org.json.JSONObject
 import java.security.MessageDigest
 
 /**
- * كل عمليات القراءة/الكتابة على Firestore لإدارة محتوى منبر.
- * المجموعات: categories, subcategories, lessons,
- * dashboard_admins, dashboard_owner_codes.
+ * مستودع المحتوى في اللوحة — على `minbar-api` (Cloudflare D1) منذ 2026-09-10.
+ *
+ * الواجهة العامة للدوال كما كانت (الشاشات لا تتغيّر)، والفرق في المصدر:
+ * - القراءة: `/admin/{categories|subcategories|lessons}` بطلب واحد لكل مجموعة.
+ * - الكتابة: `PUT /admin/{table}/{id}` (إنشاء أو تعديل بالمفتاح نفسه — تكراري
+ *   الأمان كما كان `clientKey`)، و`DELETE` حذفٌ ناعم متسلسل إلى السلة.
+ * - لم يبقَ لـFirestore هنا إلا رموز اعتماد المرشّحين (تنتقل في المرحلة الثانية).
  */
 object AdminRepository {
     private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
-    private val functions: FirebaseFunctions get() = FirebaseFunctions.getInstance()
-
-    private const val DASH_COL = "dashboard_admins"
     private const val OWNER_CODES_COL = "dashboard_owner_codes"
-
-    /**
-     * مهلة انتظار تأكيد الخادم لكتابة قسم. بعدها نُعلن للمشرف أنّ الطلب
-     * محفوظ وسيُرسَل عند عودة الشبكة بدل تركه أمام مؤشّر لا ينتهي.
-     */
-    private const val SECTION_WRITE_TIMEOUT_MS = 12_000L
-
-    // ---------------- جلب ----------------
-    // 💸 كاش ذاكرة 5 دقائق للأقسام (نمط كاشات TranscriptsRepository): كل
-    // شاشة كانت تعيد قراءة المجموعتين كاملتين عند كل فتح، والأقسام لا
-    // تتبدّل إلا بكتابة مشرف — وكل كتابة قسم هنا **تُبطل** الكاش فوراً.
     private const val SECTIONS_TTL_MS = 5 * 60 * 1000L
+    private const val WATCH_POLL_MS = 30_000L
 
     @Volatile
     private var categoriesCache: Pair<Long, List<Category>>? = null
-
     @Volatile
     private var subcategoriesCache: Pair<Long, List<Subcategory>>? = null
 
-    /** إبطال كاش الأقسام — يُستدعى بعد أي إضافة/تعديل/حذف قسم. */
     fun invalidateSectionsCache() {
         categoriesCache = null
         subcategoriesCache = null
     }
 
-    // فكّ الترميز والفرز خارج الخيط الرئيسي: `await()` يستأنف على سياق
-    // المستدعي (Main في LaunchedEffect)، فكانت مئات الوثائق تُحوَّل هناك.
+    // ---------------- تحويل صفوف D1 إلى النماذج ----------------
+
+    private fun JSONArray?.rows(): List<JSONObject> =
+        if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
+
+    private fun categoryFromRow(row: JSONObject): Category = Category.fromDoc(
+        row.optString("id"),
+        mapOf("name" to row.optString("name"), "createdAt" to row.optLong("created_at_ms")),
+    )
+
+    private fun subcategoryFromRow(row: JSONObject): Subcategory = Subcategory.fromDoc(
+        row.optString("id"),
+        mapOf(
+            "name" to row.optString("name"),
+            "categoryId" to row.optString("category_id"),
+            "createdAt" to row.optLong("created_at_ms"),
+        ),
+    )
+
+    internal fun lessonFromRow(row: JSONObject): Lesson {
+        val sha = row.optString("sha256")
+        val originalKey = row.optString("original_key")
+        return Lesson.fromDoc(
+            row.optString("id"),
+            mapOf(
+                "title" to row.optString("title"),
+                "categoryId" to row.optString("category_id"),
+                "subcategoryId" to row.optString("subcategory_id"),
+                "audioUrl" to row.optString("audio_url"),
+                "audioStoragePath" to originalKey.ifEmpty { if (sha.isNotEmpty()) "serving/$sha.ogg" else "" },
+                "createdAt" to row.optLong("created_at_ms").takeIf { it > 0L },
+                "views" to row.optInt("views"),
+                "featured" to (row.optInt("featured") == 1),
+                "featuredUntil" to row.optLong("featured_until_ms").takeIf { it > 0L },
+            ),
+        )
+    }
+
+    private fun adminFromRow(row: JSONObject): DashAdmin {
+        val role = row.optString("role").ifEmpty { "supervisor" }
+        return DashAdmin.fromDoc(
+            row.optString("email"),
+            mapOf(
+                "email" to row.optString("email"),
+                "role" to if (role == "blocked") "supervisor" else role,
+                "blocked" to (role == "blocked"),
+                "blockMode" to if (role == "blocked") "permanent" else "",
+                "addedBy" to "minbar-api",
+                "addedAt" to row.optLong("added_at_ms"),
+            ),
+        )
+    }
+
+    // ---------------- قراءة ----------------
+
     suspend fun fetchCategories(): List<Category> {
         val now = System.currentTimeMillis()
-        categoriesCache?.let { (at, value) ->
-            if (now - at < SECTIONS_TTL_MS) return value
-        }
-        val snap = db.collection("categories").get().await()
+        categoriesCache?.let { (at, value) -> if (now - at < SECTIONS_TTL_MS) return value }
+        val rows = MinbarAdminApi.get("/admin/categories").optJSONArray("items").rows()
         return withContext(Dispatchers.Default) {
-            snap.documents
-                .map { Category.fromDoc(it.id, it.dataMap()) }
-                .sortedBy { it.name }
+            rows.map(::categoryFromRow).sortedBy { it.name }
         }.also { categoriesCache = System.currentTimeMillis() to it }
     }
 
     suspend fun fetchSubcategories(): List<Subcategory> {
         val now = System.currentTimeMillis()
-        subcategoriesCache?.let { (at, value) ->
-            if (now - at < SECTIONS_TTL_MS) return value
-        }
-        val snap = db.collection("subcategories").get().await()
-        return withContext(Dispatchers.Default) {
-            snap.documents.map { Subcategory.fromDoc(it.id, it.dataMap()) }
-        }.also { subcategoriesCache = System.currentTimeMillis() to it }
+        subcategoriesCache?.let { (at, value) -> if (now - at < SECTIONS_TTL_MS) return value }
+        val rows = MinbarAdminApi.get("/admin/subcategories").optJSONArray("items").rows()
+        return withContext(Dispatchers.Default) { rows.map(::subcategoryFromRow) }
+            .also { subcategoriesCache = System.currentTimeMillis() to it }
     }
 
-    /**
-     * ⚠️ كانت تجلب مجموعة `lessons` **كاملةً** بلا حدّ من عدّة شاشات — قراءة
-     * تنمو بنموّ المحتوى وتُحمّل الشبكة والذاكرة بلا داعٍ. [limit] اختياريّ
-     * حفاظاً على توافق المستدعين الحاليّين؛ ومَن يعرض قائمة محدودة ينبغي أن
-     * يمرّره. مع [limit] يقع الفرز على الخادم (`createdAtMs` تنازليّاً) كي
-     * يكون المقتطع هو الأحدث فعلاً لا وثائق عشوائيّة بترتيب المعرّف.
-     */
+    private suspend fun fetchLessonRows(): List<JSONObject> =
+        MinbarAdminApi.get("/admin/lessons").optJSONArray("items").rows()
+
     suspend fun fetchLessons(limit: Long? = null): List<Lesson> {
-        val base = db.collection("lessons")
-        if (limit != null && limit > 0) {
-            // ⛔ كان الفرز الخادميّ على `createdAtMs` وهو حقل لا تكتبه
-            // `createLesson` أصلاً (تكتبه `reorderSubcategoryLessons` وحدها
-            // للدروس المعاد ترتيبها) — و`orderBy` يستبعد الوثائق بلا الحقل،
-            // فكان المسار يعيد الدروس المعاد ترتيبها فقط ويُسقط الباقي بلا
-            // خطأ ظاهر. الفرز الآن على `createdAt` (نصّ ISO يكتبه الخادم في
-            // كلّ وثيقة) بشكلَيه: الجذريّ والمغلَّف `data.createdAt`، ثم
-            // تُدمج النتيجتان — كما في [fetchRecentChanges]. وثيقة بلا
-            // `createdAt` إطلاقاً تبقى خارج المسار المحدود (لا يمكن عدّها
-            // «أحدث» أصلاً)، والجلب الكامل بلا [limit] يشملها كما كان.
-            val found = LinkedHashMap<String, Lesson>()
-            listOf(
-                FieldPath.of("createdAt"),
-                FieldPath.of("data", "createdAt"),
-            ).forEach { path ->
-                runCatching {
-                    base.orderBy(path, Query.Direction.DESCENDING).limit(limit).get().await()
-                }.getOrNull()?.documents?.forEach { doc ->
-                    found[doc.id] = Lesson.fromDoc(doc.id, doc.dataMap())
-                }
-            }
-            return withContext(Dispatchers.Default) {
-                found.values.sortedByDescending { it.createdAtMs }.take(limit.toInt())
-            }
-        }
-        val snap = base.get().await()
+        val rows = fetchLessonRows()
         return withContext(Dispatchers.Default) {
-            snap.documents
-                .map { Lesson.fromDoc(it.id, it.dataMap()) }
-                .sortedByDescending { it.createdAtMs }
+            val all = rows.map(::lessonFromRow).sortedByDescending { it.createdAtMs }
+            if (limit != null && limit > 0) all.take(limit.toInt()) else all
         }
     }
 
-    /**
-     * دروس قسم فرعي واحد — استعلام مقيَّد بدل جلب **كلّ** الدروس ثم ترشيحها
-     * على الجهاز (شاشة إعادة الترتيب كانت تقرأ المجموعة كاملة لعرض قسم واحد).
-     *
-     * بلا `orderBy` فلا يلزم فهرس مركّب؛ الفرز يبقى محليّاً عند المستدعي.
-     * ويُستعلم عن الشكلين: الحقل الجذري في الوثائق الحديثة، والحقل المتداخل
-     * في الوثائق القديمة المغلَّفة `{data:{...}}`. وإن لم يُعِد الشكلان شيئاً
-     * (شكل أقدم يخزّن `subcategory._id`) نعود للجلب الكامل مرّة واحدة كي لا
-     * يختفي درس من شاشة الترتيب.
-     */
     suspend fun fetchSubcategoryLessons(subcategoryId: String): List<Lesson> {
-        val col = db.collection("lessons")
-        val found = LinkedHashMap<String, Lesson>()
-        listOf("subcategoryId", "data.subcategoryId").forEach { field ->
-            runCatching { col.whereEqualTo(field, subcategoryId).get().await() }
-                .getOrNull()
-                ?.documents
-                ?.forEach { found[it.id] = Lesson.fromDoc(it.id, it.dataMap()) }
+        val rows = fetchLessonRows().filter { it.optString("subcategory_id") == subcategoryId }
+        return withContext(Dispatchers.Default) {
+            rows.sortedWith(compareBy<JSONObject> { it.optLong("created_at_ms") }).map(::lessonFromRow)
         }
-        if (found.isEmpty()) {
-            return fetchLessons().filter { it.subcategoryId == subcategoryId }
-        }
-        return found.values.toList()
     }
 
-    // ---------------- مشرفو لوحة التحكّم (dashboard_admins) ----------------
-    // المشرف يُنشأ فقط عبر رمز الاعتماد (AuthService.verifyOwnerCode)، تماماً
-    // كما في نبراس — لا يوجد هنا إضافة مشرف يدوياً بكتابة بريده.
+    // ---------------- المشرفون ----------------
 
-    /**
-     * قائمة كل الحسابات المصرَّح لها (المالك + المشرفون) — نظير صفحة
-     * المشرفين في نبراس. أحدث تسجيل دخول في الأعلى (fallback: addedAt).
-     */
-    suspend fun fetchDashAdmins(): List<DashAdmin> {
-        val snap = db.collection(DASH_COL).get().await()
-        return snap.documents
-            .map { DashAdmin.fromDoc(it.id, it.dataMap()) }
+    suspend fun fetchDashAdmins(): List<DashAdmin> =
+        MinbarAdminApi.get("/admin/admins").optJSONArray("items").rows()
+            .map(::adminFromRow)
             .sortedByDescending { it.lastSignedInAtMs ?: it.addedAtMs }
-    }
 
-    /** حالة بريد معيّن: null إن غير موجود، وإلا الوثيقة. */
     suspend fun getDashAdmin(email: String): DashAdmin? {
         val id = email.trim().lowercase()
         if (id.isEmpty()) return null
-        val doc = db.collection(DASH_COL).document(id).get().await()
-        if (!doc.exists()) return null
-        return DashAdmin.fromDoc(doc.id, doc.dataMap())
+        return fetchDashAdmins().firstOrNull { it.email.equals(id, ignoreCase = true) }
     }
 
-    /**
-     * يثبّت دور المالك ويحدّث وقت آخر دخول (idempotent — نظير Owner Bypass
-     * في نبراس). يُستدعى من AuthService.resolveAccess عند كل دخول للمالك.
-     */
-    fun upsertOwnerRecord(email: String, displayName: String = "", photoURL: String = "") {
-        val id = email.trim().lowercase()
-        if (id.isEmpty()) return
-        // ⚠️ بلا await: مهمّة كتابة Firestore لا تكتمل إلا بتأكيد الخادم،
-        // فانتظارها هنا كان يُجمّد **تسجيل الدخول نفسه** على شبكة ضعيفة
-        // (الأصل Flutter كان يستدعيها بـ unawaited لهذا السبب بالضبط).
-        // التوثيق أفضل-جهد: يُطبَّق محليّاً ويُرسَل تلقائياً عند عودة الشبكة.
-        db.collection(DASH_COL).document(id).set(
-            mapOf(
-                "email" to id,
-                "role" to "owner",
-                "blocked" to false,
-                "blockMode" to null,
-                "displayName" to displayName,
-                "photoURL" to photoURL,
-                "addedBy" to "owner_bypass",
-                "addedAt" to nowIso(),
-                "lastSignedInAt" to nowIso(),
-            ),
-            SetOptions.merge(),
-        )
-    }
+    /** المالك مسجَّل في جدول المشرفين على الخادم؛ لا شيء يُكتب عند دخوله. */
+    fun upsertOwnerRecord(email: String, displayName: String = "", photoURL: String = "") = Unit
 
-    /**
-     * يحدّث وقت آخر دخول لمشرف معتمَد (مسموح للمستخدم بتحديث وثيقته فقط
-     * طالما غير محظور — انظر firestore.rules).
-     */
-    fun touchLastSignedIn(email: String) {
-        val id = email.trim().lowercase()
-        if (id.isEmpty()) return
-        // بلا await — للسبب نفسه في [upsertOwnerRecord]: ختم وقت الدخول
-        // معلومة إداريّة لا يجوز أن تحجز شاشة الدخول خلف الشبكة.
-        runCatching {
-            db.collection(DASH_COL).document(id).update("lastSignedInAt", nowIso())
-        }
-    }
+    fun touchLastSignedIn(email: String) = Unit
 
-    /** حظر مؤقّت/نهائي أو إلغاء الحظر — نظير أزرار صفحة المشرفين في نبراس. */
     suspend fun setDashAdminBlocked(email: String, blocked: Boolean, mode: String = "temporary") {
         val id = email.trim().lowercase()
-        // 🛡️ حارس البريد الفارغ (نظير [getDashAdmin]): `document("")` يرمي
-        // IllegalArgumentException **متزامناً** فلا يلتقطه `runCatching` الذي
-        // يلفّ `await()` عند المستدعي ⇒ انهيار اللوحة بدل رسالة.
         if (id.isEmpty()) return
-        db.collection(DASH_COL).document(id).update(
-            mapOf(
-                "blocked" to blocked,
-                "blockMode" to if (blocked) mode else null,
-                "blockedAt" to if (blocked) nowIso() else null,
-            ),
-        ).await()
+        MinbarAdminApi.put(
+            "/admin/admins",
+            JSONObject().put("email", id).put("role", if (blocked) "blocked" else "supervisor"),
+        )
     }
 
     suspend fun removeDashAdmin(email: String) {
         val id = email.trim().lowercase()
-        // نفس حارس [setDashAdminBlocked]: بريد فارغ ⇒ استثناء متزامن ⇒ انهيار.
         if (id.isEmpty()) return
-        db.collection(DASH_COL).document(id).delete().await()
+        MinbarAdminApi.delete("/admin/admins/${java.net.URLEncoder.encode(id, "UTF-8")}")
     }
 
-    /**
-     * بثّ حيّ لكل رموز الاعتماد المعلَّقة (يقرؤها المالك فقط — firestore.rules).
-     * الرموز الحقيقية وثائق بمعرّف = بريد المرشّح؛ وثيقة `current` مرآة توافق
-     * قديمة تُستبعد كي لا يظهر الرمز نفسه مرتين.
-     */
+    /** اعتماد مشرف جديد ببريده (يُستعمل بعد التحقق من رمز المالك). */
+    suspend fun addDashAdmin(email: String) {
+        val id = email.trim().lowercase()
+        if (id.isEmpty()) return
+        MinbarAdminApi.put("/admin/admins", JSONObject().put("email", id).put("role", "supervisor"))
+    }
+
+    // رموز اعتماد المرشّحين — ما زالت على Firestore حتى المرحلة الثانية.
     fun watchPendingOwnerCodes(): Flow<List<PendingOwnerCode>> =
         db.collection(OWNER_CODES_COL).querySnapshots().map { snap ->
             snap.documents
@@ -247,10 +179,6 @@ object AdminRepository {
                 .sortedByDescending { it.expiresAtMs }
         }
 
-    /**
-     * يُبطل رمز مرشّح فعلياً: يحذف وثيقة بريده (التي يتحقق منها الخادم)،
-     * ومرآة `current` إن كانت تخص المرشّح نفسه.
-     */
     suspend fun cancelOwnerCode(code: PendingOwnerCode) {
         val email = code.candidateEmail.trim().lowercase()
         if (email.isNotEmpty()) {
@@ -267,353 +195,175 @@ object AdminRepository {
     }
 
     // ---------------- إضافة ----------------
-    /**
-     * مفتاح ثابت مشتقّ من محتوى القسم يُستعمل **معرّفاً للوثيقة**: نفس الاسم
-     * (ونفس الأب للفرعي) يعطي المعرّف نفسه، فتُصبح الكتابة تكراريّة الأمان.
-     *
-     * ⚠️ سبب وجوده: كتابة Firestore لا تكتمل إلا بتأكيد الخادم، لكنّ الكاش
-     * الدائم يسجّلها محليّاً ويرسلها عند عودة الشبكة **حتى لو أُلغيت
-     * الكوروتين**. فمشرفٌ ظنّ أنّ الإنشاء فشل فأعاد الاسم نفسه كان يُنشئ
-     * قسمين متطابقين. بالمعرّف المشتقّ تُكتب المحاولتان فوق وثيقة واحدة —
-     * نظير `clientKey` في [addLesson].
-     */
-    private fun sectionKey(prefix: String, vararg parts: String): String {
-        val raw = parts.joinToString("|") {
-            it.trim().lowercase().replace(Regex("\\s+"), " ")
-        }
-        val digest = MessageDigest.getInstance("SHA-1").digest(raw.toByteArray(Charsets.UTF_8))
-        return prefix + digest.joinToString("") { byte -> "%02x".format(java.util.Locale.ROOT, byte.toInt() and 0xff) }
-    }
 
     /**
-     * يكتب وثيقة قسم بمعرّف مشتقّ ويعيد `true` إن أكّدها الخادم قبل المهلة.
-     * `false` تعني «محفوظة محليّاً وستُرسَل عند عودة الشبكة» لا «فشلت».
+     * مفتاح ثابت مشتقّ من محتوى القسم يُستعمل **معرّفاً للصفّ**: نفس الاسم
+     * (ونفس الأب للفرعي) يعطي المعرّف نفسه، فتُصبح الكتابة تكراريّة الأمان —
+     * محاولتان لنفس القسم تكتبان صفاً واحداً.
      */
-    private suspend fun writeSection(
-        collection: String,
-        key: String,
-        data: Map<String, Any?>,
-    ): Boolean {
-        invalidateSectionsCache()
-        val task = db.collection(collection).document(key).set(data)
-        // بلا شبكة: الكتابة سُجِّلت محليّاً بالفعل ولن يصل تأكيد أبداً —
-        // لا ننتظر المهلة كاملة أمام المشرف.
-        if (!NetworkMonitor.online.value) return false
-        return withTimeoutOrNull(SECTION_WRITE_TIMEOUT_MS) {
-            task.await()
-            true
-        } ?: false
+    private fun sectionKey(prefix: String, vararg parts: String): String {
+        val raw = parts.joinToString("|") { it.trim().lowercase().replace(Regex("\\s+"), " ") }
+        val digest = MessageDigest.getInstance("SHA-1").digest(raw.toByteArray(Charsets.UTF_8))
+        return prefix + digest.joinToString("") { byte -> "%02x".format(java.util.Locale.ROOT, byte.toInt() and 0xff) }
     }
 
     suspend fun addCategory(name: String): Boolean {
         val clean = name.trim()
         val key = sectionKey("cat_", clean)
-        return writeSection(
-            "categories",
-            key,
-            mapOf("name" to clean, "createdAt" to nowIso(), "clientKey" to key),
-        )
+        invalidateSectionsCache()
+        return runCatching {
+            MinbarAdminApi.put(
+                "/admin/categories/$key",
+                JSONObject().put("name", clean).put("createdAtMs", System.currentTimeMillis()),
+            )
+        }.isSuccess
     }
 
     suspend fun addSubcategory(name: String, categoryId: String): Boolean {
         val clean = name.trim()
         val key = sectionKey("sub_", categoryId, clean)
-        return writeSection(
-            "subcategories",
-            key,
-            mapOf(
-                "name" to clean,
-                "categoryId" to categoryId,
-                "createdAt" to nowIso(),
-                "clientKey" to key,
-            ),
-        )
+        invalidateSectionsCache()
+        return runCatching {
+            MinbarAdminApi.put(
+                "/admin/subcategories/$key",
+                JSONObject().put("name", clean).put("categoryId", categoryId)
+                    .put("createdAtMs", System.currentTimeMillis()),
+            )
+        }.isSuccess
     }
 
+    /**
+     * إنشاء درس. إن كان [audioStoragePath] أصلاً في R2 (`originals/…`) سُجّل
+     * الدرس بحالة `pending` وشُغّل خطّ الترميز (GitHub Actions) الذي يثبّته
+     * ready ببصمته — فلا يظهر للمستخدمين إلا بعد أن يصير ملفه القانوني جاهزاً.
+     * وإن جاء برابط جاهز (`serving/…`) سُجّل ready مباشرة.
+     */
     suspend fun addLesson(
         title: String,
         categoryId: String,
         subcategoryId: String,
         audioUrl: String,
-        /**
-         * اسما القسم الرئيسي والفرعي وقت الإضافة. يُخزَّنان في الوثيقة كي
-         * تبقى نسختها في `deleted_lessons` (تُنسخ كما هي) دالّةً على قسمها،
-         * فيميّز المشرف بين دروس متشابهة العناوين في سلة المحذوفات.
-         */
         categoryName: String = "",
         subcategoryName: String = "",
         audioStoragePath: String? = null,
         addedBy: String = "",
         featured: Boolean = false,
         featuredUntilMs: Long? = null,
-        /**
-         * زمن الإضافة الحقيقي (لحظة ضغط المشرف «رفع»)، لا لحظة اكتمال
-         * الرفع — به يبقى ترتيب الدروس في التطبيق العام مطابقاً لترتيب
-         * إضافتها حتى لو رُفعت لاحقاً بعد انقطاع طويل.
-         */
         createdAtMs: Long? = null,
-        /**
-         * مفتاح ثابت من العميل يمنع إنشاء درسين متطابقين إن ضاع ردّ
-         * الخادم بعد نجاح الكتابة (حالة معتادة على شبكة ضعيفة).
-         */
         clientKey: String? = null,
+        sourceSha256: String = "",
     ): String {
-        val data = mutableMapOf<String, Any>(
-            "title" to title.trim(),
-            "categoryId" to categoryId,
-            "subcategoryId" to subcategoryId,
-            "audioUrl" to audioUrl,
-            "createdAt" to (createdAtMs?.let(::isoOf) ?: nowIso()),
-        )
-        if (categoryName.isNotBlank()) data["categoryName"] = categoryName.trim()
-        if (subcategoryName.isNotBlank()) data["subcategoryName"] = subcategoryName.trim()
-        if (!audioStoragePath.isNullOrEmpty()) data["audioStoragePath"] = audioStoragePath
-        if (featured) {
-            data["featured"] = true
-            featuredUntilMs?.let { data["featuredUntil"] = isoOf(it) }
+        val id = clientKey?.takeIf { it.isNotBlank() } ?: newLessonId()
+        val pending = audioStoragePath.orEmpty().startsWith("originals/")
+        val body = JSONObject()
+            .put("title", title.trim())
+            .put("categoryId", categoryId)
+            .put("subcategoryId", subcategoryId)
+            .put("audioUrl", if (pending) "" else audioUrl)
+            .put("createdAtMs", createdAtMs ?: System.currentTimeMillis())
+            .put("featured", featured)
+            .put("featuredUntilMs", featuredUntilMs ?: 0L)
+            .put("audioStatus", if (pending) "pending" else "ready")
+        if (pending) body.put("originalKey", audioStoragePath).put("sourceSha256", sourceSha256)
+        if (addedBy.isNotEmpty()) body.put("extraJson", JSONObject().put("addedBy", addedBy.lowercase()).toString())
+        MinbarAdminApi.put("/admin/lessons/$id", body)
+        if (pending) {
+            MinbarAdminApi.post(
+                "/admin/lessons/$id/transcode",
+                JSONObject().put("originalKey", audioStoragePath).put("sourceSha256", sourceSha256),
+            )
         }
-        if (addedBy.isNotEmpty()) data["addedBy"] = addedBy.lowercase()
-        if (!clientKey.isNullOrEmpty()) data["clientKey"] = clientKey
-        val result = functions.getHttpsCallable("createLesson").call(data).await()
-        // معرّف الدرس المنشأ — يلزم «النص المشروح» المرافق في طابور الرفع.
-        return ((result.data as? Map<*, *>)?.get("id"))?.toString().orEmpty()
+        return id
     }
 
-    /**
-     * إعادة ترتيب دروس قسم فرعي: تُرسل القائمة الكاملة بالترتيب الجديد،
-     * والخادم يعيد توزيع طوابع الإنشاء نفسها عليها (فيصح «الأقدم أولاً»
-     * و«الأحدث أولاً» معاً في التطبيق العام بلا أي تعديل عليه).
-     */
+    private fun newLessonId(): String =
+        java.util.UUID.randomUUID().toString().replace("-", "").take(20)
+
     suspend fun reorderSubcategoryLessons(subcategoryId: String, lessonIds: List<String>) {
-        functions.getHttpsCallable("reorderSubcategoryLessons").call(
-            mapOf("subcategoryId" to subcategoryId, "lessonIds" to lessonIds),
-        ).await()
-    }
-
-    /**
-     * تمييز/إلغاء تمييز درس (يظهر في «مختارات المنبر» أعلى التطبيق).
-     * [untilMs] نهاية المدّة، و`null` تعني تمييزاً دائماً.
-     * إلغاء التمييز يمسح المدّة أيضاً كي لا تبقى قيمة معلّقة تُربك العرض.
-     */
-    suspend fun setLessonFeatured(id: String, featured: Boolean, untilMs: Long? = null) {
-        // ⚠️ لا updateCompat هنا: هو يسبق المفاتيح بـ`data.` وحدها في الوثائق
-        // القديمة المغلَّفة، بينما watchFeatured يستعلم `featured` الجذري —
-        // فكان تمييز درس قديم لا يظهر في اللوحة. لكنّ التطبيق العام يقرأ
-        // المغلَّف وحده، فالكتابة على **الموضعين معاً** هي الحلّ الوحيد الذي
-        // يُبقي اللوحة والتطبيق متّفقَين (وإلا بقي درس ملغى التمييز مميّزاً
-        // في التطبيق إلى الأبد لأن `data.featured` لم يُلمس).
-        val user = FirebaseAuth.getInstance().currentUser
-        val featuredUntil: Any = when {
-            !featured -> FieldValue.delete()
-            untilMs == null -> FieldValue.delete()
-            else -> isoOf(untilMs)
-        }
-        val featuredKeys = mapOf(
-            "featured" to featured,
-            "featuredUntil" to featuredUntil,
-            "featuredAt" to if (featured) nowIso() else FieldValue.delete(),
+        MinbarAdminApi.post(
+            "/admin/lessons/reorder",
+            JSONObject().put("subcategoryId", subcategoryId).put("lessonIds", JSONArray(lessonIds)),
         )
-        val tracking = buildMap<String, Any?> {
-            if (user != null) put("updatedByUid", user.uid)
-            val email = user?.email.orEmpty()
-            if (email.isNotEmpty()) put("updatedByEmail", email.trim().lowercase())
-            // ⏱️ Timestamp خادميّ لا نصّ ISO — نفس علّة [updateCompat]:
-            // المزامنة التفاضليّة في التطبيق العام كانت لا ترى التعديل.
-            put("updatedAt", FieldValue.serverTimestamp())
-        }
-        val ref = db.collection("lessons").document(id)
-        db.runTransaction { transaction ->
-            val snapshot = transaction.get(ref)
-            if (!snapshot.exists()) error("الدرس المطلوب غير موجود.")
-            val fields = buildMap<String, Any?> {
-                putAll(featuredKeys)
-                putAll(tracking)
-                // الوثائق القديمة المغلَّفة: نكتب النسخة المسبوقة أيضاً كي
-                // يراها التطبيق العام الذي يقرأ من `data` وحدها.
-                if (snapshot.data?.get("data") is Map<*, *>) {
-                    featuredKeys.forEach { (key, value) -> put("data.$key", value) }
-                }
-            }
-            transaction.update(ref, fields)
-            null
-        }.await()
     }
 
-    /**
-     * بثّ حيّ لدروس «مختارات المنبر». الترشيح محلّي على `featured` كي لا
-     * يحتاج فهرساً مركّباً، والقائمة صغيرة أصلاً بطبيعتها.
-     */
-    fun watchFeatured(): Flow<List<Lesson>> =
-        db.collection("lessons").whereEqualTo("featured", true).querySnapshots()
-            .map { snap ->
-                snap.documents
-                    .map { Lesson.fromDoc(it.id, it.dataMap()) }
+    suspend fun setLessonFeatured(id: String, featured: Boolean, untilMs: Long? = null) {
+        MinbarAdminApi.put(
+            "/admin/lessons/$id",
+            JSONObject().put("featured", featured).put("featuredUntilMs", if (featured) (untilMs ?: 0L) else 0L),
+        )
+    }
+
+    fun watchFeatured(): Flow<List<Lesson>> = flow {
+        while (true) {
+            emit(
+                fetchLessonRows().filter { it.optInt("featured") == 1 }.map(::lessonFromRow)
                     .sortedWith(
-                        // الدائم أوّلاً ثم الأقرب انتهاءً — ما يوشك على
-                        // السقوط يجب أن يقع تحت عين المالك.
                         compareBy<Lesson> { it.featuredUntilMs ?: Long.MAX_VALUE }
                             .thenByDescending { it.createdAtMs },
-                    )
-            }
-
-    // ⛔ «النشر المجدول» أُزيل من المنظومة كلّها (الدوال السحابيّة والتطبيق
-    // العام واللوحة) بقرار صاحب المشروع، والقاعدة خالية من أيّ درس بموعد
-    // مستقبليّ. فلا جدولة ولا «نشر الآن» ولا حقل `publishAt` — لا تُعَد.
+                    ),
+            )
+            delay(WATCH_POLL_MS)
+        }
+    }.flowOn(Dispatchers.IO)
 
     // ---------------- تعديل ----------------
+
     suspend fun updateCategory(id: String, name: String) {
         invalidateSectionsCache()
-        updateCompat("categories", id, mapOf("name" to name.trim()))
+        MinbarAdminApi.put("/admin/categories/$id", JSONObject().put("name", name.trim()))
     }
 
     suspend fun updateSubcategory(id: String, name: String) {
         invalidateSectionsCache()
-        updateCompat("subcategories", id, mapOf("name" to name.trim()))
+        MinbarAdminApi.put("/admin/subcategories/$id", JSONObject().put("name", name.trim()))
     }
 
-    suspend fun updateLessonTitle(id: String, title: String) =
-        updateCompat("lessons", id, mapOf("title" to title.trim()))
+    suspend fun updateLessonTitle(id: String, title: String) {
+        MinbarAdminApi.put("/admin/lessons/$id", JSONObject().put("title", title.trim()))
+    }
 
-    /**
-     * نتيجة نقل درس: [placedLast] يخبر هل استقرّ الدرس في آخر قائمة وجهته،
-     * فقد ينجح النقل ويتعذّر الترتيب وحده — والتفريق ضروريّ كي لا نقول
-     * «فشل» لعملٍ تمّ فيعيد المشرف رفع الصوتيّة بلا داعٍ.
-     */
     data class MoveLessonResult(val placedLast: Boolean)
 
-    /**
-     * نقل درس إلى قسم فرعيّ آخر: **تغيير حقلَي القسم فقط**، بلا لمس الملفّ
-     * الصوتيّ ولا معرّف الدرس — فيبقى نصّه المشروح وعدّاد استماعه وروابطه
-     * المشارَكة كما هي، ولا يُعاد رفع شيء على شبكة ضعيفة.
-     *
-     * القسم الرئيسيّ يُشتقّ من [target] نفسه (`target.categoryId`) لا يُمرَّر
-     * منفصلاً: تمريره كان يسمح ببقاء الدرس على رئيسيّ لا ينتمي إليه فرعيّه.
-     */
     suspend fun moveLessonToSubcategory(
         lesson: Lesson,
         target: Subcategory,
         targetCategoryName: String = "",
-        /**
-         * ⚡ للنقل الجماعي (كتفريغ قسم درساً درساً قبل حذفه): إعادة ترتيب
-         * الوجهة بعد **كلّ** درس تقرأ وتعيد كتابة دروس الوجهة كاملة —
-         * تضخيم O(عدد المنقول × حجم الوجهة) قراءةً وكتابةً ونداءً سحابيّاً.
-         * مرِّر `false` في الحلقة واستدعِ [reorderSubcategoryLessons] مرّة
-         * واحدة بعد اكتمال الدفعة كلّها؛ عندها يُعاد `placedLast = true`
-         * لأنّ الترتيب صار على عاتق المستدعي لا خللاً يستدعي رسالة.
-         */
         reorderAfterMove: Boolean = true,
     ): MoveLessonResult {
-        // نقلٌ إلى الموضع نفسه لا معنى له — ولا نكتب في القاعدة من أجله.
         if (target.id == lesson.subcategoryId) return MoveLessonResult(true)
-
-        val snapshot = db.collection("lessons").document(lesson.id).get().await()
-        if (!snapshot.exists()) error("الدرس المطلوب غير موجود.")
-        val body = unwrap(snapshot.data ?: emptyMap())
-
-        val fields = mutableMapOf<String, Any?>(
-            "categoryId" to target.categoryId,
-            "subcategoryId" to target.id,
+        MinbarAdminApi.put(
+            "/admin/lessons/${lesson.id}",
+            JSONObject().put("categoryId", target.categoryId).put("subcategoryId", target.id),
         )
-        // الاسمان مخزَّنان مع الدرس منذ إنشائه (انظر addLesson)؛ تركهما على
-        // القسم القديم يجعل كل شاشة تقرؤهما تعرض وجهةً خاطئة.
-        if (targetCategoryName.isNotBlank()) fields["categoryName"] = targetCategoryName.trim()
-        if (target.name.isNotBlank()) fields["subcategoryName"] = target.name
-        // وثائق أقدم تخزّن القسم الفرعيّ خريطةً `subcategory{_id,name}`؛ لو
-        // تُركت لعاد الدرس إلى قسمه الأوّل عند كل قارئ يعتمدها. تُحدَّث فقط
-        // إن كانت موجودة أصلاً كي لا نخترع حقلاً في الوثائق الحديثة.
-        if (body["subcategory"] is Map<*, *>) {
-            fields["subcategory._id"] = target.id
-            if (target.name.isNotBlank()) fields["subcategory.name"] = target.name
-        }
-        // updateCompat نفسها: تحافظ على شكل `{data:{...}}` القديم فيقرأ
-        // التطبيق العامّ التغيير كما يقرأ تعديل العنوان تماماً.
-        updateCompat("lessons", lesson.id, fields)
-
-        // الترتيب داخل القسم مبنيّ على طابع الإنشاء لا على حقل رقميّ، فخروج
-        // الدرس من قسمه القديم **لا يترك ثغرة** تحتاج إصلاحاً. يبقى أن يأخذ
-        // موضعه الصحيح في وجهته: آخر القائمة.
         if (!reorderAfterMove) return MoveLessonResult(true)
         val placedLast = runCatching {
             val destination = fetchSubcategoryLessons(target.id)
-            // درس وحيد في وجهته لا ترتيب له (والدالّة الخادميّة ترفض أقلّ من اثنين).
             if (destination.size < 2) return@runCatching true
-            val ordered = destination
-                .filter { it.id != lesson.id }
-                .sortedBy { it.createdAtMs }
-                .map { it.id } + lesson.id
+            val ordered = destination.filter { it.id != lesson.id }.sortedBy { it.createdAtMs }.map { it.id } + lesson.id
             reorderSubcategoryLessons(target.id, ordered)
             true
         }.getOrDefault(false)
-
         return MoveLessonResult(placedLast)
     }
 
-    /**
-     * يحافظ على شكل الوثائق القديمة `{data:{...}}` بدلاً من كتابة حقل جديد
-     * في الجذر لا يقرأه التطبيق العام.
-     */
-    private suspend fun updateCompat(collection: String, id: String, fields: Map<String, Any?>) {
-        val ref = db.collection(collection).document(id)
-        val user = FirebaseAuth.getInstance().currentUser
-        val tracked = buildMap<String, Any?> {
-            putAll(fields)
-            if (user != null) put("updatedByUid", user.uid)
-            val email = user?.email.orEmpty()
-            if (email.isNotEmpty()) put("updatedByEmail", email.trim().lowercase())
-            // ⏱️ Timestamp خادميّ لا نصّ ISO: استعلامات المزامنة التفاضليّة
-            // في التطبيق العام تضع حدوداً بأنواع Timestamp/رقم — وFirestore
-            // لا يُرجع في استعلام المدى قيمةً من نوع غير نوع الحدّ، فكان كلّ
-            // تعديل تكتبه اللوحة (تسمية، نقل، تمييز) غير مرئيّ للجلب
-            // التفاضليّ ولا يصل الأجهزة إلا بجلبة كاملة عرضيّة. القرّاء هنا
-            // (fetchRecentChanges/التحليلات) يقرؤون عبر parseDateMs الذي
-            // يفهم الطابع والنصّ معاً، فلا حاجة لحقل نصّيّ موازٍ.
-            put("updatedAt", FieldValue.serverTimestamp())
-        }
-        db.runTransaction { transaction ->
-            val snapshot = transaction.get(ref)
-            if (!snapshot.exists()) error("المستند المطلوب غير موجود.")
-            val raw = snapshot.data ?: emptyMap()
-            if (raw["data"] is Map<*, *>) {
-                transaction.update(ref, tracked.mapKeys { "data.${it.key}" })
-            } else {
-                transaction.update(ref, tracked)
-            }
-            null
-        }.await()
-    }
+    // ---------------- حذف (ناعم إلى السلة، متسلسل) ----------------
 
-    // ---------------- حذف ----------------
-    /**
-     * يحذف القسم الرئيسي حذفاً تعاقبياً كاملاً: كل أقسامه الفرعية ودروسها
-     * (مع ملفاتها الصوتية في التخزين)، ثم أي دروس مرتبطة به مباشرةً، ثم القسم.
-     */
     suspend fun deleteCategory(id: String) {
-        functions.getHttpsCallable("deleteCategoryCascade")
-            .call(mapOf("categoryId" to id)).await()
+        MinbarAdminApi.delete("/admin/categories/$id")
         invalidateSectionsCache()
     }
 
-    /**
-     * يحذف القسم الفرعي حذفاً تعاقبياً: كل دروسه (مع ملفاتها الصوتية في
-     * التخزين)، ثم وثيقة القسم الفرعي.
-     */
     suspend fun deleteSubcategory(id: String) {
-        functions.getHttpsCallable("deleteSubcategoryCascade")
-            .call(mapOf("subcategoryId" to id)).await()
+        MinbarAdminApi.delete("/admin/subcategories/$id")
         invalidateSectionsCache()
     }
 
-    /** يحذف الدرس: الملف الصوتي من التخزين (إن وُجد) ثم الوثيقة. */
     suspend fun deleteLesson(lesson: Lesson) {
-        functions.getHttpsCallable("deleteLesson")
-            .call(mapOf("lessonId" to lesson.id)).await()
+        MinbarAdminApi.delete("/admin/lessons/${lesson.id}")
     }
 
-    // ---------------- «آخر ما جرى» (من فعل ماذا ومتى) ----------------
-    /**
-     * تغيير واحد كما يُعرض في شاشة «آخر ما جرى».
-     * [kind]: `lesson` أو `category` أو `subcategory`.
-     */
+    // ---------------- آخر التغييرات ----------------
+
     data class RecentChange(
         val id: String,
         val kind: String,
@@ -622,100 +372,49 @@ object AdminRepository {
         val atMs: Long,
     )
 
-    /**
-     * آخر ما عُدِّل في المحتوى.
-     *
-     * ⚠️ لا شيء جديد يُكتب من أجل هذه الشاشة: [updateCompat] تكتب
-     * `updatedByEmail` و`updatedByUid` و`updatedAt` مع **كل** تعديل منذ اليوم
-     * الأوّل — والسجلّ كان موجوداً في القاعدة بلا شاشة واحدة تعرضه.
-     *
-     * خفّة الاستعلام مقصودة (إنترنت المشرفين ضعيف): استعلامات مقيَّدة بحدٍّ
-     * صغير وفرزٍ على الخادم، **بلا مستمع حيّ** وبلا جلب المجموعة كاملة.
-     *
-     * ⚠️ الوثائق على شكلين: حديثة تحمل الحقول في الجذر، وقديمة تغلّفها في
-     * `data.` — و`orderBy` لا يُرجع وثيقة لا تملك الحقل المطلوب أصلاً، فلكلّ
-     * شكل استعلامه ثمّ تُدمج النتيجتان. والفرز على حقل واحد لا يحتاج فهرساً
-     * مركّباً.
-     */
     suspend fun fetchRecentChanges(limit: Int = 50): List<RecentChange> {
-        val plan = listOf(
-            Triple("lessons", "lesson", limit),
-            Triple("categories", "category", 15),
-            Triple("subcategories", "subcategory", 15),
-        )
-        val found = LinkedHashMap<String, RecentChange>()
-        // ⛔ حقل `updatedAt` مختلط الأنواع: الدوال السحابيّة تكتبه Timestamp
-        // بينما تعديلات اللوحة القديمة نصّ ISO — وFirestore يفصل الأنواع في
-        // الترتيب (النصوص قبل الطوابع تنازليّاً) فكان `limit` يمتلئ بالنصوص
-        // القديمة مهما قدُمت وتُقصى الطوابع الأحدث من «آخر ما جرى». لكلّ
-        // نوع استعلامه المقيَّد بمدى نوعه (استعلام المدى لا يُرجع إلا نوع
-        // حدّه): >= "" للنصوص و>= طابع الصفر للطوابع، ثم تُدمج النتائج.
-        val typeBounds = listOf<Any>("", Timestamp(0, 0))
-        plan.forEach { (collection, kind, cap) ->
-            listOf(
-                FieldPath.of("updatedAt"),
-                FieldPath.of("data", "updatedAt"),
-            ).forEach { path ->
-                typeBounds.forEach bounds@{ bound ->
-                val snap = runCatching {
-                    db.collection(collection)
-                        .whereGreaterThanOrEqualTo(path, bound)
-                        .orderBy(path, Query.Direction.DESCENDING)
-                        .limit(cap.toLong())
-                        .get()
-                        .await()
-                }.getOrNull() ?: return@bounds
-                snap.documents.forEach { doc ->
-                    val raw = doc.dataMap()
-                    val body = unwrap(raw)
-                    val atMs = parseDateMs(body["updatedAt"] ?: raw["updatedAt"])
-                    if (atMs <= 0L) return@forEach
-                    val name = str(body["title"]).ifEmpty { str(body["name"]) }
-                    val by = str(body["updatedByEmail"]).ifEmpty { str(raw["updatedByEmail"]) }
-                    // المفتاح بالمعرّف: الاستعلامات قد تُرجع الوثيقة نفسها.
-                    val previous = found[doc.id]
-                    if (previous == null || previous.atMs < atMs) {
-                        found[doc.id] = RecentChange(
-                            id = doc.id,
+        val found = mutableListOf<RecentChange>()
+        listOf(
+            Triple("lessons", "lesson", "title"),
+            Triple("categories", "category", "name"),
+            Triple("subcategories", "subcategory", "name"),
+        ).forEach { (table, kind, nameKey) ->
+            runCatching { MinbarAdminApi.get("/admin/$table?all=1").optJSONArray("items").rows() }
+                .getOrDefault(emptyList())
+                .forEach { row ->
+                    val atMs = row.optLong("updated_at_ms")
+                    if (atMs > 0L) {
+                        found += RecentChange(
+                            id = row.optString("id"),
                             kind = kind,
-                            name = name,
-                            byEmail = by.lowercase(),
+                            name = row.optString(nameKey),
+                            byEmail = "",
                             atMs = atMs,
                         )
                     }
                 }
-                }
-            }
         }
-        return withContext(Dispatchers.Default) {
-            found.values.sortedByDescending { it.atMs }.take(limit)
-        }
+        return withContext(Dispatchers.Default) { found.sortedByDescending { it.atMs }.take(limit) }
     }
 
-    // ---------------- تفاعل المستمعين (feedback) ----------------
-    suspend fun fetchFeedback(): List<Map<String, Any?>> {
-        val snap = db.collection("feedback").get().await()
-        return snap.documents
-            .map { doc -> buildMap<String, Any?> { put("id", doc.id); putAll(doc.dataMap()) } }
-            .sortedByDescending { (it["createdAtMs"] as? Number)?.toLong() ?: 0L }
-    }
+    // ---------------- ملاحظات المستمعين ----------------
+
+    suspend fun fetchFeedback(): List<Map<String, Any?>> =
+        MinbarAdminApi.get("/admin/feedback").optJSONArray("items").rows().map { row ->
+            mapOf(
+                "id" to row.optString("id"),
+                "type" to row.optString("kind"),
+                "note" to row.optString("text"),
+                "contact" to row.optString("contact"),
+                "lessonId" to row.optString("lesson_id"),
+                "createdAtMs" to row.optLong("created_at_ms"),
+            )
+        }.sortedByDescending { (it["createdAtMs"] as? Number)?.toLong() ?: 0L }
 
     suspend fun deleteFeedback(id: String) {
-        db.collection("feedback").document(id).delete().await()
+        MinbarAdminApi.delete("/admin/feedback/$id")
     }
 
-    // ---------------- تنبيهات المشرف (إنجازات/تقرير أسبوعي) ----------------
-    /** آخر مرّة نُظِّفت فيها التنبيهات المحسومة — حارس ضدّ استدعاء لكل رجوع. */
-    private var lastAlertCleanupMs = 0L
-
-    /** يزيل خادمياً تنبيهات المساهمات التي حُسمت قبل الإصلاح الحالي. */
-    suspend fun cleanupResolvedAdminAlerts() {
-        // اللوحة تستدعيها عند كل رجوع إليها؛ التنظيف عمل صيانة لا يستحقّ
-        // استدعاء دالة سحابيّة أكثر من مرّة في الساعة.
-        val now = System.currentTimeMillis()
-        if (now - lastAlertCleanupMs < 60 * 60 * 1000L) return
-        lastAlertCleanupMs = now
-        // لا نحجب اللوحة إذا كانت الدالة لم تُنشر بعد أو كان الاتصال ضعيفاً.
-        runCatching { functions.getHttpsCallable("cleanupResolvedAdminAlerts").call().await() }
-    }
+    /** تنبيهات المشرفين المحلولة تُكنَس على الخادم دورياً — لا شيء هنا. */
+    suspend fun cleanupResolvedAdminAlerts() = Unit
 }

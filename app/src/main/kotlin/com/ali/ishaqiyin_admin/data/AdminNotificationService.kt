@@ -11,6 +11,7 @@ import com.google.firebase.functions.FirebaseFunctionsException
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.tasks.await
+import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 
 /**
  * فشل إرسال إشعار عام — [message] **عربية دائماً** وصالحة للعرض مباشرة
@@ -55,17 +56,21 @@ object AdminNotificationService {
             )
         }
         val result = try {
-            FirebaseFunctions.getInstance()
-                .getHttpsCallable("sendNotification")
-                .call(hashMapOf("title" to cleanTitle, "body" to cleanBody))
-                .await()
+            MinbarAdminApi.post(
+                "/admin/notify",
+                org.json.JSONObject()
+                    .put("title", cleanTitle)
+                    .put("body", cleanBody)
+                    .put("topic", "content")
+                    .put("type", "general"),
+            )
         } catch (e: CancellationException) {
             throw e
-        } catch (e: FirebaseFunctionsException) {
-            Log.w(TAG, "sendNotification failed: code=${e.code} raw=${e.message}")
-            throw NotificationSendException(arabicMessage(e))
+        } catch (e: MinbarAdminApi.ApiException) {
+            Log.w(TAG, "notify failed: code=${e.code} raw=${e.message}")
+            throw NotificationSendException(e.message ?: "رفض الخادم إرسال الإشعار.")
         } catch (e: Exception) {
-            Log.w(TAG, "sendNotification failed: $e")
+            Log.w(TAG, "notify failed: $e")
             throw NotificationSendException(
                 if (isOfflineError(e)) {
                     "لا يوجد اتصال بالإنترنت. تحقّق من الشبكة ثم أعد المحاولة."
@@ -75,8 +80,10 @@ object AdminNotificationService {
             )
         }
 
-        val data = result.getData() as? Map<*, *>
-        // الخادم الحالي يعيد {ok:true}، ونسخ أقدم كانت تعيد {success:false,error}.
+        val data: Map<*, *>? = mapOf(
+            "ok" to result.optBoolean("ok", false),
+            "error" to result.optString("error"),
+        )
         val rejected = data != null && (data["ok"] == false || data["success"] == false)
         if (rejected) {
             val reason = data?.get("error")?.toString().orEmpty().trim()

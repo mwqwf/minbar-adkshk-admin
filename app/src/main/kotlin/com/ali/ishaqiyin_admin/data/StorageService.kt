@@ -63,6 +63,13 @@ object StorageService {
     suspend fun deleteFileOrThrow(urlOrPath: String) {
         val path = resolvePath(urlOrPath)
             ?: throw IllegalArgumentException("مسار تخزين غير صالح: $urlOrPath")
+        // كائنات R2 (أصول/صور) تُحذف عبر minbar-api؛ ما عداها إرثُ Firebase.
+        if (path.startsWith("originals/") || path.startsWith("images/")) {
+            com.ali.ishaqiyin_admin.core.MinbarAdminApi.delete(
+                "/admin/media?key=" + java.net.URLEncoder.encode(path, "UTF-8"),
+            )
+            return
+        }
         try {
             storage.reference.child(path).delete().await()
         } catch (e: StorageException) {

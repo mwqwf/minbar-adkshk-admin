@@ -44,6 +44,9 @@ import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
 /** قناة إشعار تقدّم الرفع (منخفضة الأهميّة — لا تُصدر صوتاً). */
 private const val UPLOAD_CHANNEL = "admin_uploads"
@@ -225,6 +228,7 @@ class LessonUploadWorker(
                     createdAtMs = item.queuedAtMs,
                     // مفتاح ثابت: إعادة المحاولة بعد ضياع الردّ لا تُنشئ درساً ثانياً.
                     clientKey = item.id,
+                    sourceSha256 = lastUploadSha,
                 )
                 // «النص المشروح» المرافق (إن أُرفق بالنموذج): يُنشر بعد إنشاء
                 // الدرس مباشرة. فشله لا يُفشل الدرس — المشرف يضيفه يدوياً.
@@ -581,82 +585,29 @@ class LessonUploadWorker(
     }
 
     /** رفع مع استئناف — يعيد (رابط التنزيل، مسار التخزين). */
+    /** بصمة آخر أصل رُفع (يحسبها الخادم من البايتات الواصلة) — تُمرَّر مع إنشاء الدرس. */
+    private var lastUploadSha = ""
+
+    /**
+     * الرفع إلى R2 عبر `minbar-api` (`PUT /admin/upload/originals/…`).
+     *
+     * لا جلسة قابلة للاستئناف: حدّ الطلب 100 م.ب والدروس دونه بكثير، فالإعادة
+     * من الصفر أرخص وأبسط من جلسات Firebase التي كانت تموت وتُحيى. الإيقاف
+     * والإلغاء من الواجهة يلغيان الطلب الجاري ويُعامَلان كإيقاف مؤقّت.
+     * يعيد (رابط فارغ، مفتاح الأصل): الدرس يُسجَّل pending ثم يثبّته خطّ الترميز.
+     */
     private suspend fun uploadWithResume(
         item: PendingUpload,
         file: File,
     ): Pair<String, String> {
-        // اسم نظيف: يُنزع معرّف الطابور كاملاً لا حتى أوّل شرطة سفليّة
-        // (المعرّف نفسه يحوي شرطات: up_<millis>_<rand>).
         val cleanName = file.name.removePrefix("${item.id}_")
-        val storagePath = "lessons/${item.queuedAtMs}_$cleanName"
-        val ref = FirebaseStorage.getInstance().reference.child(storagePath)
-        // نوع المحتوى: [StorageService.mimeForExt] يعيد نوعاً صوتياً دائماً
-        // لمسار الدروس — الاسم بلا امتداد (ملفّ وصل بالمشاركة من مزوّد لا
-        // يعرض DISPLAY_NAME) لم يعد يُرفض من قواعد التخزين.
-        val metadata = StorageMetadata.Builder()
-            .setContentType(StorageService.mimeForExt(item.fileName.substringAfterLast('.', "")))
-            // المسار مختوم زمنيّاً بالاسم فلا يُستبدل أبداً — كاش سنة كاملة
-            // يوفّر إعادة تنزيل الصوت نفسه (CDN/جهاز المستخدم).
-            .setCacheControl("public, max-age=31536000, immutable")
-            .build()
-
-        // ⏳ جلسة أقدم من يوم تُهمَل **قبل** المحاولة لا بعد فشلها: جلسات GCS
-        // القابلة للاستئناف تنتهي صلاحيّتها، وعنصر بقي في الطابور عشرة أيّام
-        // كان يدور على جلسة ميتة يقيناً بلا مخرج.
-        var session = item.sessionUri
-        if (session != null &&
-            System.currentTimeMillis() - item.sessionSavedAtMs > UploadQueue.SESSION_MAX_AGE_MS
-        ) {
-            Log.i(TAG, "session wiped: older than 24h id=${item.id}")
-            UploadQueue.saveSession(item.id, null)
-            session = null
-        }
-        val resuming = session != null
-        var loggedResume = false
-        val source = Uri.fromFile(file)
-
-        suspendCancellableCoroutine<Unit> { cont ->
-            val existing = session?.let(Uri::parse)
-            val task = if (existing != null) {
-                ref.putFile(source, metadata, existing)
-            } else {
-                ref.putFile(source, metadata)
-            }
-            // مقبضان لا مقبض واحد: الإيقاف غير المقصود يُوقف ولا يهدم،
-            // والإلغاء الصريح من المشرف وحده هو الذي يهدم الجلسة.
-            UploadQueue.bindActiveTask(
-                id = item.id,
-                pause = { task.pause() },
-                cancel = { task.cancel() },
-            )
-            /**
-             * تُلتقط الجلسة من **كلّ** مخرج للمهمّة: نبضة تقدّم، أو إيقاف، أو
-             * فشل، أو إلغاء العامل.
-             *
-             * ⚠️ قراءة `task.snapshot` فور `putFile` لا تنفع: الجلسة القابلة
-             * للاستئناف لا تصدر إلّا بعد رحلة شبكة، فالقيمة `null` يقيناً
-             * حينها. والثغرة الحقيقيّة — انقطاع بين إنشاء الجلسة وأوّل نبضة —
-             * يغلقها التقاطُها في مستمعَي الفشل والإلغاء، فلا يبقى مخرج واحد
-             * يفلت منه عنوانُ الجلسة.
-             */
-            fun keepSession(uploaded: Uri?) {
-                val text = uploaded?.toString() ?: return
-                if (text == session) return
-                session = text
-                UploadQueue.saveSession(item.id, text)
-            }
-            // ⚠️ بلا Executor يعمل المستمع على **الخيط الرئيسي**، وفيه
-            // `commit()` (fsync حاجب) وقراءة الطابور كاملاً وإعادة كتابته مع
-            // نصوص «النص المشروح» — تجميد إطارات وخطر ANR. خيط واحد يحفظ
-            // ترتيب النبضات ويُبقي الواجهة حرّة.
-            task.addOnProgressListener(listenerExecutor) { snap ->
-                keepSession(snap.uploadSessionUri)
-                if (snap.totalByteCount > 0) {
-                    val pct = (snap.bytesTransferred * 100 / snap.totalByteCount).toInt()
-                    if (resuming && !loggedResume) {
-                        loggedResume = true
-                        Log.i(TAG, "resume from pct=$pct")
-                    }
+        val key = "originals/${item.queuedAtMs}_$cleanName"
+        val contentType = StorageService.mimeForExt(item.fileName.substringAfterLast('.', ""))
+        val response = coroutineScope {
+            val job = async {
+                com.ali.ishaqiyin_admin.core.MinbarAdminApi.upload(
+                    "/admin/upload/$key", file, contentType,
+                ) { pct ->
                     if (pct != lastPercent) {
                         lastPercent = pct
                         UploadQueue.setProgress(UploadProgress(item.id, item.title, pct))
@@ -665,58 +616,27 @@ class LessonUploadWorker(
                     }
                 }
             }
-            // ⛔ `endTransfer()` من المستمعين وحدهم: العلم هو حارس `kickNow`،
-            // وهو يعني «سكتت المهمّة فعلاً» لا «انسحب العامل» — وبين الأمرين
-            // نافذة يبقى فيها النقل جارياً (`pause()` غير متزامن).
-            task.addOnPausedListener(listenerExecutor) { snap ->
-                keepSession(snap.uploadSessionUri)
+            UploadQueue.bindActiveTask(
+                id = item.id,
+                pause = { job.cancel() },
+                cancel = { job.cancel() },
+            )
+            try {
+                job.await()
+            } catch (e: CancellationException) {
+                // إلغاء العامل نفسه يمرّ كما هو؛ أما إلغاء الطلب من الواجهة
+                // (إيقاف/إلغاء العنصر) فيُعامَل كإيقاف مؤقّت للعنصر.
+                if (!kotlinx.coroutines.currentCoroutineContext().isActive) throw e
+                throw UploadPausedException()
+            } finally {
                 UploadQueue.endTransfer()
-                Log.i(TAG, "pause() kept session=$session")
-                if (cont.isActive) cont.resumeWithException(UploadPausedException())
-            }
-            // 🛡️ حارس `isActive` في المستمعين الثلاثة لا في مستمع الإيقاف وحده:
-            // المستمعات تعمل على المنفّذ نفسه لكنّ Firebase قد يطلق أكثر من
-            // مخرج للمهمّة الواحدة (إيقافٌ ثم اكتمالُ ما تبقّى مثلاً)، فيُستأنف
-            // المتّصل مرّتين ⇒ IllegalStateException غير ملتقَط على خيط الرفع
-            // ⇒ انهيار اللوحة أثناء الرفع.
-            task.addOnSuccessListener(listenerExecutor) {
-                UploadQueue.endTransfer()
-                if (cont.isActive) cont.resume(Unit)
-            }
-            task.addOnFailureListener(listenerExecutor) {
-                // الفشل قد يقع بين إنشاء الجلسة وأوّل نبضة — تُلتقط هنا فلا
-                // يعود الرفع من الصفر لمجرّد أنّ النبضة الأولى لم تصل.
-                runCatching { keepSession(task.snapshot.uploadSessionUri) }
-                UploadQueue.endTransfer()
-                if (cont.isActive) cont.resumeWithException(it)
-            }
-            // ⛔ `pause()` لا `cancel()`: `cancel()` يرسل
-            // `ResumableUploadCancelRequest` إلى الخادم فيمحو الجلسة، فيبقى
-            // `sessionUri` على القرص عنوانَ جلسة مقتولة ويعود الرفع من الصفر
-            // في كلّ انقطاع. هذا هو أصل «يبقى عالقاً ويوهمك أنّ الرفع جارٍ».
-            // والجلسة تُلتقط قبل الإيقاف: `pause()` غير متزامن وقد يموت العامل
-            // قبل أن يصل مستمع الإيقاف، فلا يبقى للجلسة كاتب آخر.
-            cont.invokeOnCancellation {
-                runCatching { keepSession(task.snapshot.uploadSessionUri) }
-                runCatching { task.pause() }
             }
         }
-
-        // ✅ وصلت البايتات كاملةً: يُسجَّل مسار التخزين **قبل** `downloadUrl`
-        // — نداء شبكيّ مستقلّ خارج حماية الاستئناف كان فشله يعيد دورة رفع
-        // كاملة، ويترك عند الإلغاء ملفّاً حتى 100MB يتيماً بلا وثيقة تشير إليه.
-        UploadQueue.update(item.id) { it.copy(uploadedPath = storagePath) }
-        // ⚠️ لا نمسح الربط هنا: كتلة `finally` في دورة العامل تمسحه بعد
-        // إنشاء الوثيقة، وبقاء العنصر «نشطاً» حتى ذلك الحين هو ما يمنع
-        // [UploadQueue.cancel] من حذف الصوت أثناء `addLesson` (درس حيّ
-        // برابط ميت).
-        return downloadUrlWithRetry(ref) to storagePath
+        lastUploadSha = response.optString("sha256")
+        UploadQueue.update(item.id) { it.copy(uploadedPath = key) }
+        return "" to key
     }
 
-    /**
-     * `downloadUrl` نداء رخيص لا يستحقّ إعادة دورة رفع كاملة إن تعثّر لحظةَ
-     * اكتمال الرفع (وهي لحظة انقطاع شائعة) — ثلاث محاولات قصيرة تكفي.
-     */
     private suspend fun downloadUrlWithRetry(ref: StorageReference): String {
         var last: Throwable? = null
         for (attempt in 1..3) {
@@ -759,31 +679,28 @@ class LessonUploadWorker(
      * النسخ المحليّة بعد النجاح.
      */
     private suspend fun publishTranscript(item: PendingUpload, lessonId: String) {
-        val storage = com.google.firebase.storage.FirebaseStorage.getInstance()
-        val uploadedPaths = mutableListOf<String>()
+        val uploadedKeys = mutableListOf<String>()
         item.transcriptImagePaths.forEachIndexed { index, localPath ->
             val local = File(localPath)
             if (!local.exists()) return@forEachIndexed
-            val remotePath = "lesson_transcripts/$lessonId/${item.queuedAtMs}_$index.jpg"
-            val metadata = com.google.firebase.storage.StorageMetadata.Builder()
-                .setContentType("image/jpeg")
-                // مسار مختوم زمنيّاً لا يُستبدل — كاش دائم يوفّر التنزيل المتكرّر.
-                .setCacheControl("public, max-age=31536000, immutable")
-                .build()
-            // ضغط صورة الصفحة قبل الرفع (2400px/85) — النص يبقى مقروءاً تماماً.
             val bytes = com.ali.ishaqiyin_admin.util.ImageCompressor
                 .compressTranscriptImage(local.readBytes())
-            storage.reference.child(remotePath)
-                .putBytes(bytes, metadata)
-                .await()
-            uploadedPaths.add(remotePath)
+            val temp = File(applicationContext.cacheDir, "tx_${item.id}_$index.jpg")
+            temp.writeBytes(bytes)
+            try {
+                val key = "images/lesson_transcripts/$lessonId/${item.queuedAtMs}_$index.jpg"
+                com.ali.ishaqiyin_admin.core.MinbarAdminApi.upload("/admin/upload/$key", temp, "image/jpeg")
+                uploadedKeys.add(key)
+            } finally {
+                temp.delete()
+            }
         }
         TranscriptsRepository.upsert(
             lessonId = lessonId,
             text = item.transcriptText,
             bookTitle = item.transcriptBookTitle,
             sourceRef = item.transcriptSourceRef,
-            imagePaths = uploadedPaths,
+            imagePaths = uploadedKeys,
         )
         item.transcriptImagePaths.forEach { runCatching { File(it).delete() } }
     }

@@ -98,8 +98,12 @@ android {
         // مطابقٌ يعرض بلاغاً فورياً (العنوان/القسم/المدة) ويلزم تأكيداً ثانياً؛
         // وأزرار المالك (السلة/التحقق) لم تعد ترتهن بشهادة App Check حين
         // تتعطل خدمات Play — الهوية الموثقة هي الحارس.
-        versionCode = 2020
-        versionName = "1.6.0"
+        // ٢٠٢١ / ١.٧.٠ — مسار المحتوى على minbar-api (Cloudflare D1 + R2): الأقسام
+        // والدروس والرفع (إلى R2 عبر الـWorker + خطّ ترميز GitHub Actions) والنصوص
+        // المشروحة والسلة وإعداد التحديث وإشعار البثّ والدور — بلا Firestore/
+        // Functions/Storage. الدردشة والمساهمات والاتصال في المرحلة الثانية.
+        versionCode = 2021
+        versionName = "1.7.0"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

@@ -2,8 +2,6 @@ package com.ali.ishaqiyin_admin.data
 
 import android.content.Context
 import com.ali.ishaqiyin_admin.BuildConfig
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Source
 import kotlinx.coroutines.tasks.await
 
 /**
@@ -23,7 +21,6 @@ import kotlinx.coroutines.tasks.await
 class AdminAppConfigRepository private constructor(context: Context) {
 
     private val app = context.applicationContext
-    private val db = FirebaseFirestore.getInstance()
     private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     sealed interface Status {
@@ -84,26 +81,17 @@ class AdminAppConfigRepository private constructor(context: Context) {
     suspend fun autoPublishOwnVersion(): Boolean {
         val current = BuildConfig.VERSION_CODE
         if (prefs.getInt(KEY_PUBLISHED, 0) >= current) return false
-        val reference = db.collection(COLLECTION).document(DOCUMENT)
-        val doc = runCatching { reference.get().await() }.getOrNull() ?: return false
-        val published = (doc.getLong("latestVersionCode") ?: 0L).toInt()
-        if (published >= current) {
-            // الوثيقة محدَّثة أصلاً: نختم محليّاً كي لا نقرأها كل تشغيل.
+        val existing = runCatching { UpdateConfigRepository.load(UpdateConfigRepository.Target.AdminApp) }
+            .getOrNull() ?: return false
+        if (existing.latestVersionCode >= current) {
             prefs.edit().putInt(KEY_PUBLISHED, current).apply()
             return false
         }
         val saved = runCatching {
-            reference.set(
-                mapOf(
-                    "latestVersionCode" to current,
-                    "minSupportedVersionCode" to
-                        (doc.getLong("minSupportedVersionCode") ?: 0L).toInt(),
-                    "message" to doc.getString("message").orEmpty(),
-                    "storeUrl" to PLAY_URL,
-                    "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
-                    "updatedBy" to AuthService.currentUser?.email.orEmpty(),
-                ),
-            ).await()
+            UpdateConfigRepository.save(
+                existing.copy(latestVersionCode = current, storeUrl = PLAY_URL),
+                UpdateConfigRepository.Target.AdminApp,
+            )
         }.isSuccess
         if (saved) prefs.edit().putInt(KEY_PUBLISHED, current).apply()
         return saved
@@ -112,24 +100,13 @@ class AdminAppConfigRepository private constructor(context: Context) {
     private suspend fun refreshIfStale() {
         val now = System.currentTimeMillis()
         if (now - prefs.getLong(KEY_CHECKED, 0L) < CHECK_INTERVAL_MS) return
-        val reference = db.collection(COLLECTION).document(DOCUMENT)
-        // ⚠️ الخادم أوّلاً دائماً: تقديم الكاش كان يجمّد القيم على أوّل قراءة
-        // إلى الأبد (الوثيقة تصير مخزَّنة فلا يُسأل الخادم بعدها قطّ، فلا يصل
-        // تذكير أيّ إصدار لاحق). الكاش هنا خطّة بديلة عند فشل الشبكة فقط.
-        val doc = runCatching { reference.get(Source.SERVER).await() }.getOrNull()
-            ?: runCatching { reference.get(Source.CACHE).await() }
-                .getOrNull()
-                ?.takeIf { it.exists() }
-            ?: return
-        if (!doc.exists()) {
-            prefs.edit().putLong(KEY_CHECKED, now).apply()
-            return
-        }
+        val config = runCatching { UpdateConfigRepository.load(UpdateConfigRepository.Target.AdminApp) }
+            .getOrNull() ?: return
         prefs.edit()
-            .putInt(KEY_LATEST, (doc.getLong("latestVersionCode") ?: 0L).toInt())
-            .putInt(KEY_MIN, (doc.getLong("minSupportedVersionCode") ?: 0L).toInt())
-            .putString(KEY_MESSAGE, doc.getString("message").orEmpty())
-            .putString(KEY_STORE, doc.getString("storeUrl").orEmpty())
+            .putInt(KEY_LATEST, config.latestVersionCode)
+            .putInt(KEY_MIN, config.minSupportedVersionCode)
+            .putString(KEY_MESSAGE, config.message)
+            .putString(KEY_STORE, config.storeUrl)
             .putLong(KEY_CHECKED, now)
             .apply()
     }

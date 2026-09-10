@@ -1,10 +1,8 @@
 package com.ali.ishaqiyin_admin.data
 
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.FirebaseFirestore
-import kotlinx.coroutines.tasks.await
+import com.ali.ishaqiyin_admin.core.MinbarAdminApi
+import org.json.JSONObject
 
-/** إعداد تذكير التحديث الذي يقرؤه تطبيق منبر العام. */
 data class UpdateConfig(
     val latestVersionCode: Int = 0,
     val minSupportedVersionCode: Int = 0,
@@ -13,18 +11,10 @@ data class UpdateConfig(
 )
 
 /**
- * ⬆️ وثيقة واحدة (`app_config/android`) يقارن بها التطبيق العام إصدارَه.
- *
- * القراءة عامّة والكتابة **للمالك وحده** بقاعدة Firestore — ضبط حدّ أدنى
- * للإصدار قرارُ إصدارٍ لا قرار محتوى، وخطؤه يُظهر تذكيراً لكل المستخدمين.
+ * إعداد تذكير التحديث للتطبيق العام واللوحة — في `minbar-api` (`app_config`):
+ * القراءة عامة (`/v1/config/{key}`) والكتابة للمشرفين (`/admin/config/{key}`).
  */
 object UpdateConfigRepository {
-    private const val COLLECTION = "app_config"
-
-    /**
-     * وثيقتان مستقلّتان: التطبيق العام ولوحة الإدارة. خلطهما كان يعني أن
-     * ترقيم إصدار أحدهما يُظهر تذكيراً كاذباً لمستخدمي الآخر.
-     */
     enum class Target(val document: String, val label: String, val storeUrl: String) {
         PublicApp(
             document = "android",
@@ -38,31 +28,29 @@ object UpdateConfigRepository {
         ),
     }
 
-    private val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
-
     suspend fun load(target: Target = Target.PublicApp): UpdateConfig {
-        val doc = db.collection(COLLECTION).document(target.document).get().await()
-        if (!doc.exists()) return UpdateConfig()
+        val json = try {
+            MinbarAdminApi.get("/v1/config/${target.document}", auth = false)
+        } catch (e: MinbarAdminApi.ApiException) {
+            if (e.code == 404) return UpdateConfig() else throw e
+        }
         return UpdateConfig(
-            latestVersionCode = (doc.getLong("latestVersionCode") ?: 0L).toInt(),
-            minSupportedVersionCode = (doc.getLong("minSupportedVersionCode") ?: 0L).toInt(),
-            message = doc.getString("message").orEmpty(),
-            storeUrl = doc.getString("storeUrl").orEmpty(),
+            latestVersionCode = json.optInt("latestVersionCode", 0),
+            minSupportedVersionCode = json.optInt("minSupportedVersionCode", 0),
+            message = json.optString("message"),
+            storeUrl = json.optString("storeUrl"),
         )
     }
 
     suspend fun save(config: UpdateConfig, target: Target = Target.PublicApp) {
-        // `set` لا `update`: الوثيقة قد لا تكون موجودة في أوّل ضبط.
-        // ولا نكتب مفاتيح خارج ما تسمح به القاعدة (hasOnly) وإلا رُفضت.
-        db.collection(COLLECTION).document(target.document).set(
-            mapOf(
-                "latestVersionCode" to config.latestVersionCode,
-                "minSupportedVersionCode" to config.minSupportedVersionCode,
-                "message" to config.message,
-                "storeUrl" to config.storeUrl.ifBlank { target.storeUrl },
-                "updatedAt" to FieldValue.serverTimestamp(),
-                "updatedBy" to AuthService.currentUser?.email.orEmpty(),
-            ),
-        ).await()
+        MinbarAdminApi.put(
+            "/admin/config/${target.document}",
+            JSONObject()
+                .put("latestVersionCode", config.latestVersionCode)
+                .put("minSupportedVersionCode", config.minSupportedVersionCode)
+                .put("message", config.message)
+                .put("storeUrl", config.storeUrl.ifBlank { target.storeUrl })
+                .put("updatedBy", AuthService.currentUser?.email.orEmpty()),
+        )
     }
 }
