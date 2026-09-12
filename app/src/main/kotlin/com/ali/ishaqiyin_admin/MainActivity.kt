@@ -84,6 +84,9 @@ class MainActivity : ComponentActivity() {
 
     private fun captureShare(intent: Intent?) {
         ShareIntake.add(sharedAudioFrom(intent))
+        // ⚠️ النيّة تُحفظ مع النشاط: بلا مسح `EXTRA_STREAM` كان كلّ تدوير للشاشة
+        // يعيد إدراج الملفّات نفسها (تعود ورقة الوجهات بعد إغلاقها أو استهلاكها).
+        runCatching { intent?.removeExtra(Intent.EXTRA_STREAM) }
         // نصّ مشارَك من تطبيق خارجي: وجهته الوحيدة «النص المشروح» — يفتح
         // اختيار الدرس مباشرة (الملفات تمرّ بورقة الوجهات كالسابق).
         if (intent?.action == Intent.ACTION_SEND &&

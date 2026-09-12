@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.ChatAttachment
 import com.ali.ishaqiyin_admin.data.ChatMessage
+import com.ali.ishaqiyin_admin.data.OWNER_SENDER_ID
 import com.ali.ishaqiyin_admin.data.ChatMessageType
 import com.ali.ishaqiyin_admin.data.SupportKind
 import com.ali.ishaqiyin_admin.data.SupportMessage
@@ -404,7 +405,9 @@ private suspend fun List<SupportMessage>.toBubbles(
     val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
     val out = mutableListOf<ChatMessage>()
     forEach { m ->
-        val senderId = if (m.fromOwner) myUid else userUid
+        // ⚠️ `ChatMessage.isMine` يقارن بـ`OWNER_SENDER_ID` لا بـuid المستخدم
+        // الحاليّ، فكانت ردود المالك تُرسم فقاعاتٍ واردة (يسار، بلا ✓).
+        val senderId = if (m.fromOwner) OWNER_SENDER_ID else userUid
         val senderName = if (m.fromOwner) "أنت" else userName.ifBlank { "مستخدم" }
 
         fun base(

@@ -307,7 +307,8 @@ fun AddLessonScreen(onBack: () -> Unit) {
      * الانشغال الحقيقيّ: الحارس المحلّيّ **زائد** علم الدفعة المشترك — إعادة
      * إنشاء النشاط تعيد `queuing` صفراً بينما حلقة الإدراج ماضية في الخلفية.
      */
-    val busy = queuing || batchRunning
+    val singleRunning by UploadQueue.singleEnqueueRunning.collectAsState()
+    val busy = queuing || batchRunning || singleRunning
     var merging by remember { mutableStateOf(false) }
     // 🛡️ تنجو من تدوير الشاشة: بقيّة حقول النموذج محفوظة، فكان الخطأ أو
     // رسالة النجاح تختفي وحدها عند التدوير.
@@ -608,6 +609,11 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 // الملفّ المدموج في الكاش ولا يدخل الدرس الطابور أصلاً ولا رسالة
                 // تُنبّه. وتحديث الواجهة يبقى خارجها فلا يُكتب لشاشة زالت.
                 val (position, total) = withContext(NonCancellable + Dispatchers.IO) {
+                    // 🛡️ حارس على مستوى العمليّة يصمد لإعادة إنشاء النشاط.
+                    if (!UploadQueue.beginSingleEnqueue()) {
+                        error("إدراج درس آخر جارٍ الآن — انتظر اكتماله.")
+                    }
+                    try {
                     val queued = if (files.size == 1) {
                         UploadQueue.enqueue(
                             context = context,
@@ -694,6 +700,9 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     val total = UploadQueue.liveCount()
                     LessonUploadWorker.kick(context)
                     position to total
+                    } finally {
+                        UploadQueue.endSingleEnqueue()
+                    }
                 }
 
                 // إفراغ النموذج فوراً — المشرف يواصل إضافة درس آخر.

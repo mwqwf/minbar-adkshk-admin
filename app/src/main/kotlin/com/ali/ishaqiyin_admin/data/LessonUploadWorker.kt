@@ -378,6 +378,8 @@ class LessonUploadWorker(
                                     lastError = reason,
                                     sessionUri = if (lastTry) null else it.sessionUri,
                                     sessionSavedAtMs = if (lastTry) 0L else it.sessionSavedAtMs,
+                                    // المحاولة الأخيرة تبدأ برفع جديد أيضاً.
+                                    uploadedSha = if (lastTry) "" else it.uploadedSha,
                                     lastPercent = lastPercent,
                                     state = UploadState.QUEUED,
                                 )
@@ -585,6 +587,16 @@ class LessonUploadWorker(
         item: PendingUpload,
         file: File,
     ): Pair<String, String> {
+        // ♻️ رُفع الأصل فعلاً في محاولة سابقة وفشل ما بعده (إنشاء الوثيقة):
+        // لا يُعاد PUT الملفّ كاملاً — المفتاح والبصمة محفوظان في العنصر.
+        val already = item.uploadedPath
+        if (already != null && item.uploadedSha.isNotEmpty()) {
+            Log.i(TAG, "reuse uploaded original for ${item.id}: $already")
+            lastUploadSha = item.uploadedSha
+            lastPercent = 100
+            UploadQueue.setProgress(UploadProgress(item.id, item.title, 100))
+            return "" to already
+        }
         val cleanName = file.name.removePrefix("${item.id}_")
         val key = "originals/${item.queuedAtMs}_$cleanName"
         val contentType = StorageService.mimeForExt(item.fileName.substringAfterLast('.', ""))
@@ -618,7 +630,7 @@ class LessonUploadWorker(
             }
         }
         lastUploadSha = response.optString("sha256")
-        UploadQueue.update(item.id) { it.copy(uploadedPath = key) }
+        UploadQueue.update(item.id) { it.copy(uploadedPath = key, uploadedSha = lastUploadSha) }
         return "" to key
     }
 

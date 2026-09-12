@@ -67,7 +67,9 @@ object TrashRepository {
 
     fun watchAll(): Flow<List<TrashedLesson>> = flow {
         while (true) {
-            emit(fetchAll())
+            // ⚠️ بلا `runCatching` كان أيّ خطأ شبكة أثناء الاستطلاع يُرمى داخل
+            // `collectAsState` في الشاشة فينهار التطبيق (بخلاف بقيّة المستودعات).
+            emit(runCatching { fetchAll() }.getOrDefault(emptyList()))
             delay(POLL_MS)
         }
     }.flowOn(Dispatchers.IO)

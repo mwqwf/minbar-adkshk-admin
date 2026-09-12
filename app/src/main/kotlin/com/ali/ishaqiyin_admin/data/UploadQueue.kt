@@ -111,6 +111,12 @@ data class PendingUpload(
      * يتيماً في التخزين: لا وثيقة تشير إليه ولا واجهة ولا دالّة تمسحه.
      */
     val uploadedPath: String? = null,
+    /**
+     * بصمة الأصل كما حسبها الخادم عند نجاح الرفع. مع [uploadedPath] تُغني عن
+     * إعادة رفع الملفّ كاملاً حين يفشل **إنشاء الوثيقة** بعد نجاح الرفع: كانت
+     * كلّ إعادة محاولة تُعيد PUT حتى 95 م.ب على شبكة المالك الضعيفة.
+     */
+    val uploadedSha: String = "",
     // «النص المشروح» الاختياري المرافق: يُنشر بعد إنشاء الدرس مباشرة.
     val transcriptText: String = "",
     val transcriptBookTitle: String = "",
@@ -151,6 +157,7 @@ data class PendingUpload(
         put("runToken", runToken)
         put("parked", parked)
         put("uploadedPath", uploadedPath ?: JSONObject.NULL)
+        put("uploadedSha", uploadedSha)
         put("transcriptText", transcriptText)
         put("transcriptBookTitle", transcriptBookTitle)
         put("transcriptSourceRef", transcriptSourceRef)
@@ -189,6 +196,7 @@ data class PendingUpload(
             runToken = o.optString("runToken"),
             parked = o.optBoolean("parked"),
             uploadedPath = o.optString("uploadedPath").takeIf { it.isNotEmpty() && it != "null" },
+            uploadedSha = o.optString("uploadedSha"),
             transcriptText = o.optString("transcriptText"),
             transcriptBookTitle = o.optString("transcriptBookTitle"),
             transcriptSourceRef = o.optString("transcriptSourceRef"),
@@ -591,6 +599,23 @@ object UploadQueue {
 
     private val _batchProgress = MutableStateFlow<BatchProgress?>(null)
     val batchProgress: StateFlow<BatchProgress?> = _batchProgress
+
+    /**
+     * 🛡️ إدراج **مفرد/مدموج** جارٍ الآن — نظير [batchProgress] للمسار غير
+     * الجماعيّ. حارس الشاشة `queuing` يعود صفراً بإعادة إنشاء النشاط بينما
+     * النسخ/الدمج ماضٍ في `NonCancellable` والعنصر لم يُحفظ بعد، فضغطة «رفع»
+     * ثانية كانت تمرّ من حارس التكرار (يفحص [items] المحفوظة فقط) وتُدرج
+     * الدرس مرّتين. يُضبط داخل `NonCancellable` وحده كي لا يبقى مرفوعاً.
+     */
+    private val _singleEnqueueRunning = MutableStateFlow(false)
+    val singleEnqueueRunning: StateFlow<Boolean> = _singleEnqueueRunning
+
+    /** `false` تعني أنّ إدراجاً مفرداً يعمل الآن. */
+    fun beginSingleEnqueue(): Boolean = _singleEnqueueRunning.compareAndSet(false, true)
+
+    fun endSingleEnqueue() {
+        _singleEnqueueRunning.value = false
+    }
 
     /** يحجز الإدراج الجماعيّ لمُنادٍ واحد؛ `false` تعني أنّ دفعة تعمل الآن. */
     fun beginBatch(total: Int): Boolean {

@@ -64,13 +64,15 @@ object MinbarAdminApi {
         body: String? = null,
         auth: Boolean = true,
     ): JSONObject = withContext(Dispatchers.IO) {
+        // الرمز قبل فتح الاتصال: فشله داخل `apply` كان يترك اتصالاً بلا `disconnect`.
+        val authorization = if (auth) bearer() else null
         val connection = (URL(BASE + path).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 60_000
             requestMethod = method
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Accept-Encoding", "gzip")
-            if (auth) setRequestProperty("Authorization", bearer())
+            if (authorization != null) setRequestProperty("Authorization", authorization)
             if (body != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
@@ -107,13 +109,14 @@ object MinbarAdminApi {
         val total = file.length()
         require(total > 0L) { "الملفّ فارغ." }
         require(total <= MAX_UPLOAD_BYTES) { "حجم الملفّ يتجاوز الحدّ (95 م.ب)." }
-        val connection = (URL(BASE + path).openConnection() as HttpURLConnection).apply {
+        val authorization = bearer()
+        val connection = (URL(BASE + encodeUploadPath(path)).openConnection() as HttpURLConnection).apply {
             connectTimeout = 20_000
             readTimeout = 120_000
             requestMethod = "PUT"
             doOutput = true
             setFixedLengthStreamingMode(total)
-            setRequestProperty("Authorization", bearer())
+            setRequestProperty("Authorization", authorization)
             setRequestProperty("Content-Type", contentType)
             setRequestProperty("Accept", "application/json")
         }
@@ -147,4 +150,21 @@ object MinbarAdminApi {
     }
 
     private const val MAX_UPLOAD_BYTES = 95L * 1024 * 1024
+
+    /**
+     * مسار الرفع على الخادم `^/admin/upload/(originals|images|support|serving)/([^/]+)$`
+     * يقبل **مقطعاً واحداً** بعد البادئة ثمّ يفكّه بـ`decodeURIComponent`. مفاتيح
+     * صور النصّ المشروح (`images/lesson_transcripts/{lesson}/{name}`) ومرفقات
+     * الدعم (`support/{thread}/{name}`) فيها شرطات مائلة داخليّة، فكانت تُرسَل
+     * خاماً ⇒ لا يطابقها المسار ⇒ 404 في **كلّ** رفع صورة. تُرمَّز الذيل
+     * (`/` ⇒ `%2F`) فيصل المفتاح الكامل كما صُمّم.
+     */
+    private fun encodeUploadPath(path: String): String {
+        val prefix = "/admin/upload/"
+        if (!path.startsWith(prefix)) return path
+        val key = path.removePrefix(prefix)
+        val slash = key.indexOf('/')
+        if (slash < 0) return path
+        return prefix + key.substring(0, slash + 1) + android.net.Uri.encode(key.substring(slash + 1))
+    }
 }

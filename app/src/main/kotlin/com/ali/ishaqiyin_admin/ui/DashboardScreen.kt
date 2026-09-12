@@ -208,6 +208,12 @@ private fun saveCounts(context: Context, counts: DashboardCounts) {
 
 /** عدّ المحتوى من `minbar-api` بطلبٍ واحد (بديل العدّ التجميعي في Firestore). */
 private suspend fun countOf(collection: String): Int {
+    // ⚠️ `/admin/stats` لا يعيد أعداد الأقسام أصلاً، فكان المربّعان يعرضان «0»
+    // دائماً — تُعدّ من القوائم نفسها (مكاشة 5 دقائق في المستودع).
+    when (collection) {
+        "categories" -> return AdminRepository.fetchCategories().size
+        "subcategories" -> return AdminRepository.fetchSubcategories().size
+    }
     val stats = com.ali.ishaqiyin_admin.core.MinbarAdminApi.get("/admin/stats")
     return when (collection) {
         "lessons" -> stats.optInt("lessons")

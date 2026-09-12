@@ -40,9 +40,11 @@ object ImageCompressor {
 
         runCatching {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(file.uri)?.use {
-                BitmapFactory.decodeStream(it, null, bounds)
-            } ?: return@withContext Prepared(file, null)
+            // ⚠️ مع `inJustDecodeBounds` تعيد `decodeStream` **null دائماً**، فكان
+            // `?:` على نتيجتها يُخرج بلا ضغط في كلّ حالة. الفحص على فتح التدفّق وحده.
+            val stream = context.contentResolver.openInputStream(file.uri)
+                ?: return@withContext Prepared(file, null)
+            stream.use { BitmapFactory.decodeStream(it, null, bounds) }
             val largest = maxOf(bounds.outWidth, bounds.outHeight)
             if (largest <= 0) return@withContext Prepared(file, null)
 

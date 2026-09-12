@@ -97,7 +97,7 @@ fun AdminTranscriptImagesEditor(
     val pendingNew = rememberSaveable(saver = pendingCropUrisSaver) {
         mutableStateListOf<Uri>()
     }
-    var cropActive by remember { mutableStateOf(false) }
+    var cropActive by rememberSaveable { mutableStateOf(false) }
     // ↩️ إزالة صورة قبل الحفظ فعل محلّيّ رخيص: تقع فوراً ويُعرض «تراجع»
     // عشر ثوانٍ يعيد الصورة إلى **موضعها نفسه** في الترتيب. حوار التأكيد
     // السابق كان يُقرأ مرّة ثم يُتخطّى بالعادة فلا يمنع خطأً.

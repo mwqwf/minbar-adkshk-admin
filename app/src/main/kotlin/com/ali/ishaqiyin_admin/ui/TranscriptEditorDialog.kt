@@ -239,7 +239,7 @@ fun TranscriptEditorDialog(
     val pendingNew = rememberSaveable(saver = pendingUrisSaver) {
         mutableStateListOf<Uri>()
     }
-    var cropActive by remember { mutableStateOf(false) }
+    var cropActive by rememberSaveable { mutableStateOf(false) }
 
     fun cropOptions(uri: Uri) = CropImageContractOptions(
         uri,
