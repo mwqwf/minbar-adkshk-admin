@@ -362,13 +362,4 @@ object TranscriptsRepository {
         MinbarAdminApi.delete("/admin/transcripts/$lessonId")
         invalidateTranscript(lessonId, known = false)
     }
-
-    /** استخراج النص من صورة صفحة (OCR عربي عبر الخادم — Cloud Vision). */
-    suspend fun extractText(storagePath: String): String {
-        // OCR كان على Cloud Vision (مدفوع) عبر Functions — غير متاح بعد الاستغناء
-        // عن Firebase. يُعرض كخطأ مفهوم حتى يُستبدل بمحرّك مجاني.
-        throw IllegalStateException(
-            "استخراج النص من الصورة غير متاح حالياً بعد الانتقال عن Firebase — اكتب النص يدوياً.",
-        )
-    }
 }

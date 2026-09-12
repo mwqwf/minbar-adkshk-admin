@@ -3,9 +3,7 @@ package com.ali.ishaqiyin_admin.data
 import android.util.Log
 import com.ali.ishaqiyin_admin.BuildConfig
 import com.ali.ishaqiyin_admin.core.MinbarAdminApi
-import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.tasks.await
 import org.json.JSONObject
 
 class NotificationSendException(message: String) : Exception(message)
@@ -14,11 +12,10 @@ data class BroadcastOutcome(val sent: Int?, val failed: Int?)
 
 /**
  * 🔔 إشعارات اللوحة — على `minbar-api` (قرار 2026-09-10):
- * - تسجيل جهاز المشرف (رمز FCM) في D1 ليصله ما يُنبَّه به المشرفون.
- * - إرسال الإشعار العام إلى كل مستخدمي التطبيق (موضوع `content`).
- *
- * ⛔ لا Firestore ولا دوال سحابيّة. وFCM يبقى (مجانيّ بلا فوترة، ولا بديل
- * مجانيّ موثوق للدفع على أندرويد لا يستنزف بطاريّة المستخدم).
+ * - تسجيل جهاز المشرف بمعرّف تثبيت ثابت ([AppPrefs.installId]) في D1 —
+ *   بلا FCM منذ ٢٠٢٢/١.٨.٠؛ التنبيهات تُستطلع ساعيّاً في [AdminAlertsPollWorker].
+ * - إرسال الإشعار العام إلى كل مستخدمي التطبيق (موضوع `content`) — الخادم
+ *   هو من يدفعه لأجهزة التطبيق العام.
  */
 object AdminNotificationService {
     private const val TAG = "AdminNotifications"
@@ -33,9 +30,7 @@ object AdminNotificationService {
         try {
             val email = AuthService.currentUser?.email.orEmpty().trim().lowercase()
             if (email.isEmpty()) return
-            val token = FirebaseMessaging.getInstance().token.await()
-            if (token.isNullOrEmpty()) return
-            saveToken(email, token)
+            saveToken(email, AppPrefs.installId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -43,12 +38,6 @@ object AdminNotificationService {
         }
     }
 
-    suspend fun onTokenRefreshed(token: String) {
-        val email = AuthService.currentUser?.email.orEmpty().trim().lowercase()
-        if (email.isEmpty()) return
-        runCatching { saveToken(email, token) }
-            .onFailure { Log.d(TAG, "FCM token refresh failed: $it") }
-    }
 
     private suspend fun saveToken(email: String, token: String) {
         val sig = "$email|$token"
@@ -66,10 +55,7 @@ object AdminNotificationService {
         AppPrefs.lastDeviceTokenSig = null
         AppPrefs.lastDeviceTokenWriteMs = 0L
         runCatching {
-            val token = FirebaseMessaging.getInstance().token.await()
-            if (!token.isNullOrEmpty()) {
-                MinbarAdminApi.delete("/admin/devices/${java.net.URLEncoder.encode(token, "UTF-8")}")
-            }
+            MinbarAdminApi.delete("/admin/devices/${java.net.URLEncoder.encode(AppPrefs.installId, "UTF-8")}")
         }
     }
 

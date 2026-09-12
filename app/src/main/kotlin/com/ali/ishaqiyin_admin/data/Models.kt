@@ -170,41 +170,39 @@ data class Lesson(
 }
 
 /**
- * مشرف لوحة التحكّم (نظير dashboard_users في نبراس) — مخزَّن في مجموعة
- * `dashboard_admins` بمعرّف وثيقة = البريد بحروف صغيرة. يُنشأ فقط عبر
- * رمز الاعتماد؛ المالك يحظر/يلغي الحظر/يحذف من التطبيق.
+ * مشرف في جدول `admins` على `minbar-api` (صفّ `GET /admin/admins`).
+ * الرتب: owner · admin · supervisor (متساويان في الواجهة) · blocked · removed.
  */
 data class DashAdmin(
     val email: String,
     val role: String,
-    val blocked: Boolean,
-    val blockMode: String,
     val displayName: String,
-    val photoURL: String,
-    val addedBy: String,
+    val lastSeenMs: Long,
     val addedAtMs: Long,
-    val lastSignedInAtMs: Long?,
+    val sessionMigratedAtMs: Long,
+    val removedAtMs: Long,
+    val removedBy: String,
+    val online: Boolean,
 ) {
     val isOwner: Boolean get() = role == "owner"
+    val blocked: Boolean get() = role == "blocked"
+    val removed: Boolean get() = role == "removed"
 
-    companion object {
-        fun fromDoc(id: String, raw: Map<String, Any?>): DashAdmin {
-            val d = unwrap(raw)
-            val lastSignIn = d["lastSignedInAt"]
-            return DashAdmin(
-                email = str(d["email"]).ifEmpty { id },
-                role = str(d["role"]).ifEmpty { "supervisor" },
-                blocked = d["blocked"] == true,
-                blockMode = str(d["blockMode"]),
-                displayName = str(d["displayName"]),
-                photoURL = str(d["photoURL"]),
-                addedBy = str(d["addedBy"]),
-                addedAtMs = parseDateMs(d["addedAt"]),
-                lastSignedInAtMs = lastSignIn?.let { parseDateMs(it) },
-            )
-        }
-    }
+    /** الاسم إن وُجد وإلا البريد. */
+    val label: String get() = displayName.ifBlank { email }
 }
+
+/** سطر في سجل التدقيق (`GET /admin/audit`). */
+data class AuditEntry(
+    val id: String,
+    val actor: String,
+    val action: String,
+    val entity: String,
+    val entityId: String,
+    val title: String,
+    val details: org.json.JSONObject,
+    val atMs: Long,
+)
 
 /**
  * رمز اعتماد مشرف معلَّق (نظير owner_codes في نبراس) — يقرؤه المالك فقط

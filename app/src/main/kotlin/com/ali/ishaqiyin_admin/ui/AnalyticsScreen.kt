@@ -15,7 +15,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Audiotrack
-import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.FiberNew
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.HourglassBottom
@@ -23,7 +22,6 @@ import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -47,7 +45,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AnalyticsRepository
 import com.ali.ishaqiyin_admin.data.AnalyticsSnapshot
-import com.ali.ishaqiyin_admin.data.HonorRange
 
 /**
  * «التحليلات والأثر» — بكاش محلّي: تفتح فوراً من آخر لقطة محفوظة (حتى بلا
@@ -67,10 +64,6 @@ fun AnalyticsScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var offline by remember { mutableStateOf(false) }
     var reload by remember { mutableIntStateOf(0) }
-    var honorRange by remember { mutableStateOf(HonorRange.ALL) }
-
-    // أسماء المشرفين وصورهم من مجموعة الدردشة — البريد الخام لا يُعرَف.
-    val members = emptyList<String>()
 
     LaunchedEffect(reload) {
         error = null
@@ -126,7 +119,6 @@ fun AnalyticsScreen(
             return@AdminScaffold
         }
         if (s == null) return@AdminScaffold
-        val honor = s.adminsIn(honorRange)
         LazyColumn(
             modifier = Modifier.padding(padding).fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -219,106 +211,6 @@ fun AnalyticsScreen(
                     RankTile(name, "$views استماع", Icons.Filled.FolderOpen)
                 }
             }
-            item {
-                Spacer(Modifier.height(16.dp))
-                SectionTitle("لوحة شرف المشرفين")
-                HonorRangeBar(current = honorRange, onSelect = { honorRange = it })
-                Spacer(Modifier.height(6.dp))
-            }
-            if (honor.isEmpty()) {
-                item {
-                    EmptyHint(
-                        when (honorRange) {
-                            HonorRange.WEEK -> "لا مساهمات من المشرفين هذا الأسبوع."
-                            HonorRange.MONTH -> "لا مساهمات من المشرفين هذا الشهر."
-                            HonorRange.ALL ->
-                                "ستظهر هنا مساهمات المشرفين للدروس الجديدة."
-                        },
-                    )
-                }
-            } else {
-                items(honor.size) { i ->
-                    val (email, count, views) = honor[i]
-                    AdminRankTile(
-                        rank = i + 1,
-                        email = email,
-                        member = memberFor(members, email),
-                        trailing = "${lessonsCountLabel(count)} · $views استماع",
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** مطابقة بريد المشرف بعضو المجموعة (البريد يُقارَن مطبَّعاً). */
-private fun memberFor(members: List<String>, email: String): String? = null
-
-@Composable
-private fun HonorRangeBar(current: HonorRange, onSelect: (HonorRange) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(bottom = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        HonorRange.entries.forEach { range ->
-            val label = when (range) {
-                HonorRange.WEEK -> "هذا الأسبوع"
-                HonorRange.MONTH -> "هذا الشهر"
-                HonorRange.ALL -> "الكل"
-            }
-            FilterChip(
-                selected = current == range,
-                onClick = { onSelect(range) },
-                label = { Text(label, fontSize = 12.sp) },
-            )
-        }
-    }
-}
-
-/** بطاقة مشرف في لوحة الشرف: رتبته وصورته واسمه (البريد سطراً ثانياً). */
-@Composable
-private fun AdminRankTile(
-    rank: Int,
-    email: String,
-    member: String?,
-    trailing: String,
-) {
-    Card(
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "$rank",
-                fontWeight = FontWeight.Bold,
-                color = if (rank <= 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 13.sp,
-                modifier = Modifier.padding(end = 8.dp),
-            )
-            Icon(Icons.Filled.EmojiEvents, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
-                Text(
-                    email.ifEmpty { "مشرف" },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                if (member != null && email.isNotEmpty()) {
-                    Text(
-                        email,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            Text(trailing, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
         }
     }
 }

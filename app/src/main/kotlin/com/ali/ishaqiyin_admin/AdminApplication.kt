@@ -24,9 +24,8 @@ class AdminApplication : Application() {
         AppPrefs.init(this)
         com.ali.ishaqiyin_admin.data.AdminSession.init(this)
         NetworkMonitor.start(this)
-        // Firebase أوّلاً: لا google-services.json هنا، فالتطبيق الافتراضي لا
-        // يُنشأ إلا في initializeFirebase — وأي إيقاظ للعامل قبله يصل إلى
-        // Firestore/Storage غير مهيّأين وبإعدادات الشبكة الضعيفة غير مضبوطة.
+        // Firebase Auth وحده (نسخة انتقالية): لا google-services.json هنا،
+        // فالتطبيق الافتراضي لا يُنشأ إلا في initializeFirebase. لا FCM ولا App Check.
         initializeFirebase()
         createNotificationChannels()
         // طابور رفع الدروس: يُستأنف وحده إن بقيت فيه دروس من جلسة سابقة
@@ -41,6 +40,8 @@ class AdminApplication : Application() {
         // كان يُلغي هنا العملَ الذي أيقظ العمليّة أصلاً. الغرض في `onCreate`
         // «تأكّد أنّ هناك عملاً مجدولاً» لا «اقطع ما يجري».
         if (!UploadQueue.isEmpty()) LessonUploadWorker.kick(this)
+        // ⏰ تنبيهات المشرفين باستطلاع ساعيّ (بديل FCM) — KEEP فلا تتكرّر الجدولة.
+        com.ali.ishaqiyin_admin.data.AdminAlertsPollWorker.schedule(this)
         watchForegroundReturns()
     }
 
@@ -81,6 +82,8 @@ class AdminApplication : Application() {
                     val enteringForeground = visible == 0
                     visible += 1
                     if (!enteringForeground) return
+                    // ⏰ نبضة تنبيهات فوريّة إن مضى >15 دقيقة على آخر نبض.
+                    com.ali.ishaqiyin_admin.data.AdminAlertsPollWorker.pulseNowIfStale(this@AdminApplication)
                     if (UploadQueue.isEmpty() || UploadQueue.isPaused()) return
                     if (UploadWorkWatcher.isRunning()) return
                     LessonUploadWorker.kickNow(this@AdminApplication)
@@ -102,8 +105,8 @@ class AdminApplication : Application() {
 
     /**
      * نفس مشروع التطبيق العام (mxqp-8d1e8) بحزمة اللوحة — بلا
-     * google-services.json (مطابق لما كانت تفعله نسخة Flutter عبر
-     * firebase_options.dart).
+     * google-services.json. يبقى لـFirebase Auth وحده حتى تُبدَّل كل الجلسات
+     * القائمة صامتاً إلى «جلسة منبر»؛ ثم يُزال كلّه.
      */
     private fun initializeFirebase() {
         runCatching {
@@ -117,8 +120,6 @@ class AdminApplication : Application() {
                     .setStorageBucket(FirebaseConfig.STORAGE_BUCKET)
                     .build(),
             )
-            // الخادم في وضع مراقبة (غير مُنفِذ بعد) — فشل تفعيل App Check لا
-            // يبرر حجب اللوحة كلها خلف شاشة خطأ توحي بالانهيار.
         }
     }
 

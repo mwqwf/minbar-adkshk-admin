@@ -6,7 +6,6 @@
 # ⚠️ الخدمة يُنشئها النظام بالانعكاس عبر المُنشئ الفارغ وحده، فيكفي إبقاؤه:
 # `{ *; }` كان يمنع تقليص أعضائها الخاصّة بلا فائدة (وAGP يولّد هذه القاعدة
 # أصلاً في aapt_rules.txt من الـmanifest).
--keep class com.ali.ishaqiyin_admin.data.AdminMessagingService { <init>(); }
 
 # ملاحظة: لا -keepattributes هنا عمداً.
 # • Signature يحويها proguard-android-optimize.txt أصلاً فكانت تكراراً.

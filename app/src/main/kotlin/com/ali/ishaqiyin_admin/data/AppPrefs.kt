@@ -87,7 +87,31 @@ object AppPrefs {
 
     // ── تقليل كتابات/نداءات الشبكة المتكرّرة عند كلّ إقلاع ──
 
-    /** بصمة آخر رمز جهاز كُتب فعلاً في Firestore (رمز+دور+كتم). */
+    /**
+     * معرّف تثبيت ثابت (بديل رمز FCM منذ ٢٠٢٢/١.٨.٠): يُولَّد مرّة واحدة لكل
+     * تثبيت ويُسجَّل في `/admin/devices` ليُعرف جهاز المشرف وإصداره.
+     */
+    val installId: String
+        get() = readId("install_id_v1") ?: java.util.UUID.randomUUID().toString().also {
+            writeId("install_id_v1", it)
+        }
+
+    /** أحدث تنبيه أُشعر به المشرف محلياً — عامل الاستطلاع لا يكرّر ما قبله. */
+    var lastAlertSeenMs: Long
+        get() = prefs.getLong("last_alert_seen_ms_v1", 0L)
+        set(value) = prefs.edit().putLong("last_alert_seen_ms_v1", value).apply()
+
+    /** لحظة آخر نبضة استطلاع — النبضة الفوريّة عند الفتح لا تتكرّر قبل 15 دقيقة. */
+    var lastPulseRunMs: Long
+        get() = prefs.getLong("pulse_run_ms_v1", 0L)
+        set(value) = prefs.edit().putLong("pulse_run_ms_v1", value).apply()
+
+    /** آخر `alertsMs` من النبض جُلبت تنبيهاته فعلاً — لا نداء للخادم قبل أن يتغيّر. */
+    var lastPulseAlertsMs: Long
+        get() = prefs.getLong("pulse_alerts_ms_v1", 0L)
+        set(value) = prefs.edit().putLong("pulse_alerts_ms_v1", value).apply()
+
+    /** بصمة آخر معرّف جهاز كُتب فعلاً على الخادم (بريد+معرّف). */
     var lastDeviceTokenSig: String?
         get() = readId("device_token_sig_v1")
         set(value) = writeId("device_token_sig_v1", value)
@@ -106,26 +130,4 @@ object AppPrefs {
         get() = readId("add_lesson_draft_v1")
         set(value) = writeId("add_lesson_draft_v1", value)
 
-    /** أُلغي اشتراك موضوع FCM القديم على هذا الجهاز (يكفي مرّة لكلّ تثبيت). */
-    var legacyTopicUnsubscribed: Boolean
-        get() = prefs.getBoolean("legacy_topic_unsubscribed_v1", false)
-        set(value) = prefs.edit().putBoolean("legacy_topic_unsubscribed_v1", value).apply()
-
-    /** بصمة آخر عضويّة كُتبت فعلاً (upsertSelf) — اكتب فقط إن تغيّرت القيمة. */
-    var lastChatMemberSig: String?
-        get() = readId("chat_member_sig_v1")
-        set(value) = writeId("chat_member_sig_v1", value)
-
-    /** لحظة آخر كتابة عضويّة كاملة — لإعادة الكتابة الدوريّة رغم ثبات البصمة. */
-    var lastChatMemberWriteMs: Long
-        get() = prefs.getLong("chat_member_write_ms_v1", 0L)
-        set(value) = prefs.edit().putLong("chat_member_write_ms_v1", value).apply()
-
-    /**
-     * آخر قيمة `chatMuted` كُتبت فعلاً في وثيقة رمز الجهاز
-     * ("" = لم تُكتب بعد) — اكتب فقط إن تغيّرت القيمة.
-     */
-    var lastChatMutedWritten: String?
-        get() = readId("chat_muted_written_v1")
-        set(value) = writeId("chat_muted_written_v1", value)
 }

@@ -879,16 +879,16 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
                         ActionSpec(
                             Icons.Filled.VerifiedUser, c.teal,
                             if (isOwner) "الحساب والمشرفون" else "الحساب والصلاحية",
-                            if (isOwner) "الاعتماد والحظر والحذف" else "صلاحيتك وخروجك",
+                            if (isOwner) "الاعتماد والمشرفون والحظر" else "صلاحيتك والمشرفون",
                             0, Routes.ADMINS,
                         ),
                     )
-                    // 🕘 «آخر ما جرى»: من عدّل ماذا ومتى. البيانات كانت
-                    // مكتوبة في القاعدة مع كل تعديل بلا شاشة تعرضها.
+                    // 📜 سجل التدقيق: من فعل ماذا ومتى — يكتبه الخادم مع كل
+                    // تعديل وسلّة واستعادة وإتلاف وتغيير رتبة.
                     add(
                         ActionSpec(
-                            Icons.Filled.History, c.blue, "آخر ما جرى",
-                            "من عدّل ماذا ومتى", 0, ROUTE_RECENT_CHANGES,
+                            Icons.Filled.History, c.blue, "سجل التدقيق",
+                            "من فعل ماذا ومتى", 0, ROUTE_AUDIT_LOG,
                         ),
                     )
                     // لغير المالك لا يُنشأ شيء من هذه، فلا يظهر له أثر.
@@ -898,7 +898,7 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
                         add(
                             ActionSpec(
                                 Icons.Filled.Forum, c.green, "رسائل المستخدمين",
-                                "اقتراحات وبلاغات وطلبات إشراف",
+                                "اقتراحات وبلاغات وأسئلة",
                                 supportUnread, Routes.SUPPORT,
                             ),
                         )
@@ -922,8 +922,8 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
 
     // البطاقة المجمَّعة المفتوحة الآن (ورقة أبوابها).
     var openHub by remember { mutableStateOf<ActionSpec?>(null) }
-    // «آخر ما جرى» شاشة كاملة تُفتح فوق اللوحة بلا مسار تنقّل خاصّ بها.
-    var showRecentChanges by remember { mutableStateOf(false) }
+    // «سجل التدقيق» شاشة كاملة تُفتح فوق اللوحة بلا مسار تنقّل خاصّ بها.
+    var showAuditLog by remember { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         cards.chunked(2).forEach { row ->
@@ -974,8 +974,8 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
                             .fillMaxWidth()
                             .clickable {
                                 openHub = null
-                                if (entry.route == ROUTE_RECENT_CHANGES) {
-                                    showRecentChanges = true
+                                if (entry.route == ROUTE_AUDIT_LOG) {
+                                    showAuditLog = true
                                 } else {
                                     nav.navigate(entry.route)
                                 }
@@ -1037,23 +1037,23 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
         }
     }
 
-    if (showRecentChanges) {
+    if (showAuditLog) {
         Dialog(
-            onDismissRequest = { showRecentChanges = false },
+            onDismissRequest = { showAuditLog = false },
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
             Surface(
                 color = MaterialTheme.colorScheme.background,
                 modifier = Modifier.fillMaxSize(),
             ) {
-                RecentChangesScreen(onBack = { showRecentChanges = false })
+                AuditLogScreen(onBack = { showAuditLog = false })
             }
         }
     }
 }
 
-/** مدخل «آخر ما جرى» داخل ورقة «الإدارة» — شاشة لا مسار تنقّل. */
-private const val ROUTE_RECENT_CHANGES = "recent_changes_sheet"
+/** مدخل «سجل التدقيق» داخل ورقة «الإدارة» — شاشة لا مسار تنقّل. */
+private const val ROUTE_AUDIT_LOG = "audit_log_sheet"
 
 /** بطاقة إجراء واحدة في شبكة اللوحة. */
 @Composable

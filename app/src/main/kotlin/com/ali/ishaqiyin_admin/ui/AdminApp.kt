@@ -148,12 +148,12 @@ object SubmissionsTarget {
  * ويُحمل **مرّة واحدة فقط**: `consume` يُفرغه فور استعماله فلا يُعاد الفتح
  * مع تدوير الشاشة أو أيّ إعادة تركيب.
  *
- * ⚠️ المكالمات (`admin_call`) لا تمرّ من هنا إطلاقاً — لها شاشتها ونيّتها
- * المستقلّتان في AdminMessagingService.
+ * الإشعارات محليّة منذ ٢٠٢٢/١.٨.٠ (AdminNotificationPoster) — الحمولة بالمفاتيح
+ * نفسها التي كان يرسلها الخادم عبر FCM.
  */
 object NotificationRoute {
-    // مفاتيح الحمولة — نفس أسماء حقول FCM حرفياً، كي يعمل القارئ نفسه مع
-    // نيّتنا في المقدّمة ومع النيّة التي يبنيها النظام في الخلفيّة.
+    // مفاتيح الحمولة — نفس أسماء حقول التنبيه على الخادم حرفياً، كي يعمل
+    // القارئ نفسه مع نيّة الإشعار المحليّ ومع وثيقة التنبيه في الشاشة.
     const val KEY_TYPE = "type"
     const val KEY_REF = "refId"
     const val KEY_SUBMISSION = "submissionId"
@@ -433,7 +433,7 @@ private fun AdminNavHost(isOwner: Boolean) {
                 onOpenSupervisors = { nav.navigate(Routes.SUPERVISORS) },
             )
         }
-        composable(Routes.SUPERVISORS) { SupervisorsScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.SUPERVISORS) { SupervisorsScreen(isOwner = isOwner, onBack = { nav.popBackStack() }) }
         // 📬 صندوق رسائل المستخدمين — حارس مزدوج كشاشة «تذكير التحديث»:
         // ⛔ قواعد التخزين لا تسمح لغير المالك بقراءة مرفقات الخيوط، فشاشةٌ
         // يفتحها مشرف تعرض صوتاً لا يعمل وصوراً لا تظهر.

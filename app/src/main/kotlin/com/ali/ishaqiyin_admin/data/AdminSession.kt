@@ -96,6 +96,45 @@ object AdminSession {
         }
     }
 
+    /** يعتمد جلسةً أصدرها الخادم مقابل رمز ربط/دعوة (بلا Google). */
+    fun adopt(token: String, email: String, role: String, name: String = "") {
+        if (token.isBlank() || !email.contains("@")) return
+        save(token, email, role, name, "")
+        Log.i(TAG, "session adopted for ${email.substringBefore('@')}")
+    }
+
+    /**
+     * 🔗 استبدال رمز دخول (ثماني خانات، بلا حساسية لحالة الأحرف) بجلسة منبر —
+     * `POST /access/redeem` بلا Authorization. يعيد رسالة الخطأ العربيّة أو `null`
+     * عند النجاح (والبوّابة تعيد التحقق وحدها لأن `version` تغيّر).
+     */
+    suspend fun redeemCode(rawCode: String): String? {
+        val code = rawCode.uppercase().filter { it.isLetterOrDigit() }
+        if (code.length != 8) return "الرمز ثماني خانات."
+        return try {
+            val res = MinbarAdminApi.post(
+                "/access/redeem",
+                JSONObject().put("code", code).put("device", deviceLabel()),
+                auth = false,
+            )
+            val tok = res.optString("token")
+            val who = res.optString("who")
+            if (tok.isBlank() || !who.contains("@")) return "ردّ الخادم ناقص — أعد المحاولة."
+            adopt(tok, who, res.optString("role"))
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: MinbarAdminApi.ApiException) {
+            when (e.code) {
+                400 -> "الرمز غير صالح أو منتهٍ."
+                429 -> "محاولات كثيرة — انتظر عشر دقائق."
+                else -> e.message ?: "تعذّر الدخول بالرمز."
+            }
+        } catch (e: Exception) {
+            "تعذّر الاتصال — تحقّق من الشبكة ثم أعد المحاولة."
+        }
+    }
+
     /** يُبطل الجلسة على الخادم (أفضل جهد) ثم يمسحها محلياً. */
     suspend fun signOut() {
         val tok = token

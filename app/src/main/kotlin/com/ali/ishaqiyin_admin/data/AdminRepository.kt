@@ -79,20 +79,17 @@ object AdminRepository {
         )
     }
 
-    private fun adminFromRow(row: JSONObject): DashAdmin {
-        val role = row.optString("role").ifEmpty { "supervisor" }
-        return DashAdmin.fromDoc(
-            row.optString("email"),
-            mapOf(
-                "email" to row.optString("email"),
-                "role" to if (role == "blocked") "supervisor" else role,
-                "blocked" to (role == "blocked"),
-                "blockMode" to if (role == "blocked") "permanent" else "",
-                "addedBy" to "minbar-api",
-                "addedAt" to row.optLong("added_at_ms"),
-            ),
-        )
-    }
+    internal fun adminFromRow(row: JSONObject): DashAdmin = DashAdmin(
+        email = row.optString("email").trim().lowercase(),
+        role = row.optString("role").ifEmpty { "supervisor" },
+        displayName = row.optString("display_name").trim(),
+        lastSeenMs = row.optLong("last_seen_ms"),
+        addedAtMs = row.optLong("added_at_ms"),
+        sessionMigratedAtMs = row.optLong("session_migrated_at_ms"),
+        removedAtMs = row.optLong("removed_at_ms"),
+        removedBy = row.optString("removed_by").trim().lowercase(),
+        online = row.optBoolean("online", false),
+    )
 
     // ---------------- قراءة ----------------
 
@@ -133,43 +130,45 @@ object AdminRepository {
 
     // ---------------- المشرفون ----------------
 
+    /** كل الحسابات: المالك أوّلاً، ثم المتّصلون، ثم بالأحدث ظهوراً، والمغادرون آخراً. */
     suspend fun fetchDashAdmins(): List<DashAdmin> =
         MinbarAdminApi.get("/admin/admins").optJSONArray("items").rows()
             .map(::adminFromRow)
-            .sortedByDescending { it.lastSignedInAtMs ?: it.addedAtMs }
+            .sortedWith(
+                compareBy<DashAdmin> { it.removed }
+                    .thenByDescending { it.isOwner }
+                    .thenByDescending { it.online }
+                    .thenByDescending { maxOf(it.lastSeenMs, it.addedAtMs) },
+            )
 
-    suspend fun getDashAdmin(email: String): DashAdmin? {
-        val id = email.trim().lowercase()
-        if (id.isEmpty()) return null
-        return fetchDashAdmins().firstOrNull { it.email.equals(id, ignoreCase = true) }
-    }
-
-    /** المالك مسجَّل في جدول المشرفين على الخادم؛ لا شيء يُكتب عند دخوله. */
-    fun upsertOwnerRecord(email: String, displayName: String = "", photoURL: String = "") = Unit
-
-    fun touchLastSignedIn(email: String) = Unit
-
-    suspend fun setDashAdminBlocked(email: String, blocked: Boolean, mode: String = "temporary") {
+    /** للمالك وحده: `admin` ↔ `supervisor` أو `blocked` (الخادم يبطل جلسات المحظور). */
+    suspend fun setDashAdminRole(email: String, role: String) {
         val id = email.trim().lowercase()
         if (id.isEmpty()) return
-        MinbarAdminApi.put(
-            "/admin/admins",
-            JSONObject().put("email", id).put("role", if (blocked) "blocked" else "supervisor"),
-        )
+        MinbarAdminApi.put("/admin/admins", JSONObject().put("email", id).put("role", role))
     }
 
+    /** للمالك وحده: طرد — يبقى الصفّ بعلامة `removed` وتُبطَل جلساته. */
     suspend fun removeDashAdmin(email: String) {
         val id = email.trim().lowercase()
         if (id.isEmpty()) return
         MinbarAdminApi.delete("/admin/admins/${java.net.URLEncoder.encode(id, "UTF-8")}")
     }
 
-    /** اعتماد مشرف جديد ببريده (يُستعمل بعد التحقق من رمز المالك). */
-    suspend fun addDashAdmin(email: String) {
-        val id = email.trim().lowercase()
-        if (id.isEmpty()) return
-        MinbarAdminApi.put("/admin/admins", JSONObject().put("email", id).put("role", "supervisor"))
-    }
+    /** رمز وانتهاؤه كما أصدرهما الخادم. */
+    data class AccessCode(val code: String, val expiresAtMs: Long)
+
+    private fun JSONObject.accessCode() = AccessCode(optString("code"), optLong("expiresAtMs"))
+
+    /** للمالك: دعوة مشرف برمز 24 ساعة (`POST /admin/invites`). */
+    suspend fun createInvite(email: String, name: String = ""): AccessCode =
+        MinbarAdminApi.post(
+            "/admin/invites",
+            JSONObject().put("email", email.trim().lowercase()).put("name", name.trim()).put("role", "supervisor"),
+        ).accessCode()
+
+    /** لأي مشرف: رمز ربط جهاز جديد لنفسه، 10 دقائق (`POST /admin/link-codes`). */
+    suspend fun createLinkCode(): AccessCode = MinbarAdminApi.post("/admin/link-codes").accessCode()
 
     // رموز اعتماد المرشّحين — على `minbar-api` (للمالك وحده).
     fun watchPendingOwnerCodes(): Flow<List<PendingOwnerCode>> = flow {
@@ -369,40 +368,25 @@ object AdminRepository {
         MinbarAdminApi.delete("/admin/lessons/${lesson.id}")
     }
 
-    // ---------------- آخر التغييرات ----------------
+    // ---------------- سجل التدقيق ----------------
 
-    data class RecentChange(
-        val id: String,
-        val kind: String,
-        val name: String,
-        val byEmail: String,
-        val atMs: Long,
-    )
-
-    suspend fun fetchRecentChanges(limit: Int = 50): List<RecentChange> {
-        val found = mutableListOf<RecentChange>()
-        listOf(
-            Triple("lessons", "lesson", "title"),
-            Triple("categories", "category", "name"),
-            Triple("subcategories", "subcategory", "name"),
-        ).forEach { (table, kind, nameKey) ->
-            runCatching { MinbarAdminApi.get("/admin/$table?all=1").optJSONArray("items").rows() }
-                .getOrDefault(emptyList())
-                .forEach { row ->
-                    val atMs = row.optLong("updated_at_ms")
-                    if (atMs > 0L) {
-                        found += RecentChange(
-                            id = row.optString("id"),
-                            kind = kind,
-                            name = row.optString(nameKey),
-                            byEmail = "",
-                            atMs = atMs,
-                        )
-                    }
-                }
-        }
-        return withContext(Dispatchers.Default) { found.sortedByDescending { it.atMs }.take(limit) }
-    }
+    /** آخر ثلاثين يوماً افتراضاً (حدّ الخادم 300 سطر) — بالأحدث أولاً. */
+    suspend fun fetchAuditLog(sinceMs: Long = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000): List<AuditEntry> =
+        MinbarAdminApi.get("/admin/audit?since=$sinceMs").optJSONArray("items").rows()
+            .map { row ->
+                AuditEntry(
+                    id = row.optString("id"),
+                    actor = row.optString("actor").trim().lowercase(),
+                    action = row.optString("action"),
+                    entity = row.optString("entity"),
+                    entityId = row.optString("entity_id"),
+                    title = row.optString("title"),
+                    details = runCatching { JSONObject(row.optString("details_json").ifBlank { "{}" }) }
+                        .getOrDefault(JSONObject()),
+                    atMs = row.optLong("at_ms"),
+                )
+            }
+            .sortedByDescending { it.atMs }
 
     // ---------------- ملاحظات المستمعين ----------------
 

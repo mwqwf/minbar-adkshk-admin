@@ -89,22 +89,6 @@ data class SupportMessage(
     }
 }
 
-data class SupervisionRequest(
-    val id: String,
-    val uid: String,
-    val displayName: String,
-    val about: String,
-    val relation: String,
-    val wants: String,
-    val status: String,
-    val createdAtMs: Long,
-    val threadId: String,
-    val note: String,
-) {
-    val isPending: Boolean get() = status.isEmpty() || status == "pending"
-    val name: String get() = displayName.ifBlank { "مستخدم" }
-}
-
 /**
  * «راسِل المطوّر» في اللوحة — على `minbar-api` (قرار 2026-09-10): المحادثات
  * والرسائل في D1، المرفقات في R2، والردّ يُخطر المستخدم بـFCM من الخادم.
@@ -147,11 +131,6 @@ object SupportRepository {
         }
     }.flowOn(Dispatchers.IO)
 
-    /** طلبات الإشراف — تنتقل في مرحلة لاحقة؛ لا طلبات معلّقة الآن. */
-    fun watchSupervisionRequests(): Flow<List<SupervisionRequest>> = flow { emit(emptyList()) }
-
-    fun watchPendingRequestsCount(): Flow<Int> = flow { emit(0) }
-
     suspend fun markRead(threadId: String) {
         runCatching { MinbarAdminApi.post("/admin/support/threads/$threadId/read") }
     }
@@ -176,10 +155,6 @@ object SupportRepository {
 
     suspend fun blockUser(uid: String, blocked: Boolean) {
         MinbarAdminApi.post("/admin/support/block", JSONObject().put("deviceId", uid).put("blocked", blocked))
-    }
-
-    suspend fun decideSupervision(requestId: String, approved: Boolean, note: String = "") {
-        throw IllegalStateException("طلبات الإشراف تنتقل في مرحلة لاحقة — اعتمد المشرف من شاشة المشرفين مباشرة.")
     }
 
     /** مفتاح مرفق في R2 → رابط قراءة عبر minbar-api. */

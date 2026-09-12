@@ -31,14 +31,11 @@ import androidx.compose.material.icons.filled.SupervisorAccount
 import androidx.compose.material.icons.filled.TipsAndUpdates
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -51,7 +48,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.ali.ishaqiyin_admin.data.SupervisionRequest
 import com.ali.ishaqiyin_admin.data.SupportKind
 import com.ali.ishaqiyin_admin.data.SupportRepository
 import com.ali.ishaqiyin_admin.data.SupportThread
@@ -94,63 +90,21 @@ internal fun supportTimeLabel(millis: Long): String {
 /**
  * 📬 «رسائل المستخدمين» — للمالك وحده (الحارس في `AdminApp`).
  *
- * تبويبان: المحادثات (مرتّبة بالأحدث ومرشَّحة بالنوع)، وطلبات الإشراف
- * بأسئلتها الثلاثة وقراريها. لا شاشة ثالثة: كلّ ما يحتاجه المالك هنا.
+ * قائمة واحدة: المحادثات مرتّبة بالأحدث ومرشَّحة بالنوع. (تبويب «طلبات
+ * الإشراف» أُزيل ٢٠٢٢/١.٨.٠ — لا خادم له؛ الاعتماد برمز المالك في «المشرفون».)
  */
 @Composable
 fun SupportInboxScreen(
     onBack: () -> Unit,
     onOpenThread: (SupportThread) -> Unit,
 ) {
-    var tab by remember { mutableIntStateOf(0) }
-    val unread by rememberSupportFlow(0) { SupportRepository.watchUnreadCount() }
-    val pendingRequests by rememberSupportFlow(0) {
-        SupportRepository.watchPendingRequestsCount()
-    }
-
     AdminScaffold(title = "رسائل المستخدمين", onBack = onBack) { padding ->
         Column(Modifier.padding(padding).fillMaxWidth()) {
-            TabRow(selectedTabIndex = tab) {
-                Tab(
-                    selected = tab == 0,
-                    onClick = { tab = 0 },
-                    // 48dp: جمهور اللوحة لا يصيب أهدافاً أصغر.
-                    modifier = Modifier.heightIn(min = 48.dp),
-                    text = { TabLabel("المحادثات", unread) },
-                )
-                Tab(
-                    selected = tab == 1,
-                    onClick = { tab = 1 },
-                    modifier = Modifier.heightIn(min = 48.dp),
-                    text = { TabLabel("طلبات الإشراف", pendingRequests) },
-                )
-            }
-            if (tab == 0) ThreadsTab(onOpenThread) else SupervisionTab()
+            ThreadsTab(onOpenThread)
         }
     }
 }
 
-@Composable
-private fun TabLabel(text: String, badge: Int) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-        if (badge > 0) {
-            Spacer(Modifier.size(6.dp))
-            Box(
-                Modifier
-                    .background(MaterialTheme.colorScheme.error, RoundedCornerShape(999.dp))
-                    .padding(horizontal = 7.dp, vertical = 2.dp),
-            ) {
-                Text(
-                    if (badge > 99) "+99" else "$badge",
-                    color = contentColorOn(MaterialTheme.colorScheme.error),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-        }
-    }
-}
 
 @Composable
 private fun ThreadsTab(onOpenThread: (SupportThread) -> Unit) {
@@ -295,170 +249,6 @@ private fun ThreadRow(thread: SupportThread, onClick: () -> Unit) {
             if (thread.ownerUnread) {
                 Spacer(Modifier.height(6.dp))
                 Box(Modifier.size(10.dp).background(scheme.error, CircleShape))
-            }
-        }
-    }
-}
-
-/**
- * 🧑‍🏫 طلبات الإشراف.
- *
- * ⛔ التنبيه أعلى القائمة ليس زينة: «قبول» هنا **رسالة قبول** لا صلاحية —
- * اعتماد الحساب يبقى في شاشة «المشرفون». بلا هذه الجملة كان المالك يظنّ
- * أنّه منح صلاحية لم يمنحها.
- */
-@Composable
-private fun SupervisionTab() {
-    val requests by rememberSupportFlow(emptyList<SupervisionRequest>()) {
-        SupportRepository.watchSupervisionRequests()
-    }
-    val scheme = MaterialTheme.colorScheme
-
-    LazyColumn(Modifier.fillMaxWidth()) {
-        item {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp)
-                    .background(scheme.primary.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
-                    .padding(12.dp),
-            ) {
-                Text(
-                    "تنبيه: «قبول» هنا يبلّغ صاحب الطلب بالموافقة فقط، ولا يجعله " +
-                        "مشرفاً. اعتماد المشرف يبقى بيدك في شاشة «الحساب والمشرفون».",
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp,
-                    color = scheme.onSurface,
-                )
-            }
-        }
-        if (requests.isEmpty()) {
-            item { EmptyHint("لا طلبات إشراف بعد.") }
-        }
-        items(requests, key = { it.id }) { request -> SupervisionCard(request) }
-        item { Spacer(Modifier.height(16.dp)) }
-    }
-}
-
-@Composable
-private fun SupervisionCard(request: SupervisionRequest) {
-    val scheme = MaterialTheme.colorScheme
-    val scope = rememberCoroutineScope()
-    val snack = LocalSnack.current
-    var working by remember { mutableStateOf(false) }
-    var confirm by remember { mutableStateOf<Boolean?>(null) }
-
-    confirm?.let { approve ->
-        ConfirmDialog(
-            title = if (approve) "قبول الطلب" else "رفض الطلب",
-            body = if (approve) {
-                "سيصل ${request.name} أنّك قبلت طلبه. " +
-                    "لن يصير مشرفاً بهذا — الاعتماد يبقى بيدك في شاشة المشرفين."
-            } else {
-                "سيصل ${request.name} أنّك رفضت طلبه."
-            },
-            confirmLabel = if (approve) "قبول" else "رفض",
-            confirmColor = if (approve) scheme.primary else scheme.error,
-            confirmEnabled = !working,
-            onConfirm = {
-                confirm = null
-                working = true
-                scope.launch {
-                    try {
-                        SupportRepository.decideSupervision(request.id, approve)
-                        snack(if (approve) "قُبل الطلب." else "رُفض الطلب.")
-                    } catch (e: Exception) {
-                        snack("تعذّر الإرسال: ${e.arabicReason()}")
-                    }
-                    working = false
-                }
-            },
-            onDismiss = { confirm = null },
-        )
-    }
-
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .background(scheme.surfaceContainer, RoundedCornerShape(14.dp))
-            .padding(14.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                Icons.Filled.SupervisorAccount,
-                contentDescription = null,
-                tint = adminBlue,
-                modifier = Modifier.size(20.dp),
-            )
-            Spacer(Modifier.size(8.dp))
-            Text(
-                request.name,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                supportTimeLabel(request.createdAtMs),
-                fontSize = 11.sp,
-                color = scheme.onSurfaceVariant,
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        QuestionAnswerRow("من أنت؟", request.about)
-        QuestionAnswerRow("ما صلتك بالمنبر؟", request.relation)
-        QuestionAnswerRow("ماذا تريد أن تعمل؟", request.wants)
-        Spacer(Modifier.height(6.dp))
-        if (request.isPending) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(
-                    onClick = { confirm = true },
-                    enabled = !working,
-                    modifier = Modifier.heightIn(min = 48.dp).weight(1f),
-                ) {
-                    Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.size(6.dp))
-                    Text("قبول")
-                }
-                TextButton(
-                    onClick = { confirm = false },
-                    enabled = !working,
-                    modifier = Modifier.heightIn(min = 48.dp).weight(1f),
-                ) {
-                    Icon(
-                        Icons.Filled.Close,
-                        contentDescription = null,
-                        tint = scheme.error,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.size(6.dp))
-                    Text("رفض", color = scheme.error)
-                }
-            }
-        } else {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    if (request.status == "approved") Icons.Filled.DoneAll else Icons.Filled.Block,
-                    contentDescription = null,
-                    tint = if (request.status == "approved") adminGreen else scheme.error,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.size(6.dp))
-                Text(
-                    if (request.status == "approved") "قُبل الطلب" else "رُفض الطلب",
-                    fontSize = 12.sp,
-                    color = scheme.onSurfaceVariant,
-                )
-            }
-            if (request.note.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "ملاحظتك: ${request.note}",
-                    fontSize = 12.sp,
-                    color = scheme.onSurfaceVariant,
-                )
             }
         }
     }

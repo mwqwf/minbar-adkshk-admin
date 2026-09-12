@@ -102,13 +102,20 @@ android {
         // والدروس والرفع (إلى R2 عبر الـWorker + خطّ ترميز GitHub Actions) والنصوص
         // المشروحة والسلة وإعداد التحديث وإشعار البثّ والدور — بلا Firestore/
         // Functions/Storage. الدردشة والمساهمات والاتصال في المرحلة الثانية.
-        versionCode = 2021
+        // ٢٠٢٢ / ١.٨.٠ — «جلسة منبر»: انتقال صامت بلا خروج أحد؛ لا FCM ولا
+        // App Check (تنبيهات باستطلاع ساعيّ بمعرّف تثبيت ثابت)؛ شاشة المشرفين
+        // بالحضور والانضمام والمغادرة؛ سجل تدقيق حيّ من `/admin/audit`؛ الإتلاف
+        // والطرد للمالك وحده؛ وإصلاحات الرفع (404 صور النص، إعادة الرفع، الدرس
+        // المكرّر). ودخول برمز ربط بلا Google (رمز دعوة من المالك ٢٤ ساعة، ورمز
+        // ربط جهاز ١٠ دقائق). وأُزيلت واجهات بلا خادم (OCR، طلبات الإشراف، لوحة
+        // الشرف، «أُعلن في المجموعة»).
+        versionCode = 2022
         // 📦 **حزمةُ الهاتف وحدَها** (2026-09-11): كانت الحزمة ٤٧ م.ب، **ثلاثةُ أرباعها
         //    مكتباتُ معالجاتٍ لا يملكها أحد** (x86 وx86_64 للمحاكي وarmeabi للقديم).
         //    ⛔ ونتُ المالك ضعيفٌ جدّاً (قاعدة ٧): كلُّ ميغابايت زائدٍ ثمنٌ يدفعه من بياناته.
         //    ⇒ arm64 وحدَه — وهو معالجُ كلّ هاتفٍ يُباع منذ سنين. والمحاكي يُبنى debug.
         ndk { abiFilters += listOf("arm64-v8a") }
-        versionName = "1.7.0"
+        versionName = "1.8.0"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -228,10 +235,22 @@ dependencies {
 
     val firebaseBom = platform("com.google.firebase:firebase-bom:34.16.0")
     implementation(firebaseBom)
+    // ⛔ Firebase Auth وحده يبقى في هذه النسخة الانتقالية (لتبديل الجلسات
+    // القائمة صامتاً إلى «جلسة منبر»). لا FCM ولا App Check منذ ٢٠٢٢/١.٨.٠:
+    // تنبيهات المشرفين تُستطلع من `/admin/alerts` بعامل دوريّ.
     implementation("com.google.firebase:firebase-auth")
-    implementation("com.google.firebase:firebase-messaging")
-    implementation("com.google.firebase:firebase-appcheck-playintegrity")
-    debugImplementation("com.google.firebase:firebase-appcheck-debug")
+    // ⚓ تثبيت نسخ Play Services التي كانت تصل عبر firebase-messaging: بعد حذفه
+    // تطلب credentials-play-services-auth نسخاً أقدم غير موجودة في كاش الجهاز
+    // (نتُ المالك ضعيف — قاعدة ٧)، والأحدث المثبَّت هنا هو ما كان يُشحن فعلاً.
+    constraints {
+        implementation("com.google.android.gms:play-services-base:18.9.0")
+        implementation("com.google.android.gms:play-services-basement:18.9.0")
+        implementation("com.google.android.gms:play-services-tasks:18.4.0")
+        implementation("com.google.firebase:firebase-appcheck-interop:17.1.0")
+        implementation("com.google.firebase:firebase-common:22.1.0")
+        implementation("com.google.firebase:firebase-components:19.0.0")
+        implementation("com.google.firebase:firebase-annotations:17.0.0")
+    }
 
     // تسجيل الدخول بـ Google (بديل google_sign_in) عبر Credential Manager.
     implementation("androidx.credentials:credentials:1.5.0")

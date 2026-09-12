@@ -107,8 +107,12 @@ object MinbarAdminApi {
 
     suspend fun get(path: String, auth: Boolean = true): JSONObject = request(path, "GET", auth = auth)
     suspend fun put(path: String, body: JSONObject): JSONObject = request(path, "PUT", body.toString())
-    suspend fun post(path: String, body: JSONObject = JSONObject(), bearerOverride: String? = null): JSONObject =
-        request(path, "POST", body.toString(), bearerOverride = bearerOverride)
+    suspend fun post(
+        path: String,
+        body: JSONObject = JSONObject(),
+        bearerOverride: String? = null,
+        auth: Boolean = true,
+    ): JSONObject = request(path, "POST", body.toString(), auth = auth, bearerOverride = bearerOverride)
     suspend fun delete(path: String): JSONObject = request(path, "DELETE")
 
     /**

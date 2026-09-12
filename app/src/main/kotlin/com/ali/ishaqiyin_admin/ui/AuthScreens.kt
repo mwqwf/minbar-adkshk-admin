@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ali.ishaqiyin_admin.data.AdminSession
 import com.ali.ishaqiyin_admin.data.AuthService
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -58,6 +59,9 @@ fun LoginScreen() {
     val scope = rememberCoroutineScope()
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
+    // 🔗 «لديّ رمز دخول»: حقل ثماني خانات يفتح عند الطلب — بلا Google.
+    var codeMode by remember { mutableStateOf(false) }
+    var code by remember { mutableStateOf("") }
 
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         Box(
@@ -112,6 +116,46 @@ fun LoginScreen() {
                     )
                     Spacer(Modifier.size(8.dp))
                     Text(if (loading) "جارٍ الدخول..." else "تسجيل الدخول بـ Google")
+                }
+                Spacer(Modifier.height(8.dp))
+                if (!codeMode) {
+                    TextButton(onClick = { codeMode = true; error = "" }, enabled = !loading) {
+                        Text("لديّ رمز دخول")
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { raw ->
+                            code = raw.uppercase().filter { it.isLetterOrDigit() }.take(8)
+                        },
+                        label = { Text("رمز الدخول (٨ خانات)") },
+                        singleLine = true,
+                        enabled = !loading,
+                        textStyle = TextStyle(fontSize = 22.sp, letterSpacing = 4.sp, textAlign = TextAlign.Center),
+                        colors = adminFieldColors(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            loading = true
+                            error = ""
+                            scope.launch {
+                                val err = AdminSession.redeemCode(code)
+                                loading = false
+                                if (err != null) error = err
+                            }
+                        },
+                        enabled = !loading && code.length == 8,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                    ) { Text("دخول بالرمز") }
+                    Text(
+                        "رمز دعوة من المالك أو رمز ربط من جهازك الآخر.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
                 }
                 if (error.isNotEmpty()) {
                     Spacer(Modifier.height(14.dp))

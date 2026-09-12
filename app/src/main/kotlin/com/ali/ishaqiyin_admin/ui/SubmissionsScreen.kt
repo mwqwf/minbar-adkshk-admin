@@ -1913,7 +1913,6 @@ private fun EditTranscriptDialog(
     var bookTitle by rememberSaveable(submission.id) { mutableStateOf(submission.bookTitle) }
     var sourceRef by rememberSaveable(submission.id) { mutableStateOf(submission.sourceRef) }
     var keepImages by rememberSaveable(submission.id) { mutableStateOf(true) }
-    var extracting by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf("") }
 
     AlertDialog(
@@ -1968,63 +1967,6 @@ private fun EditTranscriptDialog(
                         imageUrls = imageUrls,
                         onOpen = { previewImage = it },
                     )
-                    Spacer(Modifier.height(6.dp))
-                    OutlinedButton(
-                        onClick = {
-                            extracting = true
-                            scope.launch {
-                                // سبب فشل الخادم (مثل «فعّل Cloud Vision API»)
-                                // كان يُبتلع فيُعرض الفشل كأن الصور بلا نص.
-                                var lastError: Throwable? = null
-                                val parts = submission.imagePaths.mapNotNull { path ->
-                                    runCatching {
-                                        TranscriptsRepository.extractText(path)
-                                    }.onFailure { lastError = it }
-                                        .getOrNull()?.takeIf { it.isNotBlank() }
-                                }
-                                if (parts.isEmpty()) {
-                                    snack(
-                                        lastError?.let { "تعذّر الاستخراج: ${it.arabicReason()}" }
-                                            ?: "لم يُستخرج نص من الصور.",
-                                    )
-                                } else {
-                                    val joined = parts.joinToString("\n\n")
-                                    val combined =
-                                        if (text.isBlank()) joined else "$text\n\n$joined"
-                                    val trimmed = combined.length > 20000
-                                    text = combined.take(20000)
-                                    snack(
-                                        if (trimmed) {
-                                            "أُلحق النص وقُصّ عند 20 ألف حرف — راجع آخره."
-                                        } else {
-                                            "أُلحق النص المستخرج — دقّقه قبل الاعتماد."
-                                        },
-                                    )
-                                }
-                                extracting = false
-                            }
-                        },
-                        enabled = !extracting,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        if (extracting) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            Spacer(Modifier.size(6.dp))
-                            Text("جارٍ الاستخراج…")
-                        } else {
-                            Icon(
-                                Icons.Filled.TextSnippet,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(Modifier.size(4.dp))
-                            Text("استخراج النص من الصور (OCR)")
-                        }
-                    }
                     Spacer(Modifier.height(4.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,

@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LockClock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PrivacyTip
@@ -63,9 +64,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * شاشة الحساب والصلاحية (مطابقة لنمط لوحة نبراس: مالك / مشرف).
- * المالك فقط يرى بطاقة الرمز المعلَّق الحيّة ويفتح «إدارة المشرفين».
- * الكتابة مفروضة في قواعد Firestore على الخادم.
+ * شاشة الحساب والصلاحية (مالك / مشرف). المالك وحده يرى بطاقة الرمز المعلَّق
+ * الحيّة؛ وقائمة «المشرفون» يفتحها الجميع (أفعال المالك داخلها له وحده).
  */
 @Composable
 fun AdminsScreen(isOwner: Boolean, onBack: () -> Unit, onOpenSupervisors: () -> Unit) {
@@ -111,34 +111,35 @@ fun AdminsScreen(isOwner: Boolean, onBack: () -> Unit, onOpenSupervisors: () -> 
             if (isOwner) {
                 Spacer(Modifier.height(12.dp))
                 PendingOwnerCodeCards()
-                Spacer(Modifier.height(12.dp))
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenSupervisors),
+            }
+            Spacer(Modifier.height(12.dp))
+            // 👥 قائمة المشرفين يراها الجميع؛ أفعال المالك تظهر له وحده داخلها.
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenSupervisors),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        CircleIcon(Icons.Filled.SupervisorAccount, MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.size(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("إدارة المشرفين")
-                            Text(
-                                "حظر مؤقّت/نهائي/إلغاء حظر/حذف",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        // ‏RTL: الرمز تلقائي الانعكاس، فـRight يُرسم يساراً —
-                        // وإلّا صار سهم «ادخل» مطابقاً لسهم «ارجع» في الشريط.
-                        Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    CircleIcon(Icons.Filled.SupervisorAccount, MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.size(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("المشرفون")
+                        Text(
+                            if (isOwner) "الحضور والرتب والحظر والطرد" else "من معك في الإدارة وحضورهم",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    // ‏RTL: الرمز تلقائي الانعكاس، فـRight يُرسم يساراً —
+                    // وإلّا صار سهم «ادخل» مطابقاً لسهم «ارجع» في الشريط.
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -155,14 +156,44 @@ fun AdminsScreen(isOwner: Boolean, onBack: () -> Unit, onOpenSupervisors: () -> 
                             "فتُبلّغ به صاحبه (مكالمة/واتساب)، فيُدخله ويصبح مشرفاً " +
                             "تلقائياً. لا حاجة لإضافة بريده يدوياً."
                     } else {
-                        "صلاحياتك كمشرف تشمل إضافة وتعديل وحذف المحتوى. " +
-                            "إدارة المشرفين متاحة للمالك فقط."
+                        "صلاحياتك كمشرف تشمل إضافة وتعديل المحتوى ونقله إلى السلة. " +
+                            "الإتلاف النهائيّ والحظر والطرد للمالك وحده."
                     },
                     lineHeight = 24.sp,
                     fontSize = 14.sp,
                 )
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
+            // 🔗 رمز ربط جهاز جديد لنفسي (10 دقائق) — يُدخَل في شاشة الدخول هناك.
+            var linkCode by remember { mutableStateOf<AdminRepository.AccessCode?>(null) }
+            var linking by remember { mutableStateOf(false) }
+            val snack = LocalSnack.current
+            linkCode?.let {
+                AccessCodeDialog(
+                    title = "ربط جهاز جديد",
+                    code = it.code,
+                    note = "أدخله في «لديّ رمز دخول» على الجهاز الآخر — صالح 10 دقائق، مرّة واحدة.",
+                    onDismiss = { linkCode = null },
+                )
+            }
+            OutlinedButton(
+                onClick = {
+                    linking = true
+                    scope.launch {
+                        runCatching { AdminRepository.createLinkCode() }
+                            .onSuccess { linkCode = it }
+                            .onFailure { snack("تعذّر إصدار الرمز: ${it.arabicReason()}") }
+                        linking = false
+                    }
+                },
+                enabled = !linking,
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+            ) {
+                if (linking) Spin(size = 16) else Icon(Icons.Filled.Link, contentDescription = null)
+                Spacer(Modifier.size(8.dp))
+                Text("ربط جهاز جديد")
+            }
+            Spacer(Modifier.height(10.dp))
             OutlinedButton(
                 onClick = { scope.launch { AuthService.signOut(context) } },
                 modifier = Modifier.fillMaxWidth().height(50.dp),

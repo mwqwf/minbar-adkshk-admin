@@ -28,7 +28,6 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Crop
-import androidx.compose.material.icons.filled.TextSnippet
 import androidx.compose.material.icons.filled.VerticalAlignCenter
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -145,7 +144,6 @@ fun TranscriptEditorDialog(
 
     var loading by remember { mutableStateOf(true) }
     var saving by remember { mutableStateOf(false) }
-    var extracting by remember { mutableStateOf(false) }
     var merging by remember { mutableStateOf(false) }
     // ⛔ فشل جلب النصّ الحالي يقفل الحفظ حتى ينجح: الحفظ يستبدل الوثيقة
     // كاملة ويحذف من التخزين كلّ صورة غير مذكورة في القائمة المرسلة —
@@ -679,79 +677,6 @@ fun TranscriptEditorDialog(
                                     )
                                     Spacer(Modifier.width(4.dp))
                                     Text("دمج الصور في صورة واحدة (بالترتيب)")
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        // OCR على المنشور فقط (الجديدة لم تُرفع بعد فلا يراها الخادم).
-                        val remotePaths = images.mapNotNull { it.remotePath }
-                        if (remotePaths.isNotEmpty()) {
-                            OutlinedButton(
-                                onClick = {
-                                    extracting = true
-                                    scope.launch {
-                                        try {
-                                            // سبب فشل الخادم (مثل «فعّل Cloud
-                                            // Vision API») كان يُبتلع فيُعرض
-                                            // الفشل كأنّ الصور بلا نص.
-                                            var lastError: Throwable? = null
-                                            val parts = remotePaths.mapNotNull { path ->
-                                                runCatching {
-                                                    TranscriptsRepository.extractText(path)
-                                                }.onFailure { lastError = it }
-                                                    .getOrNull()?.takeIf { it.isNotBlank() }
-                                            }
-                                            if (parts.isEmpty()) {
-                                                snack(
-                                                    lastError?.let {
-                                                        "تعذّر الاستخراج: ${it.arabicReason()}"
-                                                    } ?: "لم يُستخرج نص من الصور المنشورة.",
-                                                )
-                                            } else {
-                                                val joined = parts.joinToString("\n\n")
-                                                val combined = if (text.isBlank()) {
-                                                    joined
-                                                } else {
-                                                    "$text\n\n$joined"
-                                                }
-                                                // القصّ الصامت يضيّع آخر النص
-                                                // المستخرج بلا أن يدري المشرف.
-                                                val trimmed = combined.length > 20000
-                                                text = combined.take(20000)
-                                                snack(
-                                                    if (trimmed) {
-                                                        "أُلحق النص وقُصّ عند 20 ألف حرف — " +
-                                                            "راجع آخره."
-                                                    } else {
-                                                        "أُلحق النص المستخرج — دقّقه قبل الحفظ."
-                                                    },
-                                                )
-                                            }
-                                        } catch (e: Exception) {
-                                            snack("تعذّر استخراج النص: ${e.arabicReason()}")
-                                        }
-                                        extracting = false
-                                    }
-                                },
-                                enabled = !extracting && !saving,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                if (extracting) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(15.dp),
-                                        strokeWidth = 2.dp,
-                                        color = MaterialTheme.colorScheme.primary,
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("جارٍ الاستخراج…")
-                                } else {
-                                    Icon(
-                                        Icons.Filled.TextSnippet,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp),
-                                    )
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("استخراج النص من الصور المنشورة (OCR)")
                                 }
                             }
                         }

@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Firebase (Firestore + Storage) + اختيار الملفات يحتاجان الإنترنت -->
+    <!-- minbar-api + اختيار الملفات يحتاجان الإنترنت -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- تنبيهات المالك والمشرفين على Android 13+ -->
@@ -124,20 +124,6 @@
         <!-- دورة حياة WebRTC والصوت أثناء المكالمة. -->
         
 
-        <service
-            android:name=".data.AdminMessagingService"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
-        </service>
-
-        <!-- رسائل FCM التي يرسمها النظام (التطبيق في الخلفيّة) لا تمرّ بكود
-             الإشعار عندنا، فبلا هذا السطر تسقط على أيقونة المشغّل الملوّنة
-             وتظهر مربّعاً أبيض — نفس علّة setSmallIcon. -->
-        <meta-data
-            android:name="com.google.firebase.messaging.default_notification_icon"
-            android:resource="@drawable/ic_notification" />
 
         <!-- فتح مرفقات الدردشة المنزَّلة بتطبيق النظام (نمط واتساب). -->
         <provider

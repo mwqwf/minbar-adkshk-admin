@@ -16,7 +16,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -69,7 +68,6 @@ fun UpdateConfigScreen(onBack: () -> Unit) {
     var target by remember { mutableStateOf(UpdateConfigRepository.Target.PublicApp) }
     // إعلان المجموعة: افتراضيّ لتذكير اللوحة — المشرفون كلّهم فيها، وهو
     // أسرع طريق يبلغهم بالإصدار الجديد بلا انتظار فتحهم للوحة.
-    var announce by remember { mutableStateOf(true) }
 
     // تبديل الهدف يعيد التحميل: لكلّ تطبيق وثيقته وأرقامه.
     LaunchedEffect(target, reload) {
@@ -229,35 +227,6 @@ fun UpdateConfigScreen(onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            // 📣 إعلان المجموعة — يخصّ اللوحة وحدها: مشرفوها كلّهم في
-            // مجموعة الإدارة، فرسالة واحدة تبلغهم فوراً بإشعار الدردشة
-            // نفسه بدل انتظار أن يفتح كلّ واحد اللوحة فيرى شاشة التذكير.
-            if (target == UpdateConfigRepository.Target.AdminApp) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Checkbox(checked = announce, onCheckedChange = { announce = it })
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "أعلن في مجموعة الإدارة",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            // ⚠️ دفعة الإشعار تحترم كتم المجموعة (respectChatMute)،
-                            // فوعدُ «كلّ المشرفين» كان أوسع من السلوك الفعلي.
-                            "تُرسَل رسالة «صدر إصدار جديد من اللوحة» مع رابط " +
-                                "التحديث، ويصل إشعارها لكلّ من لم يكتم مجموعة " +
-                                "الإدارة (وتبقى الرسالة في المجموعة للجميع).",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
                     enabled = !saving && !loadError && latest.isNotBlank(),
@@ -285,21 +254,7 @@ fun UpdateConfigScreen(onBack: () -> Unit) {
                             }
                             saving = false
                             result
-                                .onSuccess {
-                                    val announced =
-                                        target == UpdateConfigRepository.Target.AdminApp &&
-                                            announce
-                                    if (announced) {
-                                        // (الإعلان في مجموعة الإدارة أُلغي مع الدردشة — 2026-09-10.)
-                                    }
-                                    snack(
-                                        if (announced) {
-                                            "حُفظ إعداد التذكير وأُعلن في المجموعة."
-                                        } else {
-                                            "حُفظ إعداد التذكير."
-                                        },
-                                    )
-                                }
+                                .onSuccess { snack("حُفظ إعداد التذكير.") }
                                 .onFailure { snack("تعذّر الحفظ: ${it.arabicReason()}") }
                         }
                     },
