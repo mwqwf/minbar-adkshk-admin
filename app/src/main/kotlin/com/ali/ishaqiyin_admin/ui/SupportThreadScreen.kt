@@ -62,7 +62,7 @@ import com.ali.ishaqiyin_admin.ui.chat.WhatsAppChatBackground
 import com.ali.ishaqiyin_admin.ui.chat.rememberVoiceRecorderState
 import com.ali.ishaqiyin_admin.ui.chat.sameDay
 import com.ali.ishaqiyin_admin.util.copyUriToCache
-import com.google.firebase.auth.FirebaseAuth
+import com.ali.ishaqiyin_admin.data.AuthService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -402,7 +402,7 @@ private suspend fun List<SupportMessage>.toBubbles(
     userUid: String,
     userName: String,
 ): List<ChatMessage> {
-    val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
+    val myUid = AuthService.currentUser?.uid.orEmpty()
     val out = mutableListOf<ChatMessage>()
     forEach { m ->
         // ⚠️ `ChatMessage.isMine` يقارن بـ`OWNER_SENDER_ID` لا بـuid المستخدم

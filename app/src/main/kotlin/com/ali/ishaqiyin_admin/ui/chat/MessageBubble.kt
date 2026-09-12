@@ -560,8 +560,7 @@ private fun BubbleBody(
                 if (att == null) {
                     MissingAttachment(stampPad)
                 } else {
-                    val myUid = com.google.firebase.auth.FirebaseAuth
-                        .getInstance().currentUser?.uid.orEmpty()
+                    val myUid = com.ali.ishaqiyin_admin.data.AuthService.currentUser?.uid.orEmpty()
                     // رسالتي: تزرقّ الشارة إن استمع إليها أحد غيري.
                     // رسالة غيري: تزرقّ بعد استماعي أنا.
                     val listened = if (msg.isMine) {
@@ -829,7 +828,7 @@ private fun ReactionsBar(
     onReactionsTap: (ChatMessage) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val myUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
+    val myUid = com.ali.ishaqiyin_admin.data.AuthService.currentUser?.uid.orEmpty()
     val counts = msg.reactions.values.groupingBy { it }.eachCount()
     val mine = msg.reactions[myUid]
     var appeared by remember(msg.id) { mutableStateOf(false) }

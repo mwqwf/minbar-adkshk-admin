@@ -298,7 +298,7 @@ fun AdminApp() {
             try {
                 // مهلة صريحة: بلاها يبقى الدوّار أبديّاً إن علق أيّ نداء
                 // شبكيّ، والمستخدم بلا زرّ إعادة محاولة.
-                val state = withTimeout(25_000) { AuthService.resolveAccess() }
+                val state = withTimeout(25_000) { AuthService.resolveAccess(context) }
                 access = state
                 loading = false
                 if (state == AccessState.Owner || state == AccessState.Supervisor) {

@@ -32,13 +32,23 @@ object MinbarAdminApi {
 
     class ApiException(val code: Int, message: String) : IOException(message)
 
+    /**
+     * الهوية: «جلسة منبر» أولاً (رمز يصدره الخادم — بلا Firebase)، وإلا رمز
+     * Firebase القائم للنسخ التي لم تنتقل بعد. انظر [com.ali.ishaqiyin_admin.data.AdminSession].
+     */
     private suspend fun bearer(): String {
+        com.ali.ishaqiyin_admin.data.AdminSession.token?.let { return "Bearer $it" }
         val user = FirebaseAuth.getInstance().currentUser
             ?: throw ApiException(401, "انتهت جلسة الدخول. سجّل الخروج ثم ادخل بحساب Google مجدّداً.")
         val token = user.getIdToken(false).await().token
             ?: throw ApiException(401, "تعذّر الحصول على رمز الجلسة. أعد تسجيل الدخول.")
         return "Bearer $token"
     }
+
+    /** رمز Firebase القائم إن وُجد — لتبديله بجلسة منبر مرّةً واحدة. */
+    suspend fun firebaseIdToken(): String? = runCatching {
+        FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token
+    }.getOrNull()
 
     private fun readBody(connection: HttpURLConnection): String {
         val stream = (if (connection.responseCode >= 400) connection.errorStream else connection.inputStream)
@@ -63,9 +73,10 @@ object MinbarAdminApi {
         method: String,
         body: String? = null,
         auth: Boolean = true,
+        bearerOverride: String? = null,
     ): JSONObject = withContext(Dispatchers.IO) {
         // الرمز قبل فتح الاتصال: فشله داخل `apply` كان يترك اتصالاً بلا `disconnect`.
-        val authorization = if (auth) bearer() else null
+        val authorization = bearerOverride ?: if (auth) bearer() else null
         val connection = (URL(BASE + path).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 60_000
@@ -82,6 +93,11 @@ object MinbarAdminApi {
             if (body != null) connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
             val text = readBody(connection)
+            if (code == 401 && bearerOverride == null && authorization?.startsWith("Bearer ms_") == true) {
+                // الخادم أبطل الجلسة (طرد/حظر/خروج من جهاز آخر) — تُمسح فتعود
+                // البوّابة إلى مسار Firebase/Google القائم بدل 401 أبديّة.
+                com.ali.ishaqiyin_admin.data.AdminSession.clear()
+            }
             if (code !in 200..299) throw ApiException(code, arabicError(code, text))
             if (text.isBlank()) JSONObject() else JSONObject(text)
         } finally {
@@ -91,7 +107,8 @@ object MinbarAdminApi {
 
     suspend fun get(path: String, auth: Boolean = true): JSONObject = request(path, "GET", auth = auth)
     suspend fun put(path: String, body: JSONObject): JSONObject = request(path, "PUT", body.toString())
-    suspend fun post(path: String, body: JSONObject = JSONObject()): JSONObject = request(path, "POST", body.toString())
+    suspend fun post(path: String, body: JSONObject = JSONObject(), bearerOverride: String? = null): JSONObject =
+        request(path, "POST", body.toString(), bearerOverride = bearerOverride)
     suspend fun delete(path: String): JSONObject = request(path, "DELETE")
 
     /**

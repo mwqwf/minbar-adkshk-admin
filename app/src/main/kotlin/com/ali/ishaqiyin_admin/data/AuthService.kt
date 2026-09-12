@@ -15,6 +15,10 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseUser
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.drop
 import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -54,18 +58,84 @@ data class OwnerCodeResult(
  *     (بديل البريد الإلكتروني في نبراس) ثم يُبلَّغ به المرشّح يدوياً.
  * كل صلاحيات الكتابة مفروضة في قواعد Firestore على الخادم.
  */
+/** هوية المشرف الحالي — من «جلسة منبر» أو من Firebase (النسخ التي لم تنتقل بعد). */
+data class AdminIdentity(
+    val email: String,
+    val displayName: String,
+    val photoUrl: String,
+) {
+    /** معرّف مستقرّ للمقارنات المحلية (البريد نفسه). */
+    val uid: String get() = email
+}
+
 object AuthService {
     private val auth: FirebaseAuth get() = FirebaseAuth.getInstance()
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    val currentUser: FirebaseUser? get() = auth.currentUser
-    val isLoggedIn: Boolean get() = auth.currentUser != null
+    /** الجلسة أولاً؛ وإلا مستخدم Firebase القائم. */
+    val currentUser: AdminIdentity?
+        get() {
+            if (AdminSession.isActive) {
+                return AdminIdentity(AdminSession.email, AdminSession.displayName, AdminSession.photoUrl)
+            }
+            val u = auth.currentUser ?: return null
+            return AdminIdentity(
+                u.email.orEmpty().trim().lowercase(),
+                u.displayName.orEmpty(),
+                u.photoUrl?.toString().orEmpty(),
+            )
+        }
+    val isLoggedIn: Boolean get() = currentUser != null
 
-    /** بثّ حالة تسجيل الدخول — نظير authStateChanges في Flutter. */
-    fun authState(): Flow<FirebaseUser?> = callbackFlow {
-        val listener = FirebaseAuth.AuthStateListener { trySend(it.currentUser) }
-        auth.addAuthStateListener(listener)
-        awaitClose { auth.removeAuthStateListener(listener) }
+    /** بثّ حالة تسجيل الدخول: تغيّر Firebase أو تغيّر جلسة منبر. */
+    fun authState(): Flow<AdminIdentity?> = merge(
+        callbackFlow {
+            val listener = FirebaseAuth.AuthStateListener { trySend(Unit) }
+            auth.addAuthStateListener(listener)
+            awaitClose { auth.removeAuthStateListener(listener) }
+        },
+        AdminSession.version.drop(1).map { },
+    ).map { currentUser }
+
+    /**
+     * الانتقال الصامت إلى جلسة منبر (مرّة واحدة لكل جهاز):
+     * 1) جلسة قائمة ⇒ لا شيء. 2) مستخدم Firebase قائم ⇒ يبدَّل رمزه بجلسة.
+     * 3) لا هذا ولا ذاك ⇒ رمز Google بلا واجهة لمن سبق أن فوّض التطبيق
+     *    (كل المشرفين — فدخول Firebase مرّ بمعرّف العميل نفسه).
+     * الفشل ليس عطباً: تبقى الحالة كما كانت ويُعاد في الإقلاع التالي.
+     */
+    suspend fun migrateToSessionSilently(context: Context) {
+        if (AdminSession.isActive) return
+        val fbUser = auth.currentUser
+        if (fbUser != null) {
+            val tok = MinbarAdminApi.firebaseIdToken() ?: return
+            AdminSession.exchange(tok, fbUser.displayName.orEmpty(), fbUser.photoUrl?.toString().orEmpty())
+            return
+        }
+        silentGoogle(context)?.let { g ->
+            AdminSession.exchange(g.idToken, g.displayName.orEmpty(), g.profilePictureUri?.toString().orEmpty())
+        }
+    }
+
+    /** رمز Google بلا أي واجهة — للحسابات التي فوّضت التطبيق من قبل فقط. */
+    private suspend fun silentGoogle(context: Context): GoogleIdTokenCredential? {
+        if (!AppConfig.googleSignInConfigured) return null
+        return try {
+            val option = GetGoogleIdOption.Builder()
+                .setServerClientId(AppConfig.GOOGLE_SERVER_CLIENT_ID)
+                .setFilterByAuthorizedAccounts(true)
+                .setAutoSelectEnabled(true)
+                .build()
+            val request = GetCredentialRequest.Builder().addCredentialOption(option).build()
+            val credential = CredentialManager.create(context).getCredential(context, request).credential
+            if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                GoogleIdTokenCredential.createFrom(credential.data)
+            } else null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
     }
 
     fun isOwnerEmail(email: String?): Boolean =
@@ -91,9 +161,19 @@ object AuthService {
                 credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
             ) {
                 val googleCredential = GoogleIdTokenCredential.createFrom(credential.data)
-                val firebaseCredential =
-                    GoogleAuthProvider.getCredential(googleCredential.idToken, null)
-                auth.signInWithCredential(firebaseCredential).await()
+                // جلسة منبر مباشرةً برمز Google (بلا Firebase) لمن هو في قائمة
+                // المشرفين؛ وإلا (حساب جديد يحتاج رمز اعتماد) يبقى مسار Firebase
+                // القائم حتى تُطفأ مكتبته في الإصدار التالي.
+                val issued = AdminSession.exchange(
+                    googleCredential.idToken,
+                    googleCredential.displayName.orEmpty(),
+                    googleCredential.profilePictureUri?.toString().orEmpty(),
+                )
+                if (!issued) {
+                    val firebaseCredential =
+                        GoogleAuthProvider.getCredential(googleCredential.idToken, null)
+                    auth.signInWithCredential(firebaseCredential).await()
+                }
                 null // الصلاحية تُحدَّد لاحقاً عبر resolveAccess.
             } else {
                 "تعذّر قراءة هويّة Google. حاول مجدّداً."
@@ -132,9 +212,10 @@ object AuthService {
     }
 
     /** يحدّد صلاحية المستخدم الحاليّ بعد الدخول (نظير /api/auth/check في نبراس). */
-    suspend fun resolveAccess(): AccessState {
-        val user = auth.currentUser ?: return AccessState.SignedOut
-        val email = user.email.orEmpty().trim().lowercase()
+    suspend fun resolveAccess(context: Context? = null): AccessState {
+        if (context != null) runCatching { migrateToSessionSilently(context) }
+        val user = currentUser ?: return AccessState.SignedOut
+        val email = user.email
         if (email.isEmpty()) return AccessState.NeedsOwnerCode
 
         // بريد المالك وحده يملك bypass — الصلاحية تُشتق من ثابت البريد نفسه فلا
@@ -173,13 +254,13 @@ object AuthService {
      * (على `minbar-api` منذ 2026-09-10 — بلا Firestore.)
      */
     suspend fun requestOwnerCode(): OwnerCodeResult {
-        val user = auth.currentUser ?: return OwnerCodeResult(ok = false, reason = "send_failed")
+        val user = currentUser ?: return OwnerCodeResult(ok = false, reason = "send_failed")
         return try {
             val data = MinbarAdminApi.post(
                 "/access/request-code",
                 org.json.JSONObject()
-                    .put("name", user.displayName.orEmpty())
-                    .put("photoURL", user.photoUrl?.toString().orEmpty()),
+                    .put("name", user.displayName)
+                    .put("photoURL", user.photoUrl),
             )
             when (val result = data.optString("result")) {
                 "ok" -> OwnerCodeResult(ok = true)
@@ -198,7 +279,7 @@ object AuthService {
 
     /** يتحقّق من الرمز؛ ونجاحُه يعتمد صاحبَه مشرفاً في الحال. */
     suspend fun verifyOwnerCode(code: String): OwnerCodeResult {
-        if (auth.currentUser == null) return OwnerCodeResult(ok = false, reason = "server")
+        if (currentUser == null) return OwnerCodeResult(ok = false, reason = "server")
         return try {
             val data = MinbarAdminApi.post(
                 "/access/verify-code",
@@ -218,6 +299,7 @@ object AuthService {
         // دون اتصال لا يكتمل حذف الرمز أبداً (await لا يرمي بل ينتظر)،
         // فيُحتجز تسجيل الخروج — مهلة قصيرة تضمن الوصول إلى signOut.
         runCatching { AdminNotificationService.unregisterCurrentDevice() }
+        runCatching { AdminSession.signOut() }
         runCatching {
             CredentialManager.create(context)
                 .clearCredentialState(ClearCredentialStateRequest())

@@ -22,6 +22,7 @@ class AdminApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         AppPrefs.init(this)
+        com.ali.ishaqiyin_admin.data.AdminSession.init(this)
         NetworkMonitor.start(this)
         // Firebase أوّلاً: لا google-services.json هنا، فالتطبيق الافتراضي لا
         // يُنشأ إلا في initializeFirebase — وأي إيقاظ للعامل قبله يصل إلى
