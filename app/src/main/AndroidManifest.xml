@@ -12,13 +12,11 @@
     <!-- مواصلة رفع الدروس بعد مغادرة الشاشة أو إغلاق التطبيق -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <!-- المكالمات الصوتيّة في المحادثات الخاصّة بين المشرفين (WebRTC):
-         الخدمة الأماميّة تبقى حيّة أثناء المكالمة، وتوجيه الصوت يحتاج
-         MODIFY_AUDIO_SETTINGS، وشاشة الرنين فوق القفل تحتاج
-         USE_FULL_SCREEN_INTENT. -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- ⛔ أذونات المكالمات أُزيلت مع إلغائها (2026-09-12): لا
+         FOREGROUND_SERVICE_MICROPHONE ولا MODIFY_AUDIO_SETTINGS ولا
+         USE_FULL_SCREEN_INTENT — والأخير خاصّةً يطالب Play بإقرارٍ لتطبيقات
+         المكالمات والمنبّهات وحدها، فبقاؤه بلا استعمال خطرُ رفضٍ بلا فائدة.
+         (التسجيل الصوتيّ في ردود الدعم يكفيه RECORD_AUDIO أعلاه.) -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- ⛔ 📸 لا أذونات صور هنا نهائياً (أُزيلت 2026-08-29 بعد أن أوقف
@@ -108,22 +106,11 @@
             android:theme="@style/Theme.AppCompat.DayNight"
             tools:replace="android:theme,android:exported" />
 
-        <!-- شاشة المكالمة: تظهر فوق شاشة القفل وتوقظ الشاشة عند الرنين،
-             ولا تُترك أثراً في «الأخيرة» بعد انتهاء المكالمة.
-             ⚠️ رأسيّة إلزاماً: في الوضع الأفقي تُقصّ أزرار القبول/الرفض خارج
-             الشاشة، وتثبيتها رأسيّاً يمنع كذلك إعادة إنشاء الشاشة عند التدوير
-             (مصدر عطلَين سابقين في المكالمة الجارية). -->
-        
-
         <!-- رفع الدروس يستمرّ في الخلفية عبر WorkManager. -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
-
-        <!-- دورة حياة WebRTC والصوت أثناء المكالمة. -->
-        
-
 
         <!-- فتح مرفقات الدردشة المنزَّلة بتطبيق النظام (نمط واتساب). -->
         <provider
