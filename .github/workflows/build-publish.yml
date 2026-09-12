@@ -1,0 +1,81 @@
+# 🏗️ بناء لوحة إدارة منبر وتوقيعها ونشرها — كلّه على شبكة GitHub لا شبكة المالك.
+#
+# ⛔ **قاعدة المالك (2026-09-12): اللوحة تُنشر على «الاختبار المغلق» دائماً** — لا
+#    إنتاج مباشر منها أبداً؛ الترقية إلى الإنتاج قراره وحده من Play Console.
+#    (أما تطبيق منبر العامّ فيُنشر إلى الإنتاج مباشرةً — انظر مستودعه.)
+#
+# 🔐 الشيفرة عامّة والأسرار خاصّة: `workflow_dispatch` وحده (لصاحب صلاحية الكتابة)،
+#    ⛔ ولا يُضاف `pull_request_target` ولا `issue_comment` أبداً (بابا تسريب الأسرار)،
+#    و`contents: read`، والمفتاح في مجلّد مؤقّت يُمحى دائماً ويُمرَّر بمتغيّرات بيئة،
+#    والإجراء الخارجي مثبَّت ببصمة إيداعه.
+name: build-publish
+on:
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "مسار Play (اتركه alpha = الاختبار المغلق)"
+        default: "alpha"
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      HAS_KS: ${{ secrets.UPLOAD_KEYSTORE_B64 != '' }}
+      HAS_PLAY: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: الاختبارات
+        run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --no-daemon
+      - name: مفتاح التوقيع
+        if: env.HAS_KS == 'true'
+        env:
+          KS: ${{ secrets.UPLOAD_KEYSTORE_B64 }}
+        run: |
+          umask 077
+          printf '%s' "$KS" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          test -s "$RUNNER_TEMP/upload.jks"
+      - name: بناء الحزمة
+        env:
+          MINBAR_SIGNING_STORE_FILE: ${{ runner.temp }}/upload.jks
+          MINBAR_SIGNING_STORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+          MINBAR_SIGNING_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+          MINBAR_SIGNING_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+        run: ./gradlew :app:bundleRelease --no-daemon
+      - name: تحقّق
+        run: |
+          set +e
+          AAB=$(ls app/build/outputs/bundle/release/*.aab | head -1)
+          ls -la "$AAB"
+          unzip -l "$AAB" > /tmp/list.txt
+          echo "المعالجات: $(grep -oE 'lib/[a-z0-9_-]+/' /tmp/list.txt | sort -u | xargs)"
+          jarsigner -verify "$AAB" > /tmp/js.txt 2>&1
+          grep -m1 -E 'jar verified|jar is unsigned' /tmp/js.txt || tail -3 /tmp/js.txt
+          keytool -printcert -jarfile "$AAB" 2>/dev/null | grep -m1 'SHA1:'
+          grep -qm1 'jar verified' /tmp/js.txt || { echo '⛔ غير موقّعة'; exit 1; }
+          # حارس التوافق: حصرُ معالجٍ واحد أسقط ٩٬٤٣٢ جهازاً في ٢٠٢٣ ورفضه Play.
+          n=$(grep -oE 'lib/[a-z0-9_-]+/' /tmp/list.txt | sort -u | wc -l)
+          [ "$n" -ge 4 ] || { echo "⛔ المعالجات $n < 4 — توافق الأجهزة ناقص"; exit 1; }
+      - name: محو المفتاح من العدّاء
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks"
+      - name: النشر إلى Play (الاختبار المغلق)
+        if: env.HAS_PLAY == 'true' && env.HAS_KS == 'true'
+        uses: r0adkll/upload-google-play@935ef9c68bb393a8e6116b1575626a7f5be3a7fb # v1.1.3
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.ali.ishaqiyin_admin
+          releaseFiles: app/build/outputs/bundle/release/*.aab
+          track: ${{ inputs.track || 'alpha' }}
+          status: completed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minbar-admin-aab
+          path: app/build/outputs/bundle/release/*.aab
+          retention-days: 7
