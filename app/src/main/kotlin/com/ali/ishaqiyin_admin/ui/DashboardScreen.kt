@@ -344,18 +344,21 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
                         counts.categories,
                         Icons.Filled.Folder,
                         loading && counts.categories == 0,
+                        Modifier.weight(1f),
                     )
                     StatBox(
                         "الأقسام الفرعية",
                         counts.subcategories,
                         Icons.Filled.FolderOpen,
                         loading && counts.subcategories == 0,
+                        Modifier.weight(1f),
                     )
                     StatBox(
                         "الصوتيات",
                         counts.lessons,
                         Icons.Filled.Audiotrack,
                         loading && counts.lessons == 0,
+                        Modifier.weight(1f),
                     )
                 }
                 Spacer(Modifier.height(24.dp))

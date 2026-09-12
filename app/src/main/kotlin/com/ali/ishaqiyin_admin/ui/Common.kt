@@ -231,11 +231,19 @@ fun Spin(color: Color = LocalContentColor.current, size: Int = 22) {
 
 /** مربّع إحصائيّة (حاوية سطح مرتفعة + رقم كبير بلون اللوحة الأوّل). */
 @Composable
-fun StatBox(label: String, value: Int, icon: ImageVector, loading: Boolean = false) {
+fun StatBox(
+    label: String,
+    value: Int,
+    icon: ImageVector,
+    loading: Boolean = false,
+    // ⚠️ عرضٌ ثابت ١٠٨dp × ثلاث بطاقات + فاصلان = ٣٤٤dp — أوسعُ من شاشة ٣٢٠dp،
+    //    فتُضغط البطاقات ويتقطّع نصّها («٤٨/٥» و«الصوتيا/ت» — رُصد 2026-09-12).
+    //    الصفّ ذو الثلاث يمرّر `Modifier.weight(1f)` فتتقاسم العرض مهما ضاق.
+    modifier: Modifier = Modifier.width(108.dp),
+) {
     val scheme = MaterialTheme.colorScheme
     Column(
-        modifier = Modifier
-            .width(108.dp)
+        modifier = modifier
             .background(scheme.surfaceContainerHigh, RoundedCornerShape(16.dp))
             .padding(vertical = 16.dp, horizontal = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -252,6 +260,8 @@ fun StatBox(label: String, value: Int, icon: ImageVector, loading: Boolean = fal
                 fontSize = 28.sp,
                 fontWeight = FontWeight.Bold,
                 color = scheme.primary,
+                maxLines = 1,
+                softWrap = false,
             )
         }
         Spacer(Modifier.height(4.dp))
@@ -260,6 +270,7 @@ fun StatBox(label: String, value: Int, icon: ImageVector, loading: Boolean = fal
             textAlign = TextAlign.Center,
             fontSize = 13.sp,
             color = scheme.primary,
+            maxLines = 2,
         )
     }
 }
