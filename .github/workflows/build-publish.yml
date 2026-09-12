@@ -43,10 +43,10 @@ jobs:
           test -s "$RUNNER_TEMP/upload.jks"
       - name: بناء الحزمة
         env:
-          MINBAR_SIGNING_STORE_FILE: ${{ runner.temp }}/upload.jks
-          MINBAR_SIGNING_STORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
-          MINBAR_SIGNING_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
-          MINBAR_SIGNING_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+          MINBAR_ADMIN_SIGNING_STORE_FILE: ${{ runner.temp }}/upload.jks
+          MINBAR_ADMIN_SIGNING_STORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+          MINBAR_ADMIN_SIGNING_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+          MINBAR_ADMIN_SIGNING_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
         run: ./gradlew :app:bundleRelease --no-daemon
       - name: تحقّق
         run: |
