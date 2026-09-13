@@ -9,16 +9,59 @@
 #    و`contents: read`، والمفتاح في مجلّد مؤقّت يُمحى دائماً ويُمرَّر بمتغيّرات بيئة،
 #    والإجراء الخارجي مثبَّت ببصمة إيداعه.
 name: build-publish
+#
+# 🚀 **الدمج ينشر** (كما في مستودع التطبيق): تغيُّرُ `versionCode` في `main`
+#    يبني ويوقّع وينشر إلى **الاختبار المغلق**. وهذا هو الزنادُ الوحيد الذي
+#    تملكه جلسةٌ سحابيّة، لأنّ جلسات كلود **لا تُشغّل سيرَ عمل** — منعٌ من
+#    منصّة أنثروبيك لا من صلاحيّات المستودع، فلا يرفعه أيّ دورٍ يمنحه المالك.
+#    ⛔ والحارس: لا يُبنى شيءٌ إلا إن تغيّر الرقم فعلاً في هذه الدفعة.
 on:
   workflow_dispatch:
     inputs:
       track:
         description: "مسار Play (اتركه alpha = الاختبار المغلق)"
         default: "alpha"
+  push:
+    branches: [main]
+    paths:
+      - "app/build.gradle.kts"
 permissions:
   contents: read
+concurrency:
+  group: minbar-admin-play-publish
+  cancel-in-progress: false
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.check.outputs.go }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: check
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "🖐️ تشغيلٌ يدويّ — البوّابة مفتوحة."
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          read_code() { grep -m1 -oE 'versionCode[[:space:]]*=[[:space:]]*[0-9]+' | grep -oE '[0-9]+'; }
+          cur=$(read_code < app/build.gradle.kts)
+          prev=$(git show HEAD^:app/build.gradle.kts 2>/dev/null | read_code || echo "")
+          echo "السابق: ${prev:-«لا سابق»} · الحالي: $cur"
+          if [ -n "$prev" ] && [ "$prev" = "$cur" ]; then
+            echo "⏸️ رقم الإصدار لم يتغيّر — لا بناءَ ولا نشر."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "🚀 رقم الإصدار صار $cur — البناء والنشر إلى الاختبار المغلق."
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
