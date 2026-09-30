@@ -10,7 +10,11 @@
 
 - `applicationId`: `com.ali.ishaqiyin_admin` — **لا تُغيَّر**، لأن عميل Google
   OAuth وبصمة SHA-1 مربوطان بها في مشروع Firebase `mxqp-8d1e8`.
-- مشروع Firebase نفسه (`mxqp-8d1e8`) ونفس المجموعات والدوال ومسارات Storage.
+- الخلفية كلها اليوم خادم `minbar-api` على Cloudflare (D1 + R2) في المستودع الخاصّ
+  `mwqwf/minbar-cloud`، ولا Firestore ولا Functions ولا Storage. ومن Firebase بقي
+  **Auth وحده انتقالياً**: دخول المشرفين الذين لم ينتقلوا بعد إلى «جلسة منبر»،
+  ورمز هويّة صندوق دعم «مصحفك» (`data/MushafakSupport.kt`). جدول «ما نُقل» أدناه
+  تاريخيّ يصف نقل Flutter.
 - `minSdk` 23، و`targetSdk`/`compileSdk` 36.
 - لا `google-services.json`: التهيئة في الكود (`core/Config.kt`) تماماً كما
   كانت في `firebase_options.dart`.

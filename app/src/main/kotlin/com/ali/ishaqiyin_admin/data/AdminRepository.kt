@@ -301,13 +301,16 @@ object AdminRepository {
 
     fun watchFeatured(): Flow<List<Lesson>> = flow {
         while (true) {
-            emit(
+            // ⛔ بلا `runCatching` كان انقطاع الشبكة (UnknownHostException) يُرمى
+            // داخل `collectAsState` فتنهار اللوحة — أكثر أعطالها في Play Vitals
+            // (8 تقارير حتى 2024). عند الفشل تبقى آخر قائمة معروضة ويُعاد في الدورة التالية.
+            runCatching {
                 fetchLessonRows().filter { it.optInt("featured") == 1 }.map(::lessonFromRow)
                     .sortedWith(
                         compareBy<Lesson> { it.featuredUntilMs ?: Long.MAX_VALUE }
                             .thenByDescending { it.createdAtMs },
-                    ),
-            )
+                    )
+            }.onSuccess { emit(it) }
             delay(WATCH_POLL_MS)
         }
     }.flowOn(Dispatchers.IO)

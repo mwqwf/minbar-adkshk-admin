@@ -47,7 +47,9 @@ jobs:
             echo "🖐️ تشغيلٌ يدويّ — البوّابة مفتوحة."
             echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          read_code() { grep -m1 -oE 'versionCode[[:space:]]*=[[:space:]]*[0-9]+' | grep -oE '[0-9]+'; }
+          # ⛔ سطرُ الإسناد وحده لا أيّ ذِكر: تعليقٌ في build.gradle.kts يقول «versionCode=2001»
+          #    فكانت البوّابة تقرأ 2001 في الطرفين وتقف دائماً — لم يُنشر 2025 لهذا (2026-09-25).
+          read_code() { grep -m1 -oE '^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*[0-9]+' | grep -oE '[0-9]+'; }
           cur=$(read_code < app/build.gradle.kts)
           prev=$(git show HEAD^:app/build.gradle.kts 2>/dev/null | read_code || echo "")
           echo "السابق: ${prev:-«لا سابق»} · الحالي: $cur"
