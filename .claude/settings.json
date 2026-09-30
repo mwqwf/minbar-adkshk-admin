@@ -2,6 +2,8 @@
   "language": "arabic",
   "permissions": {
     "allow": [
+      "Bash",
+      "PowerShell",
       "Bash(ls:*)",
       "Bash(cat:*)",
       "Bash(head:*)",
