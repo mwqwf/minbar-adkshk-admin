@@ -58,6 +58,25 @@
             "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-critical-assets.cjs\""
           }
         ]
+      },
+      {
+        "matcher": "Bash|PowerShell|mcp__github__actions_run_trigger",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-paid-actions.cjs\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/skills-drift.cjs\""
+          }
+        ]
       }
     ]
   }
