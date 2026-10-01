@@ -8,25 +8,46 @@
  *
  * ما يفعله: إذا طُلب إطلاقٌ صريح (`gh workflow run` · `gh run rerun` ·
  * `gh api …/dispatches|rerun` · أداة `actions_run_trigger`) في مستودعٍ من
- * القائمة أدناه، لا يمنع بل **يسأل المالك** («ask») مع السبب. فالموافقة
- * الصريحة تمضي، والإطلاق السهو يقف.
+ * القائمة أدناه **يرفضه برسالةٍ** («deny») فيمضي Claude إلى البديل المجّانيّ
+ * أو البند التالي. ⛔ لا «ask»: السؤال يُعلّق الجلسة السحابيّة التي لا مالك
+ * أمامها ساعاتٍ — وهذا ما يريد المالك ألّا يقع (أمره 2026-10-01).
+ *
+ * الموافقة الماليّة المسمّاة تُسجَّل في `ops/FINANCIAL_APPROVALS.json` بالمستودع:
+ *   [{"repo":"mwqwf/quranrafiq","until":"2026-10-05","reason":"…","cap":"…"}]
+ * فيمرّ الإطلاق آليّاً حتى `until` (شاملاً). يكتبها Claude فقط بعد موافقةٍ
+ * صريحةٍ من المالك تسمّي السبب والتكلفة والسقف، فتبقى مؤرّخةً في git.
  *
  * ما لا يفعله: لا يرى التشغيل الذي يُشعله الدفع بمسارٍ (`on: push: paths`)؛
  * ذاك يحكمه نصّ `github-actions-cost-control`. والإلغاء (`cancel`) لا يُسأل عنه
  * لأنّه يوفّر ولا ينفق.
  */
 
-// المستودعات ذات الإيقاف الماليّ: الخاصّة، والمصنع بنصّ CLAUDE.md فيه.
+// المستودعات الخاصّة (دقائقها مدفوعة).
 // ⚠️ minbar-cloud خاصٌّ لكنّه مستثنى عمداً: نشرُ منبر آليٌّ بأمر المالك (2026-09-12).
 const GUARDED = new Set([
   'mwqwf/quranrafiq',
   'mwqwf/fiqhlab',
   'mwqwf/yarmouk-media',
   'mwqwf/wf-scope-probe',
-  'mwqwf/mutafail-factory',
 ]);
+// ⚠️ mutafail-factory أُخرج 2026-10-01: عامٌّ ودقائقه مجّانيّة، وإيقافه الماليّ رُفع في 2026-09-20.
 
+const fs = require('fs');
+const path = require('path');
 const { execSync } = require('child_process');
+
+function approved(repo) {
+  const root = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  try {
+    const list = JSON.parse(fs.readFileSync(path.join(root, 'ops', 'FINANCIAL_APPROVALS.json'), 'utf8'));
+    const today = new Date().toISOString().slice(0, 10);
+    return (Array.isArray(list) ? list : []).some(
+      (a) => String(a.repo || '').toLowerCase() === repo && a.reason && a.cap && String(a.until || '') >= today,
+    );
+  } catch {
+    return false;
+  }
+}
 
 function repoOfCwd(cwd) {
   try {
@@ -45,15 +66,18 @@ function repoOfCwd(cwd) {
 }
 
 function ask(repo, what) {
+  if (approved(repo)) process.exit(0);
   const reason =
     `حارس التشغيل المدفوع: ${what} في ${repo}، وهو تحت الإيقاف الماليّ (2026-09-18).\n` +
     'لا يمضي إلا بموافقةٍ ماليّةٍ صريحةٍ جديدة من المالك تسمّي السبب والتكلفة والسقف.\n' +
-    'البديل المجّانيّ أوّلاً: فحصٌ محلّيٌّ في الجلسة، أو المستودع العامّ mwqwf/rafiq-align-ci.';
+    'البديل المجّانيّ أوّلاً: فحصٌ محلّيٌّ في الجلسة، أو المستودع العامّ mwqwf/rafiq-align-ci.\n' +
+    'لا تنتظر: سجّل الحاجة في وثيقة الحالة وامضِ إلى البند التالي. وإن وافق المالك صراحةً ' +
+    'فأضِف سطراً في ops/FINANCIAL_APPROVALS.json (repo · until · reason · cap).';
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        permissionDecision: 'ask',
+        permissionDecision: 'deny',
         permissionDecisionReason: reason,
       },
     }),
@@ -84,8 +108,14 @@ process.stdin.on('end', () => {
 
   // (2) أوامر الطرفيّة
   if (tool !== 'Bash' && tool !== 'PowerShell') process.exit(0);
-  const cmd = String(ti.command || '');
-  const lower = cmd.toLowerCase();
+  // الأفعال لا الألفاظ: تُزال أجسام heredoc والسلاسل المقتبسة والتعليقات قبل المطابقة، فلا يُمنع
+  // من يكتب «gh workflow run» في رسالة إيداعٍ أو وثيقة (إيجابيةٌ كاذبة مقيسة 2026-10-01).
+  const lower = String(ti.command || '')
+    .toLowerCase()
+    .replace(/<<-?\s*'?"?([a-z_][a-z0-9_]*)'?"?[\s\S]*?\n\1\b/g, ' ')
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    .replace(/(^|\s)#[^\n]*/g, ' ');
   const launches =
     /\bgh\s+workflow\s+run\b/.test(lower) ||
     /\bgh\s+run\s+rerun\b/.test(lower) ||
