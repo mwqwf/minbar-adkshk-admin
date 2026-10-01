@@ -45,7 +45,8 @@
       "PowerShell(Remove-Item:*secure-keys*)",
       "PowerShell(Remove-Item:*.jks*)",
       "PowerShell(Remove-Item:*.keystore*)"
-    ]
+    ],
+    "defaultMode": "bypassPermissions"
   },
   "enableAllProjectMcpServers": true,
   "hooks": {
