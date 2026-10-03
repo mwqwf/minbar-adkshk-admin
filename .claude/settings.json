@@ -39,12 +39,47 @@
       "Bash(git push:*)",
       "Bash(gh workflow run:*)",
       "Bash(gh run:*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Read",
+      "Edit",
+      "Write",
+      "MultiEdit",
+      "Glob",
+      "Grep",
+      "NotebookEdit",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Task",
+      "TodoWrite",
+      "Skill",
+      "mcp__*",
+      "Bash(git merge:*)",
+      "Bash(git rebase:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh release:*)",
+      "Bash(npx wrangler:*)",
+      "Bash(wrangler:*)",
+      "Bash(./gradlew:*)",
+      "Bash(gradle:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(pip:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(curl:*)"
     ],
     "deny": [
       "PowerShell(Remove-Item:*secure-keys*)",
       "PowerShell(Remove-Item:*.jks*)",
-      "PowerShell(Remove-Item:*.keystore*)"
+      "PowerShell(Remove-Item:*.keystore*)",
+      "Bash(rm:*secure-keys*)",
+      "Bash(rm:*.jks*)",
+      "Bash(rm:*.keystore*)"
     ],
     "defaultMode": "bypassPermissions"
   },
@@ -117,5 +152,6 @@
         ]
       }
     ]
-  }
+  },
+  "skipDangerousModePermissionPrompt": true
 }
