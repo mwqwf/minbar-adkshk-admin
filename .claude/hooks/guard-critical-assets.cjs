@@ -40,7 +40,12 @@ process.stdin.on('end', () => {
   //     pull --rebase · autostash · checkout (عدا -b) · restore · switch -f · clean.
   //     المسموح: fetch ثم merge --ff-only ثم push؛ الاسترجاع بـ git show <ref>:<path>.
   const cwd = String(payload.cwd || '');
-  const inRafiq = /quranrafiq/i.test(cwd) || /quranrafiq/i.test(cmd);
+  // مكانُ التنفيذ لا ذِكرُ الاسم: cwd داخل الشجرة أو «git -C …/QuranRafiq». أمّا ورودُ الكلمة في
+  // رسالةٍ أو في أمرٍ لمستودعٍ آخر فلا يجعله عملاً في شجرة رفيق (إيجابيةٌ كاذبة مقيسة 2026-10-01).
+  const inRafiq = /quranrafiq/i.test(cwd) || /\bgit\s+-c\s+\S*quranrafiq/i.test(cmd);
+  // ☁️ الحاويةُ السحابيّة خاصّةٌ بجلسةٍ واحدة: لا شجرةَ مشتركةَ يُكنَس فيها عملُ غيرها، فيبقى فيها
+  //    منعُ ما يُضيّع عملاً غيرَ مودَع وحدَه (stash · reset --hard · clean بلا -n). أمرُ المالك 2026-10-01.
+  const ephemeral = process.env.CLAUDE_CODE_REMOTE === 'true';
   // نفحص الأفعال لا الألفاظ: تُزال أجسام heredoc والسلاسل المقتبسة (رسائل
   // الإيداع، نصوص التوثيق) قبل المطابقة كي لا يُمنع من يكتب اسم أمرٍ في رسالة.
   const acts = lower
@@ -50,7 +55,11 @@ process.stdin.on('end', () => {
   if (inRafiq && /\bgit\b/.test(acts)) {
     const G = String.raw`\bgit\s+(?:-c\s+\S+\s+)*`;
     const has = (re) => new RegExp(G + re).test(acts);
-    const gitDanger =
+    const losesWork =
+      (has(String.raw`stash\b`) && !has(String.raw`stash\s+(?:list|show)\b`)) ||
+      has(String.raw`reset\s+--hard`) ||
+      (has(String.raw`clean\b`) && !has(String.raw`clean\s+(?:-[a-z]*n|--dry-run)`));
+    const gitDanger = ephemeral ? losesWork :
       (has(String.raw`stash\b`) && !has(String.raw`stash\s+(?:list|show)\b`)) ||
       has(String.raw`reset\s+(?:--hard|--merge|--keep)`) ||
       has(String.raw`reset\s+(?:-q\s+)?(?:origin/|head~|head\^|[0-9a-f]{7,40}\b)`) ||
@@ -73,11 +82,14 @@ process.stdin.on('end', () => {
     }
   }
 
-  // أفعال إتلافية محتملة
+  // أفعال إتلافية محتملة — على الأفعال (`acts` بلا رسائل مقتبسة) وبلا التعليقات.
+  // ⛔ أُزيل نمطُ «> /dev/null 2>&1» في آخر الأمر: تحويلُ الإخراج لا يُتلف شيئاً، وكان يمنع أوامرَ
+  //    قراءةٍ بحتة مثل «grep … > /dev/null 2>&1» (إيجابيةٌ كاذبة مقيسة 2026-10-01).
+  const bare = acts.replace(/(^|\s)#[^\n]*/g, ' ');
   const destructive =
-    /\brm\b|\brmdir\b|\bdel\b|\berase\b|remove-item|\bmv\b|move-item|\bshred\b|\btruncate\b|git\s+clean|git\s+reset\s+--hard|>\s*\/dev\/null\s*2>&1\s*;?\s*$/.test(
-      lower,
-    ) || /\bdd\s+if=/.test(lower);
+    /\brm\b|\brmdir\b|\bdel\b|\berase\b|remove-item|\bmv\b|move-item|\bshred\b|\btruncate\b|git\s+clean|git\s+reset\s+--hard/.test(
+      bare,
+    ) || /\bdd\s+if=/.test(bare);
 
   if (!destructive) process.exit(0);
 
@@ -85,7 +97,15 @@ process.stdin.on('end', () => {
   const secretPattern =
     /secure-keys|\.jks\b|\.keystore\b|signing\.properties|upload[-_]?key|\.pem\b|\.p12\b|key\.properties|google-services\.json|serviceaccount/i;
 
-  if (secretPattern.test(cmd)) {
+  // يُفحص كلُّ مقطعٍ فيه فعلٌ إتلافيّ: «rm -f /tmp/x && cat key.properties» لا يمسّ سرّاً،
+  // و«rm secure-keys/a.jks» يمسّه ولو جاء المسارُ مقتبساً.
+  const segs = lower.split(/;|&&|\|\||\||\n/);
+  const destructiveSeg = (seg) =>
+    /\brm\b|\brmdir\b|\bdel\b|\berase\b|remove-item|\bmv\b|move-item|\bshred\b|\btruncate\b|git\s+clean|git\s+reset\s+--hard|\bdd\s+if=/.test(
+      seg.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, ' ').replace(/(^|\s)#[^\n]*/g, ' '),
+    );
+  const segPath = (seg) => seg.replace(/(^|\s)#[^\n]*/g, ' ');
+  if (segs.some((seg) => destructiveSeg(seg) && secretPattern.test(segPath(seg)))) {
     console.error(
       'مُنع بحارس الأصول الحرجة: هذا أمر إتلافي يلمس مادة توقيع/سرّاً ' +
         '(مفتاح، keystore، شهادة، أو ملف إعداد سرّي).\n' +
@@ -96,15 +116,16 @@ process.stdin.on('end', () => {
   }
 
   // (2) حذف جارف يلمس مشاريع منبر
-  const sweeping =
-    /rm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)/.test(lower) ||
-    /remove-item[^\n]*-recurse/.test(lower) ||
-    /rmdir\s+\/s/.test(lower) ||
-    /del\s+\/s/.test(lower);
+  const isSweep = (seg) =>
+    /rm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)/.test(seg) ||
+    /remove-item[^\n]*-recurse/.test(seg) ||
+    /rmdir\s+\/s/.test(seg) ||
+    /del\s+\/s/.test(seg);
 
   const minbarPattern = /minbar|menbar|منبر|ادكصهك|adkshk|adkassahk|ishaqiyin/i;
 
-  if (sweeping && minbarPattern.test(cmd)) {
+  // الحذفُ الجارف واسمُ منبر في المقطع نفسِه: «rm -rf /tmp/x && cat docs/minbar.md» ليس حذفاً لمنبر.
+  if (segs.some((seg) => isSweep(seg) && minbarPattern.test(segPath(seg)))) {
     console.error(
       'مُنع بحارس الأصول الحرجة: حذف جارف (‎-rf/‎-Recurse) يلمس مسار مشروع منبر.\n' +
         'القاعدة: مشاريع منبر مستثناة من أي تنظيف عام ما لم يطلب المستخدم حذف ' +
