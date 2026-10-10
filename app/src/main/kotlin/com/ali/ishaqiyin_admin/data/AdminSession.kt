@@ -5,8 +5,13 @@ import android.os.Build
 import android.util.Log
 import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 /**
@@ -135,12 +140,23 @@ object AdminSession {
         }
     }
 
-    /** يُبطل الجلسة على الخادم (أفضل جهد) ثم يمسحها محلياً. */
+    /**
+     * يُبطل الجلسة على الخادم (أفضل جهد) ثم يمسحها محلياً.
+     * ⚠️ بمهلة قصيرة: على شبكة ضعيفة كان النداء ينتظر مهلتي الاتصال والقراءة
+     * (حتى 75 ثانية) فيبدو زرّ «تسجيل الخروج» معطّلاً. المسح المحلّيّ يقع دائماً.
+     */
     suspend fun signOut() {
         val tok = token
         if (tok != null) {
-            runCatching { MinbarAdminApi.delete("/admin/session") }
+            // النداء الشبكيّ حاجبٌ لا يقبل الإلغاء، و`withContext` ينتظر انتهاءه —
+            // فيُطلق في نطاقٍ مستقلّ ويُنتظر بمهلة، ويكمل وحده إن تأخّر (رمزه
+            // التُقط قبل المسح).
+            val revoke = backgroundScope.launch { runCatching { MinbarAdminApi.delete("/admin/session") } }
+            withTimeoutOrNull(SIGN_OUT_TIMEOUT_MS) { revoke.join() }
         }
         clear()
     }
+
+    private const val SIGN_OUT_TIMEOUT_MS = 6_000L
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 }

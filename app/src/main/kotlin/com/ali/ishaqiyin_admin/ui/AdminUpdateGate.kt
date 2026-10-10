@@ -97,10 +97,14 @@ fun AdminUpdateGate(isOwner: Boolean, content: @Composable () -> Unit) {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             runCatching { context.startActivity(intent) }.onFailure { failure ->
                 if (failure is ActivityNotFoundException) {
-                    context.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse(AdminAppConfigRepository.PLAY_URL))
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                    )
+                    // ⚠️ البديل نفسه قد لا يجد ما يفتحه (جهاز بلا متصفّح ولا متجر)،
+                    // وكان خارج أيّ ممسك ⇒ انهيار اللوحة من زرّ «تحديث الآن».
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(AdminAppConfigRepository.PLAY_URL))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
                 }
             }
         },
@@ -165,7 +169,8 @@ private fun AdminUpdateScreen(
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                "طابور الرفع ومحادثاتك تبقى كما هي بعد التحديث.",
+                // (الدردشة أُلغيت 2026-09-10 — لا «محادثات» يُطمأن عليها.)
+                "طابور الرفع يبقى كما هو بعد التحديث.",
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

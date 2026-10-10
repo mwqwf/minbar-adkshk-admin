@@ -157,13 +157,23 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
     purgingSection?.let { item ->
         ConfirmDialog(
             title = "حذف نهائي؟",
+            // ⚠️ الخادم يُتلف مع القسم ما في السلة من فرعيّاته ودروسه وملفاتها
+            // الصوتية — كان النصّ يذكر القسم وحده فيُتلف المالك دروساً لا يدري بها.
             body = "«${item.name.ifEmpty { "بدون اسم" }}»\n" +
-                "⚠️ يُحذف القسم من السلة نهائياً ولا يمكن استعادته بعدها أبداً.",
+                "⚠️ يُحذف القسم نهائياً ومعه كلّ ما في السلة من " +
+                (if (item.isCategory) "أقسامه الفرعيّة و" else "") +
+                "دروسه وملفاتها الصوتية، ولا يمكن استعادة شيء منها بعدها أبداً.",
             confirmLabel = "حذف نهائياً",
             onDismiss = { purgingSection = null },
             onConfirm = {
                 purgingSection = null
-                run("حُذف القسم نهائياً.", hide = item.entryId) { DeletedSectionsRepository.purge(item) }
+                run("", hide = item.entryId) {
+                    val n = DeletedSectionsRepository.purge(item)
+                    snack(
+                        if (n > 0) "حُذف القسم نهائياً ومعه ${lessonsCountLabel(n)}."
+                        else "حُذف القسم نهائياً.",
+                    )
+                }
             },
         )
     }

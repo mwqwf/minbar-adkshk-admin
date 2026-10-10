@@ -41,9 +41,18 @@ class MainActivity : ComponentActivity() {
             isAppearanceLightStatusBars = !night
             isAppearanceLightNavigationBars = !night
         }
-        captureShare(intent)
-        captureNotification(intent)
-        requestNotificationPermission()
+        // ⚠️ إعادة الإنشاء بعد موت العمليّة (أو الفتح من «التطبيقات الأخيرة»)
+        // تسلّم النشاطَ نيّتَه **الأصليّة** المحفوظة لدى النظام لا نسختنا الممسوحة،
+        // فكانت ملفّات مشاركةٍ قديمة (انقضى إذن قراءتها) أو وجهة إشعارٍ عولج
+        // تعود من جديد. لا تُلتقط الحمولة إلا في إطلاقٍ جديد حقّاً.
+        val freshLaunch = savedInstanceState == null &&
+            ((intent?.flags ?: 0) and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0
+        if (freshLaunch) {
+            captureShare(intent)
+            captureNotification(intent)
+        }
+        // طلب الإذن مرّة لكلّ إطلاق لا مع كلّ تدوير للشاشة.
+        if (savedInstanceState == null) requestNotificationPermission()
         setContent {
             MinbarAdminTheme {
                 // كامل اللوحة من اليمين لليسار (نظير Directionality في الأصل).

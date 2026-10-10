@@ -5,6 +5,7 @@ import android.net.Uri
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -136,8 +137,16 @@ object TranscriptsRepository {
     private val decidedLimit = kotlinx.coroutines.flow.MutableStateFlow(DECIDED_PAGE)
     val hasMoreDecided = kotlinx.coroutines.flow.MutableStateFlow(false)
 
+    /** نبضة «أعد الجلب الآن» بعد كل حسم — كما في [SubmissionsRepository.refresh]. */
+    private val refreshTick = kotlinx.coroutines.flow.MutableStateFlow(0)
+
+    fun refresh() {
+        refreshTick.value += 1
+    }
+
     fun loadMoreDecided() {
         decidedLimit.value += DECIDED_PAGE
+        refresh()
     }
 
     private fun org.json.JSONArray?.rows(): List<org.json.JSONObject> =
@@ -154,8 +163,12 @@ object TranscriptsRepository {
 
     fun watchAll(): Flow<List<TranscriptSubmission>> = kotlinx.coroutines.flow.flow {
         while (true) {
-            emit(runCatching { fetchAll(decidedLimit.value) }.getOrDefault(emptyList()))
-            kotlinx.coroutines.delay(POLL_MS)
+            val tick = refreshTick.value
+            // الفشل العابر لا يمحو القائمة المعروضة بقائمة فارغة كاذبة.
+            runCatching { fetchAll(decidedLimit.value) }.onSuccess { emit(it) }
+            kotlinx.coroutines.withTimeoutOrNull(POLL_MS) {
+                refreshTick.first { it != tick }
+            }
         }
     }.flowOn(Dispatchers.IO)
 
@@ -232,6 +245,7 @@ object TranscriptsRepository {
         editedBookTitle: String? = null,
         editedSourceRef: String? = null,
         keepImages: Boolean = true,
+        refreshAfter: Boolean = true,
     ) {
         val payload = org.json.JSONObject().put("keepImages", keepImages)
         if (editedText != null) payload.put("text", editedText.trim())
@@ -240,17 +254,20 @@ object TranscriptsRepository {
         MinbarAdminApi.post("/admin/transcript-submissions/${s.id}/approve", payload)
         invalidateTranscript(s.lessonId, known = true)
         forgetImageUrls(s.imagePaths)
+        if (refreshAfter) refresh()
     }
 
-    suspend fun reject(s: TranscriptSubmission, reason: String) {
+    suspend fun reject(s: TranscriptSubmission, reason: String, refreshAfter: Boolean = true) {
         MinbarAdminApi.post("/admin/transcript-submissions/${s.id}/reject", org.json.JSONObject().put("reason", reason.trim()))
         forgetImageUrls(s.imagePaths)
+        if (refreshAfter) refresh()
     }
 
     suspend fun deleteDecided(s: TranscriptSubmission) {
         if (s.isPending) return
         MinbarAdminApi.delete("/admin/transcript-submissions/${s.id}")
         forgetImageUrls(s.imagePaths)
+        refresh()
     }
 
     suspend fun bulkApprove(
@@ -267,7 +284,7 @@ object TranscriptsRepository {
             if (!handledLessons.add(s.lessonId)) {
                 skipped++
             } else {
-                runCatching { approve(s) }
+                runCatching { approve(s, refreshAfter = false) }
                     .onSuccess {
                         done++
                         approved += s.lessonId
@@ -276,6 +293,7 @@ object TranscriptsRepository {
             }
             onProgress(index + 1, targets.size)
         }
+        refresh()
         return BulkTranscriptResult(done, failed, skipped, approved)
     }
 
@@ -289,11 +307,12 @@ object TranscriptsRepository {
         var done = 0
         var failed = 0
         targets.forEachIndexed { index, s ->
-            runCatching { reject(s, reason) }
+            runCatching { reject(s, reason, refreshAfter = false) }
                 .onSuccess { done++ }
                 .onFailure { failed++ }
             onProgress(index + 1, targets.size)
         }
+        refresh()
         return BulkTranscriptResult(done, failed)
     }
 
@@ -334,6 +353,34 @@ object TranscriptsRepository {
         key
     }
 
+    /** مسارات الصور المحفوظة الآن للدرس كما في الخادم (بلا كاش) — 404 = لا نصّ. */
+    private suspend fun storedImagePaths(lessonId: String): List<String> {
+        val row = try {
+            MinbarAdminApi.get("/admin/transcripts/$lessonId")
+        } catch (e: MinbarAdminApi.ApiException) {
+            if (e.code == 404) return emptyList() else throw e
+        }
+        val images = runCatching { org.json.JSONArray(row.optString("images_json", "[]")) }
+            .getOrDefault(org.json.JSONArray())
+        return (0 until images.length()).mapNotNull { images.optJSONObject(it)?.optString("path") }
+            .filter { it.isNotEmpty() }
+    }
+
+    /**
+     * يحذف من R2 صور اللوحة التي لم يعد النصّ يشير إليها. الخادم لا يحذف إلا
+     * الصفّ، فكانت كلّ صورةٍ أُزيلت أو نصٍّ حُذف تبقى في الدلو بلا مرجع إلى الأبد
+     * (والحوار يعد «سيُحذف النص وكل صوره»). صور المساهمين (`user/…`) لا تُمسّ:
+     * سجلّ المساهمة يملكها. أفضل-جهد: فشلها لا يُفشل الحفظ.
+     */
+    private suspend fun deleteOrphanImages(lessonId: String, before: List<String>, kept: List<String>) {
+        val prefix = "images/$TRANSCRIPTS/$lessonId/"
+        before.filter { it.startsWith(prefix) && it !in kept }.forEach { key ->
+            runCatching {
+                MinbarAdminApi.delete("/admin/media?key=${java.net.URLEncoder.encode(key, "UTF-8")}")
+            }
+        }
+    }
+
     /** حفظ النص المشروح مباشرة (إضافة أو تعديلاً) — يكتب عبر الخادم. */
     suspend fun upsert(
         lessonId: String,
@@ -342,6 +389,8 @@ object TranscriptsRepository {
         sourceRef: String,
         imagePaths: List<String>,
     ) {
+        // ما كان محفوظاً قبل الكتابة — لحذف ما أُزيل من صوره بعدها.
+        val before = runCatching { storedImagePaths(lessonId) }.getOrDefault(emptyList())
         val images = org.json.JSONArray()
         imagePaths.forEach { key ->
             images.put(org.json.JSONObject().put("path", key).put("url", MinbarAdminApi.mediaUrl(key)))
@@ -355,11 +404,14 @@ object TranscriptsRepository {
                 .put("imagesJson", images),
         )
         invalidateTranscript(lessonId, known = true)
+        deleteOrphanImages(lessonId, before, imagePaths)
     }
 
     /** حذف النص المشروح للدرس نهائياً (الوثيقة + صور مجلدها). */
     suspend fun remove(lessonId: String) {
+        val before = runCatching { storedImagePaths(lessonId) }.getOrDefault(emptyList())
         MinbarAdminApi.delete("/admin/transcripts/$lessonId")
         invalidateTranscript(lessonId, known = false)
+        deleteOrphanImages(lessonId, before, emptyList())
     }
 }

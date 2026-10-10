@@ -56,6 +56,14 @@ object MushafakSupport {
             }
     }
 
+    /**
+     * هل لدى هذا الجهاز هويّة Firebase يقبلها `mushafak-api`؟ جلسة منبر (الدخول
+     * الجديد بـGoogle أو برمز ربط) لا تُنشئ مستخدم Firebase، فيتعذّر الجلب لا
+     * لعطب شبكة — والشاشة تقول ذلك صراحةً بدل «تحقّق من الشبكة».
+     */
+    fun hasIdentity(): Boolean =
+        runCatching { FirebaseAuth.getInstance().currentUser != null }.getOrDefault(false)
+
     /** `null` = رمزٌ مرفوضٌ أو شبكةٌ متعذّرة. */
     suspend fun tickets(context: Context): List<Ticket>? = withContext(Dispatchers.IO) {
         val k = idToken() ?: return@withContext null
@@ -63,8 +71,10 @@ object MushafakSupport {
         val root = runCatching { JSONObject(raw) }.getOrNull() ?: return@withContext null
         if (root.has("error")) return@withContext null
         val arr = root.optJSONArray("tickets") ?: return@withContext emptyList()
-        (0 until arr.length()).map { i ->
-            val t = arr.getJSONObject(i)
+        // ⚠️ `getJSONObject` يرمي على عنصرٍ غير كائن، والنداء من LaunchedEffect
+        // بلا ممسك ⇒ انهيار اللوحة كلّها. العنصر الشاذّ يُتخطّى.
+        (0 until arr.length()).mapNotNull { i ->
+            val t = arr.optJSONObject(i) ?: return@mapNotNull null
             Ticket(
                 id = t.optString("id"),
                 kind = t.optString("kind"),
@@ -84,22 +94,30 @@ object MushafakSupport {
         runCatching { !JSONObject(raw).has("error") }.getOrDefault(false)
     }
 
-    private fun call(method: String, path: String, idToken: String, body: String?): String? = runCatching {
-        val c = (URL(BASE + path).openConnection() as HttpURLConnection).apply {
-            requestMethod = method
-            connectTimeout = 15_000
-            readTimeout = 20_000
-            // 🔐 هويّةُ المالك لا سرَّه — يتحقّق منها الخادمُ بمفاتيح جوجل العلنيّة.
-            setRequestProperty("x-firebase-token", idToken)
-            if (body != null) {
-                doOutput = true
-                setRequestProperty("content-type", "application/json; charset=utf-8")
+    private fun call(method: String, path: String, idToken: String, body: String?): String? {
+        var c: HttpURLConnection? = null
+        return try {
+            val conn = (URL(BASE + path).openConnection() as HttpURLConnection).apply {
+                requestMethod = method
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                // 🔐 هويّةُ المالك لا سرَّه — يتحقّق منها الخادمُ بمفاتيح جوجل العلنيّة.
+                setRequestProperty("x-firebase-token", idToken)
+                if (body != null) {
+                    doOutput = true
+                    setRequestProperty("content-type", "application/json; charset=utf-8")
+                }
             }
+            c = conn
+            body?.let { conn.outputStream.use { s -> s.write(it.toByteArray()) } }
+            val ok = conn.responseCode in 200..299
+            val text = (if (ok) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }
+            if (ok) text else null
+        } catch (_: Exception) {
+            null
+        } finally {
+            // كان `disconnect` بعد القراءة داخل runCatching فيُترك الاتصال مفتوحاً عند أيّ استثناء.
+            c?.disconnect()
         }
-        body?.let { c.outputStream.use { s -> s.write(it.toByteArray()) } }
-        val ok = c.responseCode in 200..299
-        val text = (if (ok) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() }
-        c.disconnect()
-        if (ok) text else null
-    }.getOrNull()
+    }
 }

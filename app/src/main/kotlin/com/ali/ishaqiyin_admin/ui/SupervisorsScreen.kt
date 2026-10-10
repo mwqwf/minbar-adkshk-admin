@@ -149,7 +149,7 @@ fun SupervisorsScreen(isOwner: Boolean, onBack: () -> Unit) {
         is SupervisorAction.Remove -> ConfirmDialog(
             title = "طرد المشرف",
             body = "سيُطرد «${action.admin.label}» من الإدارة وتُبطَل جلساته، ويبقى في القائمة " +
-                "بعلامة «غادر». لا يعود إلا باعتماد جديد.",
+                "بعلامة «غادر». لا يعود إلا بدعوة منك (رمز الاعتماد الذاتيّ يُرفض له).",
             confirmLabel = "طرد",
             confirmColor = scheme.error,
             onDismiss = { pending = null },

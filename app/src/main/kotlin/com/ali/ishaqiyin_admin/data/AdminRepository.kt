@@ -213,29 +213,55 @@ object AdminRepository {
         return prefix + digest.joinToString("") { byte -> "%02x".format(java.util.Locale.ROOT, byte.toInt() and 0xff) }
     }
 
+    /**
+     * هل الصفّ بهذا المعرّف في السلة؟ الخادم يحدّث الصفّ الموجود بالحقول المرسلة
+     * وحدها ولا يمسّ `deleted_at_ms`، فإنشاء قسمٍ باسم قسمٍ محذوف (المعرّف نفسه)
+     * كان يكتب في الصفّ المحذوف ويبقيه في السلة: «تم الإنشاء» ولا قسم يظهر.
+     * 404 = لا صفّ؛ وأيّ خطأ آخر يُرمى فلا يُنشأ شيء على ظنّ.
+     */
+    private suspend fun isTrashed(table: String, id: String): Boolean {
+        val row = try {
+            MinbarAdminApi.get("/admin/$table/$id")
+        } catch (e: MinbarAdminApi.ApiException) {
+            if (e.code == 404) return false else throw e
+        }
+        return !row.isNull("deleted_at_ms")
+    }
+
+    /**
+     * يعيد true عند تأكيد الخادم، ويرمي الخطأ عند فشله — كان يبتلعه فتقول الشاشة
+     * «حُفظ الطلب وسيُرسَل عند عودة الشبكة» ولا طابور هنا أصلاً فيضيع القسم.
+     */
     suspend fun addCategory(name: String): Boolean {
         val clean = name.trim()
-        val key = sectionKey("cat_", clean)
+        val base = sectionKey("cat_", clean)
+        // اسمُ قسمٍ في السلة: معرّف جديد بدل الكتابة في الصفّ المحذوف.
+        val key = if (isTrashed("categories", base)) sectionKey("cat_", clean, System.currentTimeMillis().toString()) else base
         invalidateSectionsCache()
-        return runCatching {
-            MinbarAdminApi.put(
-                "/admin/categories/$key",
-                JSONObject().put("name", clean).put("createdAtMs", System.currentTimeMillis()),
-            )
-        }.isSuccess
+        MinbarAdminApi.put(
+            "/admin/categories/$key",
+            JSONObject().put("name", clean).put("createdAtMs", System.currentTimeMillis()),
+        )
+        invalidateSectionsCache()
+        return true
     }
 
     suspend fun addSubcategory(name: String, categoryId: String): Boolean {
         val clean = name.trim()
-        val key = sectionKey("sub_", categoryId, clean)
+        val base = sectionKey("sub_", categoryId, clean)
+        val key = if (isTrashed("subcategories", base)) {
+            sectionKey("sub_", categoryId, clean, System.currentTimeMillis().toString())
+        } else {
+            base
+        }
         invalidateSectionsCache()
-        return runCatching {
-            MinbarAdminApi.put(
-                "/admin/subcategories/$key",
-                JSONObject().put("name", clean).put("categoryId", categoryId)
-                    .put("createdAtMs", System.currentTimeMillis()),
-            )
-        }.isSuccess
+        MinbarAdminApi.put(
+            "/admin/subcategories/$key",
+            JSONObject().put("name", clean).put("categoryId", categoryId)
+                .put("createdAtMs", System.currentTimeMillis()),
+        )
+        invalidateSectionsCache()
+        return true
     }
 
     /**
@@ -261,19 +287,38 @@ object AdminRepository {
     ): String {
         val id = clientKey?.takeIf { it.isNotBlank() } ?: newLessonId()
         val pending = audioStoragePath.orEmpty().startsWith("originals/")
+        // ⛔ إعادة المحاولة بالمفتاح نفسه (العامل) بعد أن اكتمل الترميز على الخادم:
+        // الخادم يثبّت الدرس ready ويحذف الأصل، فإعادة إرسال audioStatus=pending
+        // وaudioUrl="" ثمّ طلب ترميز أصلٍ محذوف كانت تُرجعه معلّقاً برابط فارغ
+        // إلى الأبد. فالدرس الموجود الجاهز لا تُمسّ حقول صوته ولا يُعاد ترميزه،
+        // ولا طابع إنشائه (كي لا يقفز في ترتيب قسمه). 404 = لم يُنشأ بعد.
+        val existing = if (clientKey.isNullOrBlank()) {
+            null
+        } else {
+            try {
+                MinbarAdminApi.get("/admin/lessons/$id")
+            } catch (e: MinbarAdminApi.ApiException) {
+                if (e.code == 404) null else throw e
+            }
+        }
+        val alreadyReady = existing != null &&
+            existing.optString("audio_status") == "ready" &&
+            existing.optString("sha256").isNotEmpty()
         val body = JSONObject()
             .put("title", title.trim())
             .put("categoryId", categoryId)
             .put("subcategoryId", subcategoryId)
-            .put("audioUrl", if (pending) "" else audioUrl)
-            .put("createdAtMs", createdAtMs ?: System.currentTimeMillis())
             .put("featured", featured)
             .put("featuredUntilMs", featuredUntilMs ?: 0L)
-            .put("audioStatus", if (pending) "pending" else "ready")
-        if (pending) body.put("originalKey", audioStoragePath).put("sourceSha256", sourceSha256)
+        if (existing == null) body.put("createdAtMs", createdAtMs ?: System.currentTimeMillis())
+        if (!alreadyReady) {
+            body.put("audioUrl", if (pending) "" else audioUrl)
+                .put("audioStatus", if (pending) "pending" else "ready")
+            if (pending) body.put("originalKey", audioStoragePath).put("sourceSha256", sourceSha256)
+        }
         if (addedBy.isNotEmpty()) body.put("extraJson", JSONObject().put("addedBy", addedBy.lowercase()).toString())
         MinbarAdminApi.put("/admin/lessons/$id", body)
-        if (pending) {
+        if (pending && !alreadyReady) {
             MinbarAdminApi.post(
                 "/admin/lessons/$id/transcode",
                 JSONObject().put("originalKey", audioStoragePath).put("sourceSha256", sourceSha256),

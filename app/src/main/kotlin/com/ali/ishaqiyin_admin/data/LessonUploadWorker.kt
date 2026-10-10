@@ -190,6 +190,15 @@ class LessonUploadWorker(
                 skipped += item.id
                 continue
             }
+            // ⛔ ملفّ فوق حدّ الرفع لا يُحاوَل أصلاً: `MinbarAdminApi.upload` يرفضه
+            // بـ`require` قبل أوّل بايت، فكان يُحسب «فشلاً» خمس مرّات متتالية
+            // بلا أيّ فائدة ثمّ يُركن بسبب عامّ. يُركن فوراً بسببه الصريح.
+            if (item.uploadedPath == null && file.length() > MAX_LESSON_BYTES) {
+                Log.w(TAG, "file too large for ${item.id}: ${file.length()}")
+                park(item, TOO_LARGE_ERROR, MAX_ATTEMPTS)
+                skipped += item.id
+                continue
+            }
 
             Log.i(TAG, "start id=${item.id} pct=${item.lastPercent}")
             // الحالة تُثبَّت على القرص **قبل** أوّل بايت: بها وحدها يعرف
@@ -226,6 +235,21 @@ class LessonUploadWorker(
                     clientKey = item.id,
                     sourceSha256 = lastUploadSha,
                 )
+                // ⛔ إلغاءٌ وصل **أثناء** إنشاء الدرس: فحص الإلغاء أعلاه يسبق
+                // `addLesson` بجولتين على الشبكة، والمقبض النشط باقٍ حتى `finally`
+                // فلا يحذف `cancelNow` الأصل — كان الدرس يُنشر رغم أنّ حوار
+                // الإلغاء وعد «لن يُنشر الدرس»، ويصل إشعار «اكتمل الرفع». يُنقل
+                // الآن إلى سلّة المحذوفات (قابل للاسترجاع) ولا يُنشر نصّه.
+                if (UploadQueue.consumeCancelled(item.id) || UploadQueue.byId(item.id) == null) {
+                    Log.i(TAG, "cancelled while creating lesson: ${item.id} → $lessonId")
+                    val trashed = lessonId.isNotEmpty() && runCatching {
+                        com.ali.ishaqiyin_admin.core.MinbarAdminApi.delete("/admin/lessons/$lessonId")
+                    }.isSuccess
+                    UploadQueue.remove(item.id)
+                    UploadQueue.setProgress(null)
+                    if (!trashed) notifyCancelTooLate(item)
+                    continue
+                }
                 // «النص المشروح» المرافق (إن أُرفق بالنموذج): يُنشر بعد إنشاء
                 // الدرس مباشرة. فشله لا يُفشل الدرس — المشرف يضيفه يدوياً.
                 // ⛔ كان الفشل يُكتب في السجلّ وحده فيضيع النصّ والصور بصمت ويظنّ
@@ -723,6 +747,22 @@ class LessonUploadWorker(
         )
     }
 
+    /**
+     * 🔔 الإلغاء وصل بعد إنشاء الدرس وتعذّر نقله إلى السلّة: الدرس منشور فعلاً،
+     * فلا يُترك المشرف يظنّ أنّ إلغاءه نفذ.
+     */
+    private fun notifyCancelTooLate(item: PendingUpload) {
+        val text = "«${item.title.ifBlank { item.fileName }}» نُشر قبل أن يصل الإلغاء — " +
+            "احذفه من «إدارة المحتوى» إن لم تُرده."
+        notifyUpload(
+            item = item,
+            contentTitle = "تعذّر إلغاء الدرس",
+            text = text,
+            bigText = text,
+            idBase = FAILED_NOTIFICATION_BASE,
+        )
+    }
+
     /** بناء إشعار الإدارة وإرساله — مشترك بين الاكتمال والفشل الدائم. */
     private fun notifyUpload(
         item: PendingUpload,
@@ -817,6 +857,16 @@ class LessonUploadWorker(
 
         /** سبب مقروء يُعرض للمشرف حين تختفي النسخة المحليّة للدرس. */
         private const val MISSING_FILE_ERROR = "ضاع الملفّ المحلّي"
+
+        /**
+         * حدّ حجم الدرس الواحد — مطابق لحدّ `MinbarAdminApi.upload` (95 م.ب، دون
+         * سقف طلب Cloudflare البالغ 100 م.ب). تقرؤه شاشة الإضافة أيضاً فترفض
+         * الملفّ الكبير لحظة الإدراج بدل أن يُركن بعد ساعات.
+         */
+        const val MAX_LESSON_BYTES = 95L * 1024 * 1024
+
+        private const val TOO_LARGE_ERROR =
+            "حجم الملفّ يتجاوز حدّ الرفع (95 م.ب) — قسّمه إلى أجزاء أو اضغطه ثمّ أضفه من جديد."
 
         /**
          * خيط واحد لمستمعي مهمّة الرفع — انظر تعليق `addOnProgressListener`.

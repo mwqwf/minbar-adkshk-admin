@@ -457,6 +457,12 @@ private fun AudioSubmissionsContent(targetId: String = "") {
         .collectAsState(initial = emptyList())
     val hasMoreDecided by SubmissionsRepository.hasMoreDecided.collectAsState()
 
+    // ⛔ قسمٌ فرعيّ حُذف بعد إرسال المساهمة يُعامل معاملة «بلا قسم»: النشر
+    // إليه يُنشئ درساً في قسمٍ محذوف فلا يراه أحد، والمشرف يظنّه نُشر.
+    val liveSubIds = subcategories.map { it.id }.toSet()
+    fun needsSection(s: LessonSubmission): Boolean =
+        s.needsCategory || (liveSubIds.isNotEmpty() && s.subcategoryId !in liveSubIds)
+
     val pendingCount = items.count { it.isPending }
     val decidedCount = items.size - pendingCount
     val byStatus = items.filter {
@@ -483,16 +489,16 @@ private fun AudioSubmissionsContent(targetId: String = "") {
     }
     // عدد ما ينتظر قسماً يُحسب قبل شريحة «بلا قسم» كي يبقى ثابتاً على الشريحة
     // نفسها بعد الضغط عليها (لا يصير «الكل» فجأة).
-    val needsCategoryCount = bySubmitter.count { it.isPending && it.needsCategory }
+    val needsCategoryCount = bySubmitter.count { it.isPending && needsSection(it) }
     val shown = if (onlyNeedsCategory) {
-        bySubmitter.filter { it.isPending && it.needsCategory }
+        bySubmitter.filter { it.isPending && needsSection(it) }
     } else {
         bySubmitter
     }
     // ⛔ ما لا قسم له لا يدخل الحسم الجماعي أصلاً: النشر الجماعي ينشر «كما
     // هو» بلا تعديل قسم، فيمرّ الدرس إلى العدم بلا أن يشعر أحد.
-    val pendingVisible = shown.count { it.isPending && !it.needsCategory }
-    val chosen = shown.filter { it.isPending && !it.needsCategory && selected.contains(it.id) }
+    val pendingVisible = shown.count { it.isPending && !needsSection(it) }
+    val chosen = shown.filter { it.isPending && !needsSection(it) && selected.contains(it.id) }
     // 🎯 المساهمة التي جاء الإشعار من أجلها: تمرير إليها وتمييز يخبو.
     // بلا هذا كانت الشاشة تُفتح على رأس القائمة فيبحث المشرف يدوياً عنها
     // بين العشرات — ويضيع الغرض من حمل معرّفها في حمولة الإشعار.
@@ -562,7 +568,7 @@ private fun AudioSubmissionsContent(targetId: String = "") {
         ConfirmDialog(
             title = "نشر المساهمة كما هي؟",
             body = "«${s.title}»\n${s.categoryName} ← ${s.subcategoryName}\n\n" +
-                "سيُنشر الدرس فوراً ويصل المساهم إشعار شكر." +
+                "يُنشر الدرس بعد اكتمال معالجة صوته (دقائق عادةً) ويصل المساهم إشعار شكر." +
                 // النصّ المرفق يُنشر تحت الدرس في اللحظة نفسها، فتذكيره هنا
                 // آخر فرصة لمراجعته قبل ظهوره لكل المستمعين.
                 if (s.hasTranscript) "\n\n📄 ومعه النصّ المشروح المرفق يُنشر تحت الدرس." else "",
@@ -755,7 +761,7 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                     selected.clear()
                 } else {
                     // «تحديد كل المعروض» لا يشمل ما بلا قسم.
-                    shown.filter { it.isPending && !it.needsCategory }.forEach {
+                    shown.filter { it.isPending && !needsSection(it) }.forEach {
                         if (!selected.contains(it.id)) selected.add(it.id)
                     }
                 }
@@ -810,7 +816,7 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             // ما بلا قسم لا مربّع تحديد له: استثناؤه من الحسم
                             // الجماعي يجب أن يُرى لا أن يُكتشف بعد الضغط.
-                            if (selectMode && s.isPending && !s.needsCategory) {
+                            if (selectMode && s.isPending && !needsSection(s)) {
                                 Checkbox(
                                     checked = selected.contains(s.id),
                                     onCheckedChange = { checked ->
@@ -848,7 +854,7 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                                 Spacer(Modifier.size(2.dp))
                                 // 🏷️ بلا قسم: شارة صريحة تقول للمشرف ما
                                 // المطلوب منه، لا سهمٌ بين فراغين يُقرأ خللاً.
-                                if (s.needsCategory) {
+                                if (needsSection(s)) {
                                     Text(
                                         "بلا قسم — اختر له قسماً",
                                         fontSize = 12.sp,
@@ -930,7 +936,7 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                         if (s.isPending) {
                             // ⛔ سبب مكتوب فوق الزرّ المعطّل: زرٌّ باهت بلا
                             // تفسير يُقرأ عطلاً في اللوحة لا قاعدةً مقصودة.
-                            if (s.needsCategory) {
+                            if (needsSection(s)) {
                                 Text(
                                     "لا يمكن النشر بلا قسم — الدرس بلا قسم لا يظهر " +
                                         "للمستخدمين. افتح «تعديل ثم نشر» واختر له قسماً.",
@@ -946,7 +952,7 @@ private fun AudioSubmissionsContent(targetId: String = "") {
                             ) {
                                 Button(
                                     onClick = { approvingId = s.id },
-                                    enabled = !busy && !bulkBusy && !s.needsCategory,
+                                    enabled = !busy && !bulkBusy && !needsSection(s),
                                     shape = RoundedCornerShape(8.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.primary,

@@ -29,6 +29,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
 import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 
 /**
@@ -296,9 +297,11 @@ object AuthService {
     }
 
     suspend fun signOut(context: Context) {
-        // دون اتصال لا يكتمل حذف الرمز أبداً (await لا يرمي بل ينتظر)،
-        // فيُحتجز تسجيل الخروج — مهلة قصيرة تضمن الوصول إلى signOut.
-        runCatching { AdminNotificationService.unregisterCurrentDevice() }
+        // على شبكة ضعيفة كان حذف تسجيل الجهاز يحتجز الخروج حتى مهلتي الاتصال
+        // والقراءة (التعليق القديم وعد بمهلة لا شيء يفرضها). النداء حاجب لا
+        // يُلغى، فيُطلق في نطاقٍ خلفيّ ويُنتظر ستّ ثوانٍ على الأكثر.
+        val unregister = backgroundScope.launch { runCatching { AdminNotificationService.unregisterCurrentDevice() } }
+        withTimeoutOrNull(6_000L) { unregister.join() }
         runCatching { AdminSession.signOut() }
         runCatching {
             CredentialManager.create(context)

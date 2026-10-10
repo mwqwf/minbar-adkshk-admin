@@ -6,7 +6,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -85,26 +87,62 @@ data class BulkSubmissionResult(val done: Int, val failed: Int)
 object SubmissionsRepository {
     private const val POLL_MS = 30_000L
     private const val DECIDED_PAGE = 50
+    /** سقف الخادم لـ`limit` في `/admin/submissions`. */
+    private const val MAX_LIMIT = 500
     private val decidedLimit = kotlinx.coroutines.flow.MutableStateFlow(DECIDED_PAGE)
     val hasMoreDecided = kotlinx.coroutines.flow.MutableStateFlow(false)
 
+    /**
+     * نبضة «أعد الجلب الآن»: بعد كل حسمٍ أو «تحميل المزيد». كانت القائمة لا
+     * تتغيّر حتى الاستطلاع التالي (نصف دقيقة)، فتبقى المساهمة المحسومة معلّقةً
+     * بأزرارها ويضغطها المشرف ثانيةً فيتلقّى «بُتّ فيها من قبل».
+     */
+    private val refreshTick = kotlinx.coroutines.flow.MutableStateFlow(0)
+
+    fun refresh() {
+        refreshTick.value += 1
+    }
+
     fun loadMoreDecided() {
         decidedLimit.value += DECIDED_PAGE
+        refresh()
+    }
+
+    /** آخر عدد معلَّق رآه الجلب — ليتّسع الحدّ له فلا يُقصّ المعلَّق. */
+    @Volatile
+    private var lastPendingCount = 0
+
+    private suspend fun fetchPage(limit: Int): List<LessonSubmission> {
+        val items = MinbarAdminApi.get("/admin/submissions?status=all&limit=$limit").optJSONArray("items") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { items.optJSONObject(it) }.map(LessonSubmission::fromRow)
     }
 
     private suspend fun fetchAll(limit: Int): List<LessonSubmission> {
-        val items = MinbarAdminApi.get("/admin/submissions?status=all&limit=${limit + 1}").optJSONArray("items") ?: JSONArray()
-        val list = (0 until items.length()).mapNotNull { items.optJSONObject(it) }.map(LessonSubmission::fromRow)
+        // ⛔ الحدّ عند الخادم يشمل المعلَّق (يأتي أوّلاً): كان `limit + 1` وحده،
+        // فإن زاد المعلَّق على خمسين اختفى ما بعدها بلا زرّ «المزيد» — مساهماتٌ
+        // لا يراها أحد. فالحدّ = المعلَّق المعروف + نافذة المحسوم، ويُعاد الجلب
+        // بالسقف إن امتلأت الصفحة معلَّقاً.
+        var request = (lastPendingCount + limit + 1).coerceAtMost(MAX_LIMIT)
+        var list = fetchPage(request)
+        if (list.size >= request && request < MAX_LIMIT && list.count { !it.isPending } <= limit) {
+            request = MAX_LIMIT
+            list = fetchPage(request)
+        }
+        val pending = list.filter { it.isPending }
+        lastPendingCount = pending.size
         val decided = list.filter { !it.isPending }
         hasMoreDecided.value = decided.size > limit
-        return (list.filter { it.isPending } + decided.take(limit))
+        return (pending + decided.take(limit))
             .sortedWith(compareByDescending<LessonSubmission> { it.isPending }.thenByDescending { it.createdAtMs })
     }
 
     fun watchAll(): Flow<List<LessonSubmission>> = flow {
         while (true) {
-            emit(runCatching { fetchAll(decidedLimit.value) }.getOrDefault(emptyList()))
-            delay(POLL_MS)
+            val tick = refreshTick.value
+            // ⚠️ الفشل لا يُرسل قائمةً فارغة: كانت انقطاعةٌ عابرة تمحو الشاشة
+            // فتقول «لا مساهمات» والمعلَّق قائم. تبقى آخر قائمة ويُعاد في الدورة التالية.
+            runCatching { fetchAll(decidedLimit.value) }.onSuccess { emit(it) }
+            withTimeoutOrNull(POLL_MS) { refreshTick.first { it != tick } }
         }
     }.flowOn(Dispatchers.IO)
 
@@ -122,6 +160,7 @@ object SubmissionsRepository {
         editedCategoryName: String? = null,
         editedSubcategoryId: String? = null,
         editedSubcategoryName: String? = null,
+        refreshAfter: Boolean = true,
     ) {
         val title = (editedTitle ?: s.title).trim()
         val categoryId = editedCategoryId ?: s.categoryId
@@ -140,15 +179,18 @@ object SubmissionsRepository {
                 .put("subcategoryName", editedSubcategoryName ?: s.subcategoryName)
                 .put("edited", edited),
         )
+        if (refreshAfter) refresh()
     }
 
-    suspend fun reject(s: LessonSubmission, reason: String) {
+    suspend fun reject(s: LessonSubmission, reason: String, refreshAfter: Boolean = true) {
         MinbarAdminApi.post("/admin/submissions/${s.id}/reject", JSONObject().put("reason", reason.trim()))
+        if (refreshAfter) refresh()
     }
 
     suspend fun deleteDecided(s: LessonSubmission) {
         if (s.isPending) return
         MinbarAdminApi.delete("/admin/submissions/${s.id}")
+        refresh()
     }
 
     suspend fun bulkApprove(
@@ -159,9 +201,11 @@ object SubmissionsRepository {
         var done = 0
         var failed = 0
         targets.forEachIndexed { index, s ->
-            runCatching { approveAndPublish(s) }.onSuccess { done++ }.onFailure { failed++ }
+            runCatching { approveAndPublish(s, refreshAfter = false) }.onSuccess { done++ }.onFailure { failed++ }
             onProgress(index + 1, targets.size)
         }
+        // جلبٌ واحد بعد الدفعة لا جلبٌ لكلّ عنصر.
+        refresh()
         return BulkSubmissionResult(done, failed)
     }
 
@@ -174,9 +218,11 @@ object SubmissionsRepository {
         var done = 0
         var failed = 0
         targets.forEachIndexed { index, s ->
-            runCatching { reject(s, reason) }.onSuccess { done++ }.onFailure { failed++ }
+            runCatching { reject(s, reason, refreshAfter = false) }.onSuccess { done++ }.onFailure { failed++ }
             onProgress(index + 1, targets.size)
         }
+        // جلبٌ واحد بعد الدفعة لا جلبٌ لكلّ عنصر.
+        refresh()
         return BulkSubmissionResult(done, failed)
     }
 }

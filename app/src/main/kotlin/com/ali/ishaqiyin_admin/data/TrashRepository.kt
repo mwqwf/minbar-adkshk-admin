@@ -4,6 +4,7 @@ import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -76,14 +77,34 @@ object TrashRepository {
         }.sortedByDescending { it.deletedAtMs }
     }
 
+    /**
+     * نبضة «أعد الجلب الآن» مشتركة بين تبويبي السلة: الاستعادة والإتلاف
+     * متسلسلان على الخادم (استعادة قسمٍ تُرجع دروسه، وإتلافه يمحو دروسه
+     * المحذوفة)، فكانت تلك الدروس تبقى معروضةً في السلة حتى الاستطلاع التالي
+     * — وإتلافُ درسٍ استُعيد للتوّ مع قسمه يمحو درساً **حيّاً** نهائياً.
+     */
+    val refreshTick = kotlinx.coroutines.flow.MutableStateFlow(0)
+
+    fun refresh() {
+        refreshTick.value += 1
+    }
+
+    /** ينتظر مهلة الاستطلاع أو نبضة تحديث، أيّهما أسبق. */
+    internal suspend fun awaitNextPoll(pollMs: Long, seen: Int) {
+        kotlinx.coroutines.withTimeoutOrNull(pollMs) {
+            refreshTick.first { it != seen }
+        }
+    }
+
     fun watchAll(): Flow<List<TrashedLesson>> = flow {
         while (true) {
+            val tick = refreshTick.value
             // ⚠️ بلا `runCatching` كان أيّ خطأ شبكة أثناء الاستطلاع يُرمى داخل
             // `collectAsState` في الشاشة فينهار التطبيق (بخلاف بقيّة المستودعات).
             // عند الفشل تبقى آخر قائمة معروضة: إرسال قائمة فارغة كان يُظهر
             // «السلة فارغة» كاذبةً مع كلّ انقطاع عابر.
             runCatching { fetchAll() }.onSuccess { emit(it) }
-            delay(POLL_MS)
+            awaitNextPoll(POLL_MS, tick)
         }
     }.flowOn(Dispatchers.IO)
 
@@ -93,12 +114,13 @@ object TrashRepository {
 
     /** يعيد عدد ما استُعيد (الدرس وما أُرجع معه من أقسامه المحذوفة). */
     suspend fun restore(item: TrashedLesson): Int =
-        MinbarAdminApi.post("/admin/lessons/${item.id}/restore").optInt("restored", 1)
+        MinbarAdminApi.post("/admin/lessons/${item.id}/restore").optInt("restored", 1).also { refresh() }
 
     suspend fun purge(item: TrashedLesson) {
         MinbarAdminApi.post("/admin/lessons/${item.id}/purge")
+        refresh()
     }
 
     suspend fun emptyAll(): Int =
-        MinbarAdminApi.post("/admin/trash/empty").optInt("purged", 0)
+        MinbarAdminApi.post("/admin/trash/empty").optInt("purged", 0).also { refresh() }
 }

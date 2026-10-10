@@ -30,6 +30,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,6 +58,7 @@ import com.ali.ishaqiyin_admin.ui.chat.ChatColors
 import com.ali.ishaqiyin_admin.ui.chat.DateChip
 import com.ali.ishaqiyin_admin.ui.chat.InputBar
 import com.ali.ishaqiyin_admin.ui.chat.MessageBubble
+import com.ali.ishaqiyin_admin.ui.chat.SharedAudioPlayer
 import com.ali.ishaqiyin_admin.ui.chat.VoiceRecorderBar
 import com.ali.ishaqiyin_admin.ui.chat.WhatsAppChatBackground
 import com.ali.ishaqiyin_admin.ui.chat.rememberVoiceRecorderState
@@ -122,9 +124,28 @@ fun SupportThreadScreen(
         if (bubbles.isNotEmpty()) listState.animateScrollToItem(bubbles.lastIndex)
     }
 
+    // 🔊 المشغّل المشترك عامٌّ على مستوى العمليّة: بلا تحريرٍ عند مغادرة الشاشة
+    // كانت رسالة صوتيّة قيد التشغيل تستمرّ بعد الرجوع إلى الصندوق بلا أيّ زرّ
+    // لإيقافها، ويبقى مثيل ExoPlayer حيّاً طوال عمر التطبيق. (تدوير الشاشة
+    // لا يحرّره: الشاشة نفسها تعود فوراً.)
+    val activity = context as? android.app.Activity
+    DisposableEffect(threadId) {
+        val owner = Any()
+        SharedAudioPlayer.claimHost(owner)
+        onDispose {
+            if (activity?.isChangingConfigurations != true) SharedAudioPlayer.releaseIfHost(owner)
+        }
+    }
+
     /** إرسال مرفق: يُرفع أوّلاً فيصير له مسار، ثمّ تُنادى دالّة الردّ به. */
     fun sendMedia(file: File, contentType: String, deleteAfter: Boolean) {
-        if (sending) return
+        if (sending) {
+            // ⚠️ كان المرفق (صورة مختارة أو تسجيل صوتيّ) يُهمَل بصمت إن وصل
+            // أثناء إرسالٍ جارٍ، ويبقى ملفّه المؤقّت في الكاش.
+            snack("انتظر اكتمال الإرسال الجاري ثم أعد المحاولة.")
+            if (deleteAfter) scope.launch { runCatching { withContext(Dispatchers.IO) { file.delete() } } }
+            return
+        }
         sending = true
         scope.launch {
             try {
