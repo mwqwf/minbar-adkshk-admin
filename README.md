@@ -15,7 +15,7 @@
   **Auth وحده انتقالياً**: دخول المشرفين الذين لم ينتقلوا بعد إلى «جلسة منبر»،
   ورمز هويّة صندوق دعم «مصحفك» (`data/MushafakSupport.kt`). جدول «ما نُقل» أدناه
   تاريخيّ يصف نقل Flutter.
-- `minSdk` 23، و`targetSdk`/`compileSdk` 36.
+- `minSdk` 24، و`targetSdk`/`compileSdk` 36.
 - لا `google-services.json`: التهيئة في الكود (`core/Config.kt`) تماماً كما
   كانت في `firebase_options.dart`.
 - `versionCode = 2002` لأن نسخة Flutter المثبَّتة تحمل 2001، والتثبيت فوقها
