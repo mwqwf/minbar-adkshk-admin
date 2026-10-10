@@ -40,7 +40,9 @@ android {
 
     defaultConfig {
         applicationId = "com.ali.ishaqiyin_admin"
-        minSdk = 23
+        // 24 (2026-10-10): «الحماية التلقائية» في Play تشترط أندرويد 7 فما فوق، ورفضت نشر
+        // 2027/1.8.4 لأنّ حدّه كان 23.
+        minSdk = 24
         targetSdk = 36
         // نسخة Flutter المثبَّتة على جهاز المشرف تحمل versionCode=2001 (بادئة
         // ABI التي يضيفها Flutter)، والتثبيت فوقها يتطلّب رقماً أعلى — وإلا
