@@ -106,6 +106,26 @@ private const val DUPLICATE_WINDOW_MS = 60_000L
  */
 private const val BATCH_MAX_FILES = 50
 
+/** رسالة رفض ملفّ يتجاوز حدّ الرفع — انظر [LessonUploadWorker.MAX_LESSON_BYTES]. */
+private const val TOO_LARGE_MESSAGE =
+    "حجم الملفّ يتجاوز حدّ الرفع (95 م.ب) — قسّمه إلى أجزاء أو اضغطه ثمّ أضفه."
+
+private const val TOO_LARGE_MERGED_MESSAGE =
+    "الملفّ المدموج يتجاوز حدّ الرفع (95 م.ب) — ارفع الملفّات دروساً منفصلة أو ادمج عدداً أقلّ."
+
+/**
+ * يحذف نُسخ «التسجيل المباشر» من الكاش بعد دخولها الطابور: الطابور نسخها إلى
+ * تخزينه الخاصّ، وكانت النسخة الأصليّة (عشرات الميغابايتات للتسجيل الطويل)
+ * تبقى في `cache/recordings` بلا كانس. لا يمسّ إلّا ما في ذلك المجلّد.
+ */
+private fun deleteRecordings(context: Context, picked: List<PickedFile>) {
+    val dir = File(context.cacheDir, "recordings").absolutePath + File.separator
+    picked.forEach { file ->
+        val path = file.uri.takeIf { it.scheme == "file" }?.path ?: return@forEach
+        if (path.startsWith(dir)) runCatching { File(path).delete() }
+    }
+}
+
 /** نيّة المشرف في عدّة الملفات — سؤال واحد لا معالج خطوات. */
 private const val MODE_MERGE = "merge"
 private const val MODE_SEPARATE = "separate"
@@ -568,6 +588,14 @@ fun AddLessonScreen(onBack: () -> Unit) {
             isError = true
             return
         }
+        // ⛔ ملفّ فوق حدّ الرفع يُرفض الآن لا بعد ساعات: كان يدخل الطابور ويُعلَن
+        // «يكمل في الخلفية ويصلك إشعار» ثمّ لا يُرفع أبداً (الخادم لا يقبل
+        // أكثر من 95 م.ب). الحجم من المزوّد قد يكون مجهولاً (0) فيحرسه العامل.
+        if (files.size == 1 && files.first().size > LessonUploadWorker.MAX_LESSON_BYTES) {
+            message = TOO_LARGE_MESSAGE
+            isError = true
+            return
+        }
         queuing = true
         merging = false
         message = ""
@@ -632,7 +660,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                             transcriptBookTitle = transcriptBookTitle,
                             transcriptSourceRef = transcriptSourceRef,
                             transcriptImages = transcriptImages.toList(),
-                        )
+                        ).also { deleteRecordings(context, files.toList()) }
                     } else {
                         // عدّة ملفات = درس واحد متّصل: يُدمج محليّاً أوّلاً (لا
                         // يحتاج شبكة) ثم يدخل الطابور ملفّاً واحداً. كل الملفات
@@ -674,6 +702,13 @@ fun AddLessonScreen(onBack: () -> Unit) {
                             locals.forEach { runCatching { it.delete() } }
                         }
                         merging = false
+                        // المدموج قد يتجاوز حدّ الرفع (عشرة ملفّات ساعيّة بـ128kbps
+                        // تبلغ مئات الميغابايتات): يُرفض هنا بسببه الصريح بدل
+                        // أن يدخل الطابور ويُركن بعد أن غادر المشرف.
+                        if (merged.length() > LessonUploadWorker.MAX_LESSON_BYTES) {
+                            runCatching { merged.delete() }
+                            error(TOO_LARGE_MERGED_MESSAGE)
+                        }
                         UploadQueue.enqueueLocalFile(
                             file = merged,
                             fileName = mergedName,
@@ -691,7 +726,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                             transcriptBookTitle = transcriptBookTitle,
                             transcriptSourceRef = transcriptSourceRef,
                             transcriptImages = transcriptImages.toList(),
-                        )
+                        ).also { deleteRecordings(context, files.toList()) }
                     }
                     // يُقرأ الموقع **قبل** إيقاظ العامل: ملفّ صغير قد يُرفع
                     // ويخرج من الطابور قبل أن نصل إلى بناء الرسالة، فيصير
@@ -788,8 +823,20 @@ fun AddLessonScreen(onBack: () -> Unit) {
             return
         }
         // لقطة ثابتة قبل أيّ عمل غير متزامن: القائمة قد تتغيّر تحت اليد.
+        // ⛔ ما تجاوز حدّ الرفع يُستبعد ويُسمّى الآن: كان يدخل الطابور ثمّ
+        // يُركن بعد خروج المشرف، ولا يُرفع أبداً.
+        val tooLarge = files
+            .filter { it.size > LessonUploadWorker.MAX_LESSON_BYTES }
+            .map { it.name }
         val plan = files.mapIndexed { index, file -> file to batchTitleOf(index) }
-        if (plan.isEmpty()) return
+            .filter { (file, _) -> file.size <= LessonUploadWorker.MAX_LESSON_BYTES }
+        if (plan.isEmpty()) {
+            if (tooLarge.isNotEmpty()) {
+                message = TOO_LARGE_MESSAGE
+                isError = true
+            }
+            return
+        }
         val cat = categories.firstOrNull { it.id == categoryId }
         val sub = subsForCategory.firstOrNull { it.id == subcategoryId }
         val label = listOfNotNull(cat?.name, sub?.name).joinToString(" ← ")
@@ -894,6 +941,8 @@ fun AddLessonScreen(onBack: () -> Unit) {
                             }.onSuccess {
                                 inserted += it
                                 transcriptTaken = true
+                                // التسجيل المباشر نُسخ إلى الطابور — نسخته في الكاش زائدة.
+                                deleteRecordings(context, listOf(file))
                             }.onFailure {
                                 // ملفّ تعذّرت قراءته لا يُسقط الدفعة كلّها:
                                 // يُسمَّى للمشرف في النهاية وتمضي البقيّة.
@@ -954,10 +1003,15 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     if (failed.isNotEmpty()) {
                         append(" ⚠️ تعذّرت قراءة: ${failed.joinToString("، ")}")
                     }
+                    if (tooLarge.isNotEmpty()) {
+                        append(" ⚠️ لم يُضف (يتجاوز حدّ الرفع 95 م.ب): ")
+                        append(tooLarge.joinToString("، "))
+                    }
                 }
                 // «كلّها مكرّرة» رسالة اطمئنان مقصودة (انظر أعلاه) — تلوينها
                 // أحمر كان يناقض نصّها فيُفهم فشلاً ويُعاد الرفع بلا داعٍ.
-                isError = failed.isNotEmpty() || (added == 0 && skipped == 0)
+                isError = failed.isNotEmpty() || tooLarge.isNotEmpty() ||
+                    (added == 0 && skipped == 0)
                 if (added > 0) snack("أُضيف ${lessonsCountLabel(added)} إلى طابور الرفع")
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 // الإدراج تمّ داخل NonCancellable — لا رسالة خطأ لمغادرة الشاشة.
@@ -1199,15 +1253,21 @@ fun AddLessonScreen(onBack: () -> Unit) {
                     canMoveDown = index < files.size - 1,
                     enabled = !busy,
                     showReorder = files.size > 1,
+                    // ⚠️ الفهرس ملتقَط من آخر تركيب: نقرتان قبل إعادة التركيب (لمستان
+                    // متزامنتان على صفّين) كانتا تُخرجانه عن المدى فتنهار الشاشة.
                     onUp = {
-                        val item = files.removeAt(index)
-                        files.add(index - 1, item)
+                        if (index in 1 until files.size) {
+                            val item = files.removeAt(index)
+                            files.add(index - 1, item)
+                        }
                     },
                     onDown = {
-                        val item = files.removeAt(index)
-                        files.add(index + 1, item)
+                        if (index in 0 until files.size - 1) {
+                            val item = files.removeAt(index)
+                            files.add(index + 1, item)
+                        }
                     },
-                    onRemove = { files.removeAt(index) },
+                    onRemove = { if (index in files.indices) files.removeAt(index) },
                 )
             }
 

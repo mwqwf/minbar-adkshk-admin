@@ -43,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -99,8 +100,11 @@ fun FeaturedScreen(onBack: () -> Unit) {
     // ↩️ إلغاء التمييز فعل رخيص قابل للرجوع تماماً — يقع فوراً ويُتاح
     // التراجع عنه عشر ثوانٍ، بدل حوار تأكيد يُقرأ مرّة ويُتخطّى دائماً.
     val undoBar = rememberUndoBar()
-    val lessons by remember { AdminRepository.watchFeatured() }
-        .collectAsState(initial = emptyList())
+    // null = لم يصل الجلب الأوّل بعد: كانت القائمة تبدأ فارغةً فتقول الشاشة
+    // «لا دروس مميّزة الآن» أثناء التحميل وعند تعذّره، والدروس مميّزة فعلاً.
+    val loaded by remember { AdminRepository.watchFeatured() }
+        .collectAsState<List<Lesson>, List<Lesson>?>(initial = null)
+    val lessons = loaded.orEmpty()
 
     // نبضة كل نصف دقيقة تُحدّث العدّ التنازلي بلا إعادة قراءة من الشبكة.
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -121,9 +125,25 @@ fun FeaturedScreen(onBack: () -> Unit) {
     // تُخفى من القائمة فوراً بينما الكتابة في القاعدة مؤجَّلة، فالتراجع
     // يعيد الدرس إلى موضعه ومدّته بعينهما بلا كتابة أصلاً.
     val pendingRemoval = remember { mutableStateListOf<String>() }
+    // ما كُتب فعلاً ولم يعكسه الاستطلاع بعد (يصل كل نصف دقيقة): كان الدرس
+    // يعود إلى القائمة مميّزاً لحظة انقضاء مهلة التراجع، وتبقى المدّة القديمة
+    // ظاهرةً بعد تغييرها — فيظنّ المشرف أنّ فعله لم يقع فيكرّره.
+    val committedRemoval = remember { mutableStateListOf<String>() }
+    val untilOverride = remember { mutableStateMapOf<String, Long?>() }
+    LaunchedEffect(loaded) {
+        val list = loaded ?: return@LaunchedEffect
+        val ids = list.map { it.id }.toSet()
+        committedRemoval.retainAll { it in ids }
+        untilOverride.keys.toList().forEach { id ->
+            val fresh = list.firstOrNull { it.id == id }
+            if (fresh == null || fresh.featuredUntilMs == untilOverride[id]) untilOverride.remove(id)
+        }
+    }
 
     // ما ينتظر انقضاء مهلة تراجعه لا يُعرض — كأنّه أُزيل، وهو لم يُكتب بعد.
-    val shown = lessons.filterNot { pendingRemoval.contains(it.id) }
+    val shown = lessons
+        .filterNot { pendingRemoval.contains(it.id) || committedRemoval.contains(it.id) }
+        .map { if (untilOverride.containsKey(it.id)) it.copy(featuredUntilMs = untilOverride[it.id]) else it }
     val expired = shown.filter { it.featuredUntilMs != null && it.featuredUntilMs <= now }
     val active = shown.filterNot { it.featuredUntilMs != null && it.featuredUntilMs <= now }
 
@@ -139,6 +159,7 @@ fun FeaturedScreen(onBack: () -> Unit) {
             onCommit = {
                 busyId = lesson.id
                 runCatching { AdminRepository.setLessonFeatured(lesson.id, false) }
+                    .onSuccess { committedRemoval.add(lesson.id) }
                     .onFailure {
                         // فشل الكتابة يعيد الدرس للعرض: إخفاؤه وهو
                         // مميّز في القاعدة يخدع المشرف.
@@ -168,6 +189,7 @@ fun FeaturedScreen(onBack: () -> Unit) {
                 var failed = 0
                 batch.forEach { lesson ->
                     runCatching { AdminRepository.setLessonFeatured(lesson.id, false) }
+                        .onSuccess { committedRemoval.add(lesson.id) }
                         .onFailure {
                             failed++
                             pendingRemoval.remove(lesson.id)
@@ -189,12 +211,17 @@ fun FeaturedScreen(onBack: () -> Unit) {
             onDismiss = { durationFor = null },
             onPick = { duration ->
                 durationFor = null
+                // لحظة الانتهاء تُحسب مرّة واحدة: هي ما يُكتب وما يُعرض معاً.
+                val until = duration.untilMs()
                 scope.launch {
                     runCatching {
-                        AdminRepository.setLessonFeatured(lesson.id, true, duration.untilMs())
+                        AdminRepository.setLessonFeatured(lesson.id, true, until)
                     // arabicReason: نصّ الاستثناء الخام إنجليزيّ تقنيّ لا
                     // يفهمه جمهور اللوحة.
-                    }.onSuccess { snack("مدّة التمييز الآن: ${duration.label}") }
+                    }.onSuccess {
+                        untilOverride[lesson.id] = until
+                        snack("مدّة التمييز الآن: ${duration.label}")
+                    }
                         .onFailure { snack("تعذّر التعديل: ${it.arabicReason()}") }
                 }
             },
@@ -213,6 +240,12 @@ fun FeaturedScreen(onBack: () -> Unit) {
                 }
             },
         ) { padding ->
+            if (loaded == null) {
+                Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Spin(color = MaterialTheme.colorScheme.primary)
+                }
+                return@AdminScaffold
+            }
             if (shown.isEmpty()) {
                 Box(
                     Modifier.padding(padding).fillMaxSize().padding(28.dp),

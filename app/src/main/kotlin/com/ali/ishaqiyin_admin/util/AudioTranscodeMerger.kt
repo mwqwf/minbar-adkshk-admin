@@ -91,6 +91,9 @@ object AudioTranscodeMerger {
         }
         var trackIndex = -1
         var muxerStarted = false
+        // ⚠️ `muxer.stop()` هو الذي يكتب حزمة moov؛ فشلُه كان يُبتلع في
+        // `runCatching` ثمّ يُعاد الملفّ ناجحاً — درسٌ لا يعمل عند أحد.
+        var muxerStopped = false
         var totalFrames = 0L
         val encoderInfo = MediaCodec.BufferInfo()
 
@@ -205,14 +208,14 @@ object AudioTranscodeMerger {
         } finally {
             runCatching { encoder.stop() }
             runCatching { encoder.release() }
-            if (muxerStarted) runCatching { muxer.stop() }
+            if (muxerStarted) muxerStopped = runCatching { muxer.stop() }.isSuccess
             runCatching { muxer.release() }
         }
         // 🛡️ شرط الصلاحية كان `totalFrames` وحده: إن لم يُصدر المرمِّز
         // INFO_OUTPUT_FORMAT_CHANGED يبقى muxerStarted=false فلا يُستدعى
         // muxer.stop()، فيخرج MP4 بلا moov — درسٌ لا يعمل عند أحد ويُرفع
         // على أنّه ناجح. الآن يُرفض الخرج صراحةً في هذه الحال.
-        if (totalFrames == 0L || !muxerStarted) {
+        if (totalFrames == 0L || !muxerStarted || !muxerStopped) {
             output.delete()
             throw UnsupportedAudioException("تعذّر استخراج صوت من الملفات المختارة.")
         }
@@ -260,7 +263,16 @@ object AudioTranscodeMerger {
             var resampler = Resampler(sampleRate, channels)
             var inputDone = false
             var outputDone = false
+            // ⏱️ نظير [DRAIN_TIMEOUT_MS] للفاكّ: مفكّكٌ لا يُصدر راية النهاية
+            // (ملفّ تالف/عطل عتاد) كان يدور هنا أبداً داخل `NonCancellable`،
+            // فيبقى حارس «إدراج جارٍ» مرفوعاً ولا يُقبل درس آخر حتى إعادة التشغيل.
+            var lastOutputMs = System.currentTimeMillis()
             while (!outputDone) {
+                if (inputDone && System.currentTimeMillis() - lastOutputMs > DRAIN_TIMEOUT_MS) {
+                    throw UnsupportedAudioException(
+                        "تعذّر فكّ «${file.name}» على هذا الجهاز — الملف تالف أو غير مدعوم.",
+                    )
+                }
                 if (!inputDone) {
                     val inIndex = decoder.dequeueInputBuffer(TIMEOUT_US)
                     if (inIndex >= 0) {
@@ -282,6 +294,9 @@ object AudioTranscodeMerger {
                     }
                 }
                 val outIndex = decoder.dequeueOutputBuffer(info, TIMEOUT_US)
+                if (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    lastOutputMs = System.currentTimeMillis()
+                }
                 when {
                     outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         val format = decoder.outputFormat

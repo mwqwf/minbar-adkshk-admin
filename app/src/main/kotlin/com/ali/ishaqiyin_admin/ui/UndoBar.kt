@@ -12,6 +12,7 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,7 +40,12 @@ private const val UNDO_WINDOW_MS = 10_000L
  * أن يقع الفعل المؤجَّل مع ذلك — وإلّا بقي المحذوف في القاعدة بصمت.
  * والمهلة الصريحة تضمن انتهاء الانتظار حتى لو زال الشريط عن الشاشة.
  */
-private val undoScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+private val undoScope = CoroutineScope(
+    SupervisorJob() + Dispatchers.Main.immediate +
+        // ⛔ نطاقٌ بلا ممسك: استثناءٌ يفلت من onCommit/onUndo كان يبلغ ممسك الخيط
+        // فيُسقط التطبيق كلّه بعد عشر ثوانٍ من فعلٍ عاديّ. يُسجَّل ولا يُسقط.
+        CoroutineExceptionHandler { _, e -> android.util.Log.w("UndoBar", "deferred action failed", e) },
+)
 
 /** مُظهِر شريط «تراجع» لشاشة واحدة. */
 class UndoBarController(val host: SnackbarHostState) {

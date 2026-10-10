@@ -78,7 +78,13 @@ fun MushafakInboxScreen(onBack: () -> Unit) {
                 val list = tickets
                 when {
                     list == null -> Text(
-                        "تعذّر الجلب — تحقّق من الشبكة.",
+                        if (MushafakSupport.hasIdentity()) {
+                            "تعذّر الجلب — تحقّق من الشبكة."
+                        } else {
+                            // جلسة منبر وحدها لا يقبلها خادم مصحفك (يطلب هويّة Firebase).
+                            "هذا الصندوق يتطلّب هويّة Firebase التي لا تحملها جلسة الدخول " +
+                                "الحاليّة على هذا الجهاز — يلزم دعم «جلسة منبر» في خادم مصحفك."
+                        },
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.error,
                     )

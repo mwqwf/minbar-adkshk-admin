@@ -243,6 +243,8 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
         if (reloadTrigger == 0) {
             counts = withContext(Dispatchers.IO) { loadCounts(context) }
         }
+        // «تحديث» يدويّ يتخطّى كاش الأقسام (خمس دقائق) وإلا عاد بالعدد نفسه.
+        if (reloadTrigger > 0) AdminRepository.invalidateSectionsCache()
         loading = true
         error = null
         try {
@@ -256,6 +258,9 @@ fun DashboardScreen(isOwner: Boolean, nav: NavHostController) {
                 saveCounts(context, fresh)
             }
             loading = false
+        } catch (cancel: kotlinx.coroutines.CancellationException) {
+            // مغادرة الشاشة ليست فشل اتصال.
+            throw cancel
         } catch (_: Exception) {
             loading = false
             error = "تعذّر جلب البيانات. تحقّق من الاتصال بالإنترنت."
@@ -831,7 +836,8 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
                     ),
                     ActionSpec(
                         Icons.AutoMirrored.Filled.ManageSearch, c.blue, "التعديل والبحث",
-                        "تعديل وحذف وجدولة", 0, Routes.MANAGE_ALL,
+                        // لا «جدولة»: النشر المجدول أُزيل من المنظومة كلّها.
+                        "تعديل وحذف ونقل وبحث", 0, Routes.MANAGE_ALL,
                     ),
                     ActionSpec(
                         Icons.Filled.Star, c.gold, "مختارات المنبر",
@@ -856,17 +862,25 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
         add(
             ActionSpec(
                 Icons.Filled.Insights, c.purple, "التحليلات والتفاعل",
-                "الاستماع والأقسام والملاحظات", 0, "",
-                entries = listOf(
-                    ActionSpec(
-                        Icons.Filled.Insights, c.purple, "التحليلات والأثر",
-                        "الاستماع والأقسام النشطة", 0, Routes.ANALYTICS,
-                    ),
-                    ActionSpec(
-                        Icons.Filled.Forum, c.green, "تفاعل المستمعين",
-                        "الملاحظات والبلاغات", 0, Routes.FEEDBACK,
-                    ),
-                ),
+                if (isOwner) "الاستماع والأقسام والملاحظات" else "الاستماع والأقسام النشطة", 0, "",
+                entries = buildList {
+                    add(
+                        ActionSpec(
+                            Icons.Filled.Insights, c.purple, "التحليلات والأثر",
+                            "الاستماع والأقسام النشطة", 0, Routes.ANALYTICS,
+                        ),
+                    )
+                    // ⛔ `/admin/feedback` للمالك وحده على الخادم (ownerOnlyPath):
+                    // كان الباب يظهر للمشرف فيفتح شاشةً لا تعرض إلا «للمالك فقط».
+                    if (isOwner) {
+                        add(
+                            ActionSpec(
+                                Icons.Filled.Forum, c.green, "تفاعل المستمعين",
+                                "الملاحظات والبلاغات", 0, Routes.FEEDBACK,
+                            ),
+                        )
+                    }
+                },
             ),
         )
         // ⚙️ الإدارة: الحسابات والصلاحيات، ومراجعة المالك، وضبط تذكير

@@ -1,8 +1,8 @@
 package com.ali.ishaqiyin_admin.ui
 
 import com.ali.ishaqiyin_admin.core.MinbarAdminApi
+import com.ali.ishaqiyin_admin.data.TrashRepository
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -69,8 +69,10 @@ object DeletedSectionsRepository {
 
     fun watchAll(): Flow<List<TrashedSection>> = flow {
         while (true) {
+            // النبضة نفسها التي يستعملها تبويب الدروس: الفعل في أحدهما يغيّر الآخر.
+            val tick = TrashRepository.refreshTick.value
             runCatching { fetchAll() }.onSuccess { emit(it) }
-            delay(POLL_MS)
+            TrashRepository.awaitNextPoll(POLL_MS, tick)
         }
     }.flowOn(Dispatchers.IO)
 
@@ -80,8 +82,10 @@ object DeletedSectionsRepository {
     /** يعيد عدد ما استُعيد: القسم مع فرعيّاته ودروسه التي حُذفت معه. */
     suspend fun restore(item: TrashedSection): Int =
         MinbarAdminApi.post("/admin/${table(item)}/${item.docId}/restore").optInt("restored", 1)
+            .also { TrashRepository.refresh() }
 
-    suspend fun purge(item: TrashedSection) {
-        MinbarAdminApi.post("/admin/${table(item)}/${item.docId}/purge")
-    }
+    /** يعيد عدد الدروس المحذوفة التي أُتلفت مع القسم. */
+    suspend fun purge(item: TrashedSection): Int =
+        MinbarAdminApi.post("/admin/${table(item)}/${item.docId}/purge").optInt("lessons", 0)
+            .also { TrashRepository.refresh() }
 }

@@ -36,8 +36,9 @@ import kotlinx.coroutines.launch
 import java.security.MessageDigest
 
 /** رسالة موحّدة حين تُحفظ الكتابة محليّاً ولم يؤكّدها الخادم بعد. */
+// ⛔ لا طابور كتابة بعد الهجرة إلى minbar-api: الإنشاء يُؤكَّد أو يفشل برسالته.
 private const val PENDING_NETWORK_HINT =
-    "لا اتصال — حُفظ الطلب وسيُرسَل تلقائياً عند عودة الشبكة (بلا تكرار)."
+    "لم يؤكّد الخادم الإنشاء — تحقّق من الاتصال ثمّ أعد المحاولة."
 
 /** تطبيع الاسم للمقارنة: مسافات مضغوطة وحالة أحرف موحّدة. */
 private fun normalizedName(name: String): String =

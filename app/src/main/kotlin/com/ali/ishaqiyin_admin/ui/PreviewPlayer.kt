@@ -73,7 +73,16 @@ class PreviewPlayerState internal constructor(private val player: ExoPlayer) {
     fun toggle(id: String, url: String) {
         if (url.isEmpty()) return
         if (playingId == id) {
-            if (player.isPlaying) player.pause() else player.play()
+            // ⚠️ مشغّلٌ سقط في IDLE (خطأ شبكة/مصدر) لا يعمل بـ`play()` وحده: كان
+            // النقر ثانيةً على المقطع نفسه لا يفعل شيئاً، فلا سبيل لإعادة المحاولة.
+            if (player.playbackState == Player.STATE_IDLE) {
+                player.prepare()
+                player.play()
+            } else if (player.isPlaying) {
+                player.pause()
+            } else {
+                player.play()
+            }
             return
         }
         playingId = id
@@ -144,6 +153,18 @@ class PreviewPlayerState internal constructor(private val player: ExoPlayer) {
     internal fun attach(): Player.Listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             playing = isPlaying
+        }
+
+        /**
+         * فشل التشغيل (رابط ميت، انقطاع شبكة، صيغة غير مدعومة): كان بلا مستمع،
+         * فيبقى شريط المقطع معلّقاً على «جارٍ تحميل المدّة…» أبداً. يُعاد إلى
+         * السكون فيُعيد النقر التالي تحضيره من جديد.
+         */
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            playingId = ""
+            playing = false
+            positionMs = 0L
+            durationMs = 0L
         }
 
         override fun onPlaybackStateChanged(state: Int) {

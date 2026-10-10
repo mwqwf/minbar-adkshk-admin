@@ -87,7 +87,8 @@ fun FeedbackScreen(onBack: () -> Unit) {
             }.toMap()
             items = fetchedItems
             titles = fetchedTitles
-        }.onFailure { error = "تعذّر جلب البيانات. تحقّق من الاتصال." }
+        // السبب الحقيقيّ لا «تحقّق من الاتصال» دائماً: رفض الصلاحية (403) ليس انقطاعاً.
+        }.onFailure { error = "تعذّر جلب البيانات: ${it.arabicReason()}" }
         loading = false
     }
 
@@ -143,7 +144,9 @@ fun FeedbackScreen(onBack: () -> Unit) {
                 items(items.size) { index ->
                     val m = items[index]
                     val kind = kindOf((m["type"] ?: "").toString())
-                    val title = titles[m["lessonId"]] ?: "(درس محذوف)"
+                    // ملاحظةٌ عامّة بلا درس (lesson_id فارغ) ليست «درساً محذوفاً».
+                    val lessonId = (m["lessonId"] ?: "").toString()
+                    val title = if (lessonId.isBlank()) "ملاحظة عامّة" else titles[lessonId] ?: "(درس محذوف)"
                     val note = (m["note"] ?: "").toString()
                     Card(
                         shape = RoundedCornerShape(12.dp),

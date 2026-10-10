@@ -124,6 +124,8 @@ fun ReorderLessonsDialog(
                 items.addAll(found.sortedBy { it.createdAtMs })
             }
             .onFailure {
+                // إغلاق الحوار أثناء الجلب يُلغي الكوروتين: ليس فشلاً يُبلَّغ عنه.
+                if (it is kotlinx.coroutines.CancellationException) throw it
                 loadFailed = true
                 snack("تعذّر جلب دروس القسم.")
             }

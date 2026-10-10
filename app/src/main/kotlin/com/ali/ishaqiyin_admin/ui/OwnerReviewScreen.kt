@@ -88,13 +88,16 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
     pending?.let { (review, action) ->
         val deleting = action == "delete"
         ConfirmDialog(
-            title = if (deleting) "حذف الدرس نهائياً؟" else "تأكيد سلامة الدرس؟",
+            // ⚠️ الخادم يحذف حذفاً ناعماً إلى السلة (`deleted_at_ms`) ولا يمسّ الصوت:
+            // «نهائياً ولا يمكن التراجع» كان يعد بما لا يقع ويُخفي طريق الاستعادة.
+            title = if (deleting) "حذف الدرس؟" else "تأكيد سلامة الدرس؟",
             body = if (deleting) {
-                "سيُحذف «${review.title}» وملفه الصوتي نهائياً. لا يمكن التراجع عن ذلك."
+                "يُنقل «${review.title}» إلى «سلة المحذوفات» فيختفي من التطبيق، " +
+                    "ويمكن استعادته منها أو إتلافه نهائياً من هناك."
             } else {
                 "سيُعلَّم «${review.title}» بأنه راجعه المالك وتم التحقق منه."
             },
-            confirmLabel = if (deleting) "حذف نهائي" else "تم التحقق",
+            confirmLabel = if (deleting) "حذف" else "تم التحقق",
             confirmColor = if (deleting) {
                 MaterialTheme.colorScheme.error
             } else {
@@ -108,7 +111,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                     try {
                         OwnerReviewRepository.resolve(review, action)
                         if (player.playingId == review.id) player.stop()
-                        snack(if (deleting) "حُذف الدرس نهائياً." else "وُضعت علامة تم التحقق.")
+                        snack(if (deleting) "نُقل الدرس إلى سلة المحذوفات." else "وُضعت علامة تم التحقق.")
                     } catch (e: Exception) {
                         snack("تعذّر تنفيذ القرار: ${e.arabicReason()}")
                     }
@@ -387,7 +390,7 @@ fun OwnerReviewScreen(onBack: () -> Unit) {
                                             modifier = Modifier.size(18.dp),
                                         )
                                         Spacer(Modifier.size(4.dp))
-                                        Text("حذف نهائي", color = MaterialTheme.colorScheme.error)
+                                        Text("حذف", color = MaterialTheme.colorScheme.error)
                                     }
                                 }
                             }

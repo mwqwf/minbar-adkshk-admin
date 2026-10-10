@@ -2,10 +2,12 @@ package com.ali.ishaqiyin_admin.data
 
 import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -105,34 +107,53 @@ object SupportRepository {
     private suspend fun fetchThreads(): List<SupportThread> =
         MinbarAdminApi.get("/admin/support/threads").optJSONArray("items").rows().map(SupportThread::fromRow)
 
+    /**
+     * نبضة «اجلب الآن» بعد كلّ كتابة (ردّ/إغلاق/حظر/قراءة): بلاها لا يظهر ردّ
+     * المالك في المحادثة إلا بعد ربع دقيقة، ولا تتغيّر حالة الإغلاق والحظر إلا
+     * بعد نصفها — فيظنّ المالك أنّ ردّه لم يُرسَل فيعيده.
+     */
+    private val refresh = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    private fun poke() {
+        refresh.tryEmit(Unit)
+    }
+
+    /** انتظار الجولة التالية: المهلة أو نبضة كتابة، أيّهما أسبق. */
+    private suspend fun waitNext(ms: Long) {
+        withTimeoutOrNull(ms) { refresh.first() }
+    }
+
+    // ⚠️ فشل الشبكة لا يبثّ قائمةً فارغة: كان كلّ تعثّر عابر يُفرغ المحادثة
+    // المفتوحة من رسائلها، ويعلن الصندوق «لا رسائل بعد»، ويُطفئ شارة اللوحة —
+    // ثم تعود كلّها بعد الجولة التالية. تبقى آخر نتيجة صحيحة معروضة.
     fun watchThreads(): Flow<List<SupportThread>> = flow {
         while (true) {
-            emit(runCatching { fetchThreads() }.getOrDefault(emptyList()))
-            delay(THREADS_POLL_MS)
+            runCatching { fetchThreads() }.getOrNull()?.let { emit(it) }
+            waitNext(THREADS_POLL_MS)
         }
     }.flowOn(Dispatchers.IO)
 
     fun watchUnreadCount(): Flow<Int> = flow {
         while (true) {
-            emit(runCatching { MinbarAdminApi.get("/admin/community/counts").optInt("unreadThreads", 0) }.getOrDefault(0))
-            delay(THREADS_POLL_MS)
+            runCatching { MinbarAdminApi.get("/admin/community/counts").optInt("unreadThreads", 0) }
+                .getOrNull()?.let { emit(it) }
+            waitNext(THREADS_POLL_MS)
         }
     }.flowOn(Dispatchers.IO)
 
     fun watchMessages(threadId: String): Flow<List<SupportMessage>> = flow {
         while (true) {
-            emit(
-                runCatching {
-                    MinbarAdminApi.get("/admin/support/threads/$threadId/messages").optJSONArray("items").rows()
-                        .map(SupportMessage::fromRow)
-                }.getOrDefault(emptyList()),
-            )
-            delay(MESSAGES_POLL_MS)
+            runCatching {
+                MinbarAdminApi.get("/admin/support/threads/$threadId/messages").optJSONArray("items").rows()
+                    .map(SupportMessage::fromRow)
+            }.getOrNull()?.let { emit(it) }
+            waitNext(MESSAGES_POLL_MS)
         }
     }.flowOn(Dispatchers.IO)
 
     suspend fun markRead(threadId: String) {
         runCatching { MinbarAdminApi.post("/admin/support/threads/$threadId/read") }
+            .onSuccess { poke() }
     }
 
     suspend fun reply(
@@ -147,14 +168,17 @@ object SupportRepository {
             "/admin/support/threads/$threadId/reply",
             JSONObject().put("text", body).put("audioKey", audioPath).put("imageKeys", JSONArray(imagePaths)),
         )
+        poke()
     }
 
     suspend fun close(threadId: String) {
         MinbarAdminApi.post("/admin/support/threads/$threadId/close")
+        poke()
     }
 
     suspend fun blockUser(uid: String, blocked: Boolean) {
         MinbarAdminApi.post("/admin/support/block", JSONObject().put("deviceId", uid).put("blocked", blocked))
+        poke()
     }
 
     /** مفتاح مرفق في R2 → رابط قراءة عبر minbar-api. */

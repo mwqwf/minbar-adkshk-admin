@@ -2,8 +2,8 @@ package com.ali.ishaqiyin_admin.data
 
 import com.ali.ishaqiyin_admin.core.MinbarAdminApi
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import org.json.JSONArray
@@ -56,22 +56,34 @@ data class BulkVerifyResult(val verified: Int, val missingLessons: Int)
 object OwnerReviewRepository {
     private const val POLL_MS = 60_000L
 
+    /**
+     * نبضة «أعد الجلب الآن» بعد كل قرار أو فحص: كانت الشاشة تُبقي الدرس المحسوم
+     * بأزراره دقيقةً كاملة (دورة الاستطلاع)، ونتائج «فحص شامل» لا تظهر حتى حينها.
+     */
+    private val refreshTick = kotlinx.coroutines.flow.MutableStateFlow(0)
+
+    fun refresh() {
+        refreshTick.value += 1
+    }
+
     fun watchPending(): Flow<List<SuspiciousLessonReview>> = flow {
         while (true) {
-            emit(
-                runCatching {
-                    val items = MinbarAdminApi.get("/admin/suspicions").optJSONArray("items") ?: JSONArray()
-                    (0 until items.length()).mapNotNull { items.optJSONObject(it) }
-                        .map(SuspiciousLessonReview::fromJson)
-                }.getOrDefault(emptyList()),
-            )
-            delay(POLL_MS)
+            val tick = refreshTick.value
+            // الفشل العابر لا يُرسل قائمة فارغة («لا شبهات») والشبهات قائمة.
+            runCatching {
+                val items = MinbarAdminApi.get("/admin/suspicions").optJSONArray("items") ?: JSONArray()
+                (0 until items.length()).mapNotNull { items.optJSONObject(it) }
+                    .map(SuspiciousLessonReview::fromJson)
+            }.onSuccess { emit(it) }
+            kotlinx.coroutines.withTimeoutOrNull(POLL_MS) {
+                refreshTick.first { it != tick }
+            }
         }
     }.flowOn(Dispatchers.IO)
 
     /** يعيد الفحص كاملاً ويُرجع عدد الدروس المشبوهة. */
     suspend fun scanAll(): Int =
-        MinbarAdminApi.post("/admin/suspicions/scan").optInt("suspicious", 0)
+        MinbarAdminApi.post("/admin/suspicions/scan").optInt("suspicious", 0).also { refresh() }
 
     suspend fun bulkVerify(
         reviewIds: List<String>,
@@ -90,6 +102,7 @@ object OwnerReviewRepository {
             missing += result.optInt("missingLessons", 0)
             onProgress(verified, ids.size)
         }
+        refresh()
         return BulkVerifyResult(verified, missing)
     }
 
@@ -99,5 +112,6 @@ object OwnerReviewRepository {
             "/admin/suspicions/resolve",
             JSONObject().put("action", action).put("ids", JSONArray(listOf(review.id))),
         )
+        refresh()
     }
 }
