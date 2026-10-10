@@ -25,6 +25,10 @@ data class TrashedLesson(
     val daysLeft: Int
         get() = (((purgeAfterMs - System.currentTimeMillis()) / 86_400_000L) + 1)
             .coerceAtLeast(0L).toInt()
+
+    /** أيّامٌ منذ الحذف — الخادم لا يُتلف السلة تلقائياً، فلا عدّ تنازليّ يوهم بمهلة. */
+    val daysAgo: Int
+        get() = ((System.currentTimeMillis() - deletedAtMs) / 86_400_000L).coerceAtLeast(0L).toInt()
 }
 
 /**
@@ -38,10 +42,17 @@ object TrashRepository {
 
     private suspend fun fetchAll(): List<TrashedLesson> {
         val json = MinbarAdminApi.get("/admin/trash")
-        val categories = runCatching { AdminRepository.fetchCategories() }.getOrDefault(emptyList())
-            .associateBy({ it.id }, { it.name })
-        val subcategories = runCatching { AdminRepository.fetchSubcategories() }.getOrDefault(emptyList())
-            .associateBy({ it.id }, { it.name })
+        // الأقسام الحيّة لا تشمل المحذوفة: درسٌ حُذف مع قسمه كان يظهر بلا اسم قسم،
+        // فتُكمَل الأسماء من أقسام السلة نفسها.
+        fun org.json.JSONArray?.names(): Map<String, String> =
+            if (this == null) emptyMap()
+            else (0 until length()).mapNotNull { optJSONObject(it) }.associate { it.optString("id") to it.optString("name") }
+        val categories = json.optJSONArray("categories").names() +
+            runCatching { AdminRepository.fetchCategories() }.getOrDefault(emptyList())
+                .associateBy({ it.id }, { it.name })
+        val subcategories = json.optJSONArray("subcategories").names() +
+            runCatching { AdminRepository.fetchSubcategories() }.getOrDefault(emptyList())
+                .associateBy({ it.id }, { it.name })
         val transcripts = runCatching {
             val index = MinbarAdminApi.get("/v1/transcripts", auth = false).optJSONArray("items")
             (0 until (index?.length() ?: 0)).mapNotNull { index?.optJSONObject(it)?.optString("lessonId") }.toSet()
@@ -69,7 +80,9 @@ object TrashRepository {
         while (true) {
             // ⚠️ بلا `runCatching` كان أيّ خطأ شبكة أثناء الاستطلاع يُرمى داخل
             // `collectAsState` في الشاشة فينهار التطبيق (بخلاف بقيّة المستودعات).
-            emit(runCatching { fetchAll() }.getOrDefault(emptyList()))
+            // عند الفشل تبقى آخر قائمة معروضة: إرسال قائمة فارغة كان يُظهر
+            // «السلة فارغة» كاذبةً مع كلّ انقطاع عابر.
+            runCatching { fetchAll() }.onSuccess { emit(it) }
             delay(POLL_MS)
         }
     }.flowOn(Dispatchers.IO)
@@ -78,9 +91,9 @@ object TrashRepository {
         emit(runCatching { fetchAll().size }.getOrDefault(0))
     }
 
-    suspend fun restore(item: TrashedLesson) {
-        MinbarAdminApi.post("/admin/lessons/${item.id}/restore")
-    }
+    /** يعيد عدد ما استُعيد (الدرس وما أُرجع معه من أقسامه المحذوفة). */
+    suspend fun restore(item: TrashedLesson): Int =
+        MinbarAdminApi.post("/admin/lessons/${item.id}/restore").optInt("restored", 1)
 
     suspend fun purge(item: TrashedLesson) {
         MinbarAdminApi.post("/admin/lessons/${item.id}/purge")

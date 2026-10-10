@@ -1,0 +1,31 @@
+# ✅ فحص طلبات السحب في اللوحة: ترجمةٌ واختباراتٌ قبل الدمج.
+#
+# **لماذا؟** الدمجُ الذي يرفع versionCode ينشر إلى الاختبار المغلق، ولم يكن قبله
+# فحصٌ يترجم الشيفرة — وجلسات السحابة لا تترجم محلياً (الوسيط يمنع dl.google.com).
+# فكان أوّل من يكتشف خطأ ترجمةٍ هو سيرُ النشر نفسه.
+#
+# 🔐 بلا أسرار: لا توقيع ولا Play. `pull_request` لا `pull_request_target`.
+name: pr-check
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: الاختبارات
+        run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --no-daemon
+      - name: بناء نسخة التصحيح
+        run: ./gradlew :app:assembleDebug --no-daemon

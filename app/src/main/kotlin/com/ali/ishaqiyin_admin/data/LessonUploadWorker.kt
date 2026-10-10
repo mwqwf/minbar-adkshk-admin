@@ -228,15 +228,21 @@ class LessonUploadWorker(
                 )
                 // «النص المشروح» المرافق (إن أُرفق بالنموذج): يُنشر بعد إنشاء
                 // الدرس مباشرة. فشله لا يُفشل الدرس — المشرف يضيفه يدوياً.
+                // ⛔ كان الفشل يُكتب في السجلّ وحده فيضيع النصّ والصور بصمت ويظنّ
+                // المشرف أنّها نُشرت — صار يُذكر في إشعار الاكتمال نفسه.
+                var transcriptFailed = false
                 if (item.hasTranscript && lessonId.isNotEmpty()) {
                     runCatching { publishTranscript(item, lessonId) }
-                        .onFailure { Log.w(TAG, "transcript publish failed for $lessonId: $it") }
+                        .onFailure {
+                            transcriptFailed = true
+                            Log.w(TAG, "transcript publish failed for $lessonId: $it")
+                        }
                 }
                 UploadQueue.remove(item.id)
                 UploadQueue.setProgress(null)
                 // إشعار الاكتمال: المشرف أغلق الشاشة غالباً، فبلا هذا لا
                 // يعرف أنّ درسه وصل إلّا بالعودة إلى اللوحة.
-                notifyUploadDone(item)
+                notifyUploadDone(item, transcriptFailed)
                 // 🔋 ننسحب بعد كلّ درس مكتمل ونُعيد الإدراج: خدمة dataSync
                 // محكومة بستّ ساعات لكلّ 24، وحلقة تستنزف الطابور كلّه في
                 // تشغيلة واحدة كانت تحرق الميزانيّة دفعةً واحدة ثمّ يعود كلّ
@@ -687,8 +693,9 @@ class LessonUploadWorker(
         item.transcriptImagePaths.forEach { runCatching { File(it).delete() } }
     }
 
-    private fun notifyUploadDone(item: PendingUpload) {
-        val text = "اكتمل رفع: ${item.title.ifBlank { item.fileName }}"
+    private fun notifyUploadDone(item: PendingUpload, transcriptFailed: Boolean = false) {
+        val text = "اكتمل رفع: ${item.title.ifBlank { item.fileName }}" +
+            if (transcriptFailed) " — لكن تعذّر نشر نصّه المشروح، أضفه من «إدارة المحتوى»." else ""
         val remaining = UploadQueue.liveCount()
         notifyUpload(
             item = item,

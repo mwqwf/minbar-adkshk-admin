@@ -839,7 +839,7 @@ private fun ActionsGrid(isOwner: Boolean, nav: NavHostController) {
                     ),
                     ActionSpec(
                         Icons.Filled.RestoreFromTrash, c.danger, "سلة المحذوفات",
-                        "استعادة الدروس المحذوفة (30 يوماً)", trashCount, Routes.TRASH,
+                        "استعادة الدروس والأقسام المحذوفة", trashCount, Routes.TRASH,
                     ),
                 ),
             ),

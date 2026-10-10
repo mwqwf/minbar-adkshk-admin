@@ -62,8 +62,8 @@ import java.util.Locale
 
 /**
  * 🗑️ «سلة المحذوفات» — كل درس حُذف (منفرداً أو بحذف قسم كامل) يبقى هنا
- * 30 يوماً بملفه الصوتي ونصّه المشروح: استمع للتأكد، ثم استعد بنقرة أو
- * احذف نهائياً. ما تجاوز مهلته يُنظَّف تلقائياً كل ليلة.
+ * بملفه الصوتي ونصّه المشروح حتى يُستعاد أو يُتلفه المالك: استمع للتأكد،
+ * ثم استعد بنقرة. (لا إتلاف تلقائيّ على الخادم — فالشارة تعرض عمر الحذف لا مهلة.)
  */
 @Composable
 fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
@@ -76,13 +76,18 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
     var purging by remember { mutableStateOf<TrashedLesson?>(null) }
     var emptying by remember { mutableStateOf(false) }
 
-    val items by remember { TrashRepository.watchAll() }
+    // ما استُعيد أو أُتلف يُخفى فوراً: كانت البطاقة تبقى حتى الاستطلاع التالي
+    // (عشرون ثانية) فيظنّ المشرف أنّ الاستعادة لم تقع فيكرّرها.
+    var hidden by remember { mutableStateOf(emptySet<String>()) }
+    val allItems by remember { TrashRepository.watchAll() }
         .collectAsState(initial = emptyList())
+    val items = allItems.filter { it.id !in hidden }
 
     // 🗂️ الأقسام المحذوفة: تبويب ثانٍ بجانب الدروس — القسم صار يُنقل إلى
     // السلة كالدرس تماماً، فحذفٌ بالخطأ يعود بنقرة بلا إعادة بناء يدويّة.
-    val sections by remember { DeletedSectionsRepository.watchAll() }
+    val allSections by remember { DeletedSectionsRepository.watchAll() }
         .collectAsState(initial = emptyList())
+    val sections = allSections.filter { it.entryId !in hidden }
     var tab by remember { mutableStateOf(0) }
     var restoringSection by remember { mutableStateOf<TrashedSection?>(null) }
     var purgingSection by remember { mutableStateOf<TrashedSection?>(null) }
@@ -110,11 +115,12 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
         return listOf(catName, subName).filter(String::isNotBlank).joinToString(" ← ")
     }
 
-    fun run(doneMsg: String, action: suspend () -> Unit) {
+    fun run(doneMsg: String, hide: String = "", action: suspend () -> Unit) {
         busy = true
         scope.launch {
             try {
                 action()
+                if (hide.isNotEmpty()) hidden = hidden + hide
                 if (doneMsg.isNotEmpty()) snack(doneMsg)
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 // ⛔ الإلغاء ليس خطأً: ابتلاعه كان يعرض «تعذّر تنفيذ العمليّة»
@@ -137,7 +143,13 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
             onDismiss = { restoringSection = null },
             onConfirm = {
                 restoringSection = null
-                run("استُعيد القسم. ✅") { DeletedSectionsRepository.restore(item) }
+                run("", hide = item.entryId) {
+                    val n = DeletedSectionsRepository.restore(item)
+                    snack(
+                        if (n > 1) "استُعيد القسم ومعه ${n - 1} من فرعيّاته ودروسه. ✅"
+                        else "استُعيد القسم. ✅",
+                    )
+                }
             },
         )
     }
@@ -151,7 +163,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
             onDismiss = { purgingSection = null },
             onConfirm = {
                 purgingSection = null
-                run("حُذف القسم نهائياً.") { DeletedSectionsRepository.purge(item) }
+                run("حُذف القسم نهائياً.", hide = item.entryId) { DeletedSectionsRepository.purge(item) }
             },
         )
     }
@@ -169,7 +181,13 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                 // البطاقة تختفي مع الوثيقة فيختفي شريط التحكّم، والصوت يواصل
                 // التشغيل بلا وسيلة إيقاف — فيُوقَف قبل زوالها.
                 if (player.playingId == item.id) player.stop()
-                run("استُعيد الدرس. ✅") { TrashRepository.restore(item) }
+                run("", hide = item.id) {
+                    val n = TrashRepository.restore(item)
+                    snack(
+                        if (n > 1) "استُعيد الدرس وأُعيد معه قسمه المحذوف. ✅"
+                        else "استُعيد الدرس. ✅",
+                    )
+                }
             },
         )
     }
@@ -184,7 +202,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
             onConfirm = {
                 purging = null
                 if (player.playingId == item.id) player.stop()
-                run("حُذف نهائياً.") { TrashRepository.purge(item) }
+                run("حُذف نهائياً.", hide = item.id) { TrashRepository.purge(item) }
             },
         )
     }
@@ -300,8 +318,8 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        "السلة فارغة.\nكل درس تحذفه يبقى هنا 30 يوماً قابلاً " +
-                            "للاستعادة قبل حذفه النهائي تلقائياً.",
+                        "السلة فارغة.\nكل درس تحذفه يبقى هنا قابلاً للاستعادة " +
+                            "حتى يحذفه المالك نهائياً.",
                         textAlign = TextAlign.Center,
                         lineHeight = 26.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -316,7 +334,11 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
             ) {
                 item {
                     Text(
-                        "الدروس المحذوفة تبقى 30 يوماً ثم تُحذف نهائياً تلقائياً.",
+                        if (isOwner) {
+                            "الدروس المحذوفة تبقى هنا حتى تستعيدها أو تحذفها نهائياً."
+                        } else {
+                            "استعد ما حُذف بالخطأ بنقرة. الحذف النهائي للمالك وحده."
+                        },
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.fillMaxWidth(),
@@ -383,7 +405,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                                         .padding(horizontal = 8.dp, vertical = 3.dp),
                                 ) {
                                     Text(
-                                        arabicCount(item.daysLeft, "يوم واحد", "يومان", "أيام", "يوماً"),
+                                        deletedAgoLabel(item.daysAgo),
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = deadline,
@@ -440,7 +462,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                                     Spacer(Modifier.size(4.dp))
                                     Text("استعادة")
                                 }
-                                OutlinedButton(
+                                if (isOwner) OutlinedButton(
                                     onClick = { purging = item },
                                     enabled = !busy,
                                     modifier = Modifier.weight(1f),
@@ -467,8 +489,8 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            "لا أقسام محذوفة.\nكل قسم تحذفه يبقى هنا 30 يوماً " +
-                                "قابلاً للاستعادة بمعرّفه الأصلي.",
+                            "لا أقسام محذوفة.\nكل قسم تحذفه يبقى هنا قابلاً " +
+                                "للاستعادة مع فرعيّاته ودروسه.",
                             textAlign = TextAlign.Center,
                             lineHeight = 26.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -483,8 +505,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                 ) {
                     item {
                         Text(
-                            "استعادة القسم تعيده بمعرّفه الأصلي، فيرجع إليه كل درس " +
-                                "تستعيده من تبويب الدروس بلا نقل يدويّ.",
+                            "استعادة القسم تعيده مع ما حُذف معه من فرعيّات ودروس.",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.fillMaxWidth(),
@@ -530,13 +551,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                                             .padding(horizontal = 8.dp, vertical = 3.dp),
                                     ) {
                                         Text(
-                                            arabicCount(
-                                                item.daysLeft,
-                                                "يوم واحد",
-                                                "يومان",
-                                                "أيام",
-                                                "يوماً",
-                                            ),
+                                            deletedAgoLabel(item.daysAgo),
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = deadline,
@@ -582,7 +597,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
                                         Spacer(Modifier.size(4.dp))
                                         Text("استعادة")
                                     }
-                                    OutlinedButton(
+                                    if (isOwner) OutlinedButton(
                                         onClick = { purgingSection = item },
                                         enabled = !busy,
                                         modifier = Modifier.weight(1f),
@@ -605,3 +620,7 @@ fun TrashScreen(isOwner: Boolean, onBack: () -> Unit) {
         }
     }
 }
+
+/** «اليوم» / «منذ يوم» / «منذ يومين» / «منذ ن أيام». */
+private fun deletedAgoLabel(days: Int): String =
+    if (days <= 0) "اليوم" else "منذ " + arabicCount(days, "يوم", "يومين", "أيام", "يوماً")

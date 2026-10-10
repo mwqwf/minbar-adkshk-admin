@@ -113,16 +113,6 @@ private val editorImagesSaver = listSaver<SnapshotStateList<EditorImage>, String
     },
 )
 
-/** الصور المنتظرة للقصّ تعبر إعادة الإنشاء كذلك — وإلّا ضاعت بلا أثر. */
-private val pendingUrisSaver = listSaver<SnapshotStateList<Uri>, String>(
-    save = { list -> list.map { it.toString() } },
-    restore = { saved ->
-        mutableStateListOf<Uri>().apply {
-            saved.filter { it.isNotEmpty() }.forEach { add(Uri.parse(it)) }
-        }
-    },
-)
-
 /**
  * 📖 محرر «النص المشروح» لدرس من شاشة الإدارة: نص المتن + اسم الكتاب +
  * نطاق المقطع + صور صفحات الكتاب (حتى 4) — بقصّ كل صورة، وترتيب صريح
@@ -232,12 +222,14 @@ fun TranscriptEditorDialog(
         loading = false
     }
 
-    // «القصّ أثناء المعاينة»: كل صورة تُختار تمرّ بشاشة القصّ قبل إدراجها؛
-    // الإلغاء داخل الشاشة يعني «أدرِجها كما هي».
-    val pendingNew = rememberSaveable(saver = pendingUrisSaver) {
-        mutableStateListOf<Uri>()
+    // ✂️ القصّ اختياريّ لا إجباريّ (تبسيط 2026-10-10): كانت كلّ صورة — ولقطة
+    // الشاشة خاصّة — تفتح شاشة القصّ قبل إدراجها، فإرفاق أربع صفحات = أربع
+    // شاشات. الآن تُدرج فوراً، ومن أراد القصّ ضغط ✂ تحت صورتها.
+    fun addNew(uris: List<Uri>) {
+        val remaining = (TranscriptsRepository.MAX_IMAGES - images.size).coerceAtLeast(0)
+        uris.take(remaining).forEach { images.add(EditorImage(local = it)) }
+        if (uris.size > remaining) snack("الحد الأقصى ${TranscriptsRepository.MAX_IMAGES} صور.")
     }
-    var cropActive by rememberSaveable { mutableStateOf(false) }
 
     fun cropOptions(uri: Uri) = CropImageContractOptions(
         uri,
@@ -253,43 +245,16 @@ fun TranscriptEditorDialog(
     )
 
     val cropper = rememberLauncherForActivityResult(CropImageContract()) { result ->
-        if (cropIndex >= 0) {
-            val index = cropIndex
-            cropIndex = -1
-            if (result.isSuccessful && index in images.indices) {
-                result.uriContent?.let { images[index] = EditorImage(local = it) }
-            }
-            return@rememberLauncherForActivityResult
-        }
-        // نتيجة بلا صورة منتظِرة نتيجةٌ لا صاحب لها — تُهمَل بدل إدراجها.
-        val source = pendingNew.removeFirstOrNull()
-        if (source == null) {
-            cropActive = false
-            return@rememberLauncherForActivityResult
-        }
-        val final = if (result.isSuccessful) (result.uriContent ?: source) else source
-        if (images.size < TranscriptsRepository.MAX_IMAGES) {
-            images.add(EditorImage(local = final))
-        }
-        cropActive = false
-    }
-
-    LaunchedEffect(pendingNew.size, cropActive) {
-        if (!cropActive && pendingNew.isNotEmpty()) {
-            cropActive = true
-            cropper.launch(cropOptions(pendingNew.first()))
+        val index = cropIndex
+        cropIndex = -1
+        if (result.isSuccessful && index in images.indices) {
+            result.uriContent?.let { images[index] = EditorImage(local = it) }
         }
     }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetMultipleContents(),
-    ) { uris ->
-        val remaining = TranscriptsRepository.MAX_IMAGES - images.size - pendingNew.size
-        pendingNew.addAll(uris.take(remaining.coerceAtLeast(0)))
-        if (uris.size > remaining) {
-            snack("الحد الأقصى ${TranscriptsRepository.MAX_IMAGES} صور.")
-        }
-    }
+    ) { uris -> addNew(uris) }
 
     fun crop(index: Int) {
         val local = images[index].local ?: run {
@@ -492,23 +457,27 @@ fun TranscriptEditorDialog(
                         }
                     }
                     ClipboardImageSuggestion(
-                        enabled = !saving &&
-                            images.size + pendingNew.size < TranscriptsRepository.MAX_IMAGES,
-                        onImage = { uri -> pendingNew.add(uri) },
+                        enabled = !saving && images.size < TranscriptsRepository.MAX_IMAGES,
+                        onImage = { uri -> addNew(listOf(uri)) },
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
-                    // 📸 اقتراح آخر لقطة شاشة (≤ دقيقتين) فوق شبكة الصور
-                    // مباشرة: كثيراً ما يصوّر المشرف صفحة الكتاب أو خطأً قبل
-                    // فتح المحرّر. تدخل من مسار الإضافة الوحيد (pendingNew ⇒
-                    // شاشة القصّ ⇒ الإدراج) وتحترم سقف الصور نفسه.
+                    // 📸 اقتراح آخر لقطة شاشة (≤ عشر دقائق) فوق شبكة الصور
+                    // مباشرة: كثيراً ما يصوّر المشرف صفحة الكتاب قبل فتح
+                    // المحرّر. تُدرج بنقرة (addNew) وتحترم سقف الصور نفسه.
                     RecentScreenshotChip(
-                        enabled = !saving &&
-                            images.size + pendingNew.size <
-                            TranscriptsRepository.MAX_IMAGES,
-                        onPick = { uri -> pendingNew.add(uri) },
+                        enabled = !saving && images.size < TranscriptsRepository.MAX_IMAGES,
+                        onPick = { uri -> addNew(listOf(uri)) },
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
                     if (images.isNotEmpty()) {
+                        if (images.any { it.isLocal }) {
+                            Text(
+                                "اضغط ✂ تحت الصورة لقصّها إن أردت — أو احفظ مباشرةً.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                        }
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             items(images.size) { i ->
                                 val image = images[i]
