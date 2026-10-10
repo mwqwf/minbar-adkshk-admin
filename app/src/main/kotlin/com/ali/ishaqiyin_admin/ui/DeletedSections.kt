@@ -27,6 +27,10 @@ data class TrashedSection(
     val daysLeft: Int
         get() = (((purgeAfterMs - System.currentTimeMillis()) / 86_400_000L) + 1)
             .coerceAtLeast(0L).toInt()
+
+    /** أيّامٌ منذ الحذف — الخادم لا يُتلف السلة تلقائياً، فلا عدّ تنازليّ يوهم بمهلة. */
+    val daysAgo: Int
+        get() = ((System.currentTimeMillis() - deletedAtMs) / 86_400_000L).coerceAtLeast(0L).toInt()
 }
 
 /**
@@ -65,7 +69,7 @@ object DeletedSectionsRepository {
 
     fun watchAll(): Flow<List<TrashedSection>> = flow {
         while (true) {
-            emit(runCatching { fetchAll() }.getOrDefault(emptyList()))
+            runCatching { fetchAll() }.onSuccess { emit(it) }
             delay(POLL_MS)
         }
     }.flowOn(Dispatchers.IO)
@@ -73,9 +77,9 @@ object DeletedSectionsRepository {
     private fun table(item: TrashedSection) =
         if (item.kind == "category") "categories" else "subcategories"
 
-    suspend fun restore(item: TrashedSection) {
-        MinbarAdminApi.post("/admin/${table(item)}/${item.docId}/restore")
-    }
+    /** يعيد عدد ما استُعيد: القسم مع فرعيّاته ودروسه التي حُذفت معه. */
+    suspend fun restore(item: TrashedSection): Int =
+        MinbarAdminApi.post("/admin/${table(item)}/${item.docId}/restore").optInt("restored", 1)
 
     suspend fun purge(item: TrashedSection) {
         MinbarAdminApi.post("/admin/${table(item)}/${item.docId}/purge")

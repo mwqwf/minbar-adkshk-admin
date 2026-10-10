@@ -35,6 +35,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -134,6 +135,24 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
             )
+            // معاينة ما وصل: يرى المشرف الصور التي سيُرفقها قبل أن يختار الدرس.
+            if (payload.images.isNotEmpty()) {
+                androidx.compose.foundation.lazy.LazyRow(
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(bottom = 8.dp),
+                ) {
+                    items(payload.images.size) { i ->
+                        coil3.compose.AsyncImage(
+                            model = payload.images[i],
+                            contentDescription = "صورة ${i + 1}",
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                            modifier = Modifier.size(64.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                        )
+                    }
+                }
+            }
             AdminTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -179,22 +198,26 @@ fun TranscriptIntakeScreen(onBack: () -> Unit) {
             // الرئيسي أو الفرعي — فالعناوين الرقمية تتمايز بقسمها.
             val tokens = query.trim().lowercase().split(Regex("\\s+"))
                 .filter { it.isNotEmpty() }
+            // 🕘 بلا بحث تظهر أحدث الدروس مباشرةً (تبسيط 2026-10-10): الغالب أنّ
+            // المشرف يشرح درساً رفعه للتوّ، فيكفيه نقرة بلا كتابة.
             val matches = if (tokens.isEmpty()) {
-                emptyList()
+                lessons.take(15)
             } else {
                 lessons.filter { lesson ->
                     val haystack = "${lesson.title} ${sectionPath(lesson)}".lowercase()
                     tokens.all { haystack.contains(it) }
                 }.take(25)
             }
-            if (tokens.isEmpty()) {
+            if (tokens.isEmpty() && matches.isNotEmpty()) {
                 Text(
-                    "اكتب رقم الدرس أو أي كلمة من عنوانه أو قسمه.",
-                    modifier = Modifier.fillMaxWidth().padding(24.dp),
-                    textAlign = TextAlign.Center,
+                    "أحدث الدروس — أو ابحث بالأعلى:",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
                 )
-            } else if (matches.isEmpty()) {
+            }
+            if (matches.isEmpty()) {
                 Text(
                     "لا نتائج — جرّب رقم الدرس مع اسم قسمه، مثل: «3 الفقه».",
                     modifier = Modifier.fillMaxWidth().padding(24.dp),

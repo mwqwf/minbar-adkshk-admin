@@ -35,14 +35,11 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
@@ -60,16 +57,6 @@ import com.canhub.cropper.CropImageContract
 import com.canhub.cropper.CropImageContractOptions
 import com.canhub.cropper.CropImageOptions
 import kotlinx.coroutines.launch
-
-/** الصور المنتظرة للقصّ تعبر إعادة إنشاء النشاط — وإلّا ضاعت بلا أثر. */
-private val pendingCropUrisSaver = listSaver<SnapshotStateList<Uri>, String>(
-    save = { list -> list.map { it.toString() } },
-    restore = { saved ->
-        mutableStateListOf<Uri>().apply {
-            saved.filter { it.isNotEmpty() }.forEach { add(Uri.parse(it)) }
-        }
-    },
-)
 
 /**
  * 🖼️ محرّر صور صفحات الكتاب — يُستعمل في كل نماذج «ساهم بالنص»:
@@ -92,12 +79,6 @@ fun AdminTranscriptImagesEditor(
     // تُضاف صورةً جديدة إلى جانب أصلها بدل أن تستبدله.
     var cropIndex by rememberSaveable { mutableIntStateOf(-1) }
     var merging by remember { mutableStateOf(false) }
-    // «القصّ أثناء المعاينة»: كل صورة تُختار تمرّ بشاشة القصّ **قبل** إدراجها
-    // — لا اختيار ثم قصّ لاحق. الإلغاء داخل شاشة القصّ يعني «أدرِجها كما هي».
-    val pendingNew = rememberSaveable(saver = pendingCropUrisSaver) {
-        mutableStateListOf<Uri>()
-    }
-    var cropActive by rememberSaveable { mutableStateOf(false) }
     // ↩️ إزالة صورة قبل الحفظ فعل محلّيّ رخيص: تقع فوراً ويُعرض «تراجع»
     // عشر ثوانٍ يعيد الصورة إلى **موضعها نفسه** في الترتيب. حوار التأكيد
     // السابق كان يُقرأ مرّة ثم يُتخطّى بالعادة فلا يمنع خطأً.
@@ -117,46 +98,24 @@ fun AdminTranscriptImagesEditor(
     )
 
     val cropper = rememberLauncherForActivityResult(CropImageContract()) { result ->
-        if (cropIndex >= 0) {
-            // إعادة قصّ صورة مدرجة.
-            val index = cropIndex
-            cropIndex = -1
-            if (result.isSuccessful && index in images.indices) {
-                result.uriContent?.let { images[index] = it }
-            }
-            return@rememberLauncherForActivityResult
+        val index = cropIndex
+        cropIndex = -1
+        if (result.isSuccessful && index in images.indices) {
+            result.uriContent?.let { images[index] = it }
         }
-        // قصّ صورة جديدة قبل الإدراج: الناتج المقصوص أو الأصل عند الإلغاء.
-        // نتيجة بلا صورة منتظِرة نتيجةٌ لا صاحب لها — تُهمَل بدل إدراجها.
-        val source = pendingNew.removeFirstOrNull()
-        if (source == null) {
-            cropActive = false
-            return@rememberLauncherForActivityResult
-        }
-        val final = if (result.isSuccessful) (result.uriContent ?: source) else source
-        if (images.size < TranscriptsRepository.MAX_IMAGES) {
-            images.add(final)
-        }
-        cropActive = false
     }
 
-    // سلسلة القصّ: صورة تلو أخرى حتى تفرغ قائمة المنتظرات.
-    LaunchedEffect(pendingNew.size, cropActive) {
-        if (!cropActive && pendingNew.isNotEmpty()) {
-            cropActive = true
-            cropper.launch(cropOptions(pendingNew.first()))
-        }
+    // ✂️ القصّ اختياريّ (تبسيط 2026-10-10): كانت كلّ صورة تفتح شاشة القصّ قبل
+    // إدراجها، فأربع صفحات = أربع شاشات. الآن تُدرج فوراً، والقصّ بزرّ ✂ تحتها.
+    fun addNew(uris: List<Uri>) {
+        val remaining = (TranscriptsRepository.MAX_IMAGES - images.size).coerceAtLeast(0)
+        uris.take(remaining).forEach { images.add(it) }
+        if (uris.size > remaining) onError("الحد الأقصى ${TranscriptsRepository.MAX_IMAGES} صور.")
     }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetMultipleContents(),
-    ) { uris ->
-        val remaining = TranscriptsRepository.MAX_IMAGES - images.size - pendingNew.size
-        pendingNew.addAll(uris.take(remaining.coerceAtLeast(0)))
-        if (uris.size > remaining) {
-            onError("الحد الأقصى ${TranscriptsRepository.MAX_IMAGES} صور.")
-        }
-    }
+    ) { uris -> addNew(uris) }
 
     /** إزالة فوريّة مع تراجع يُرجع الصورة إلى موضعها بالضبط. */
     fun removeImage(index: Int) {
@@ -191,17 +150,16 @@ fun AdminTranscriptImagesEditor(
         }
     }
     ClipboardImageSuggestion(
-        enabled = enabled && images.size + pendingNew.size < TranscriptsRepository.MAX_IMAGES,
-        onImage = { uri -> pendingNew.add(uri) },
+        enabled = enabled && images.size < TranscriptsRepository.MAX_IMAGES,
+        onImage = { uri -> addNew(listOf(uri)) },
         modifier = Modifier.padding(bottom = 8.dp),
     )
     // 📸 فوق شبكة الصور تماماً كاقتراح الحافظة، وبنفس شرط السقف: اللقطة
-    // تدخل من مسار الإضافة الوحيد (pendingNew ⇒ شاشة القصّ ⇒ الإدراج).
+    // تُدرج بنقرة واحدة (addNew).
     if (showScreenshotChip) {
         RecentScreenshotChip(
-            enabled = enabled &&
-                images.size + pendingNew.size < TranscriptsRepository.MAX_IMAGES,
-            onPick = { uri -> pendingNew.add(uri) },
+            enabled = enabled && images.size < TranscriptsRepository.MAX_IMAGES,
+            onPick = { uri -> addNew(listOf(uri)) },
             modifier = Modifier.padding(bottom = 8.dp),
         )
     }
