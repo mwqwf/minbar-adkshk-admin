@@ -76,7 +76,9 @@ import com.ali.ishaqiyin_admin.data.chatTypeForMime
 import com.ali.ishaqiyin_admin.data.isVideoMime
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.drop
@@ -506,11 +508,14 @@ private fun ShareDestinationSheets(nav: NavHostController) {
     if (incoming.isEmpty()) return
 
     val preparing by ShareIntake.preparing.collectAsState()
-    val hasAudio = remember(incoming) {
-        incoming.any { context.shareContentType(it).startsWith("audio/") }
-    }
-    val hasImage = remember(incoming) {
-        incoming.any { context.shareContentType(it).startsWith("image/") }
+    // `shareContentType` قد يسأل `contentResolver` — كان داخل remember على
+    // الخيط الرئيسي؛ يُحسب الآن على IO وتُحدَّث الحالة.
+    var hasAudio by remember { mutableStateOf(false) }
+    var hasImage by remember { mutableStateOf(false) }
+    LaunchedEffect(incoming) {
+        val types = withContext(Dispatchers.IO) { incoming.map { context.shareContentType(it) } }
+        hasAudio = types.any { it.startsWith("audio/") }
+        hasImage = types.any { it.startsWith("image/") }
     }
     val label = if (incoming.size == 1) incoming.first().name else filesCountLabel(incoming.size)
 

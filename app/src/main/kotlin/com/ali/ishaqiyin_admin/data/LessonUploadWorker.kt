@@ -571,6 +571,10 @@ class LessonUploadWorker(
                 is SocketException,
                 is SSLException,
                 -> return true
+                // ⛔ ردّ الخادم المؤقّت (5xx/429/408) كان يُعدّ فشلاً «غير شبكيّ»
+                // فيُركن الدرس بعد خمس محاولات مع أنّ العطل عابر لا في الملفّ.
+                is com.ali.ishaqiyin_admin.core.MinbarAdminApi.ApiException ->
+                    if (current.code in 500..599 || current.code == 429 || current.code == 408) return true
                 else -> Unit
             }
             cause = current.cause
@@ -780,7 +784,8 @@ class LessonUploadWorker(
             return
         }
         val builder = NotificationCompat.Builder(applicationContext, AdminChannels.ALERTS)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            // أيقونة الشريط يجب أن تكون أحاديّة اللون: mipmap الملوّن يظهر مربّعاً أبيض.
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(contentTitle)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
@@ -813,7 +818,7 @@ class LessonUploadWorker(
             else -> title
         }
         val notification = NotificationCompat.Builder(applicationContext, UPLOAD_CHANNEL)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("رفع درس صوتي")
             .setContentText(text)
             .setProgress(100, percent, title == null)

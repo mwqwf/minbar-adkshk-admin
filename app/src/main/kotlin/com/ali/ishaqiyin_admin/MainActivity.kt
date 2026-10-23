@@ -13,11 +13,13 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.ali.ishaqiyin_admin.ui.AdminApp
 import com.ali.ishaqiyin_admin.ui.MinbarAdminTheme
 import com.ali.ishaqiyin_admin.ui.NotificationRoute
 import com.ali.ishaqiyin_admin.ui.ShareIntake
-import com.ali.ishaqiyin_admin.util.sharedAudioFrom
+import com.ali.ishaqiyin_admin.util.sharedAudioFromIo
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(
@@ -92,7 +94,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun captureShare(intent: Intent?) {
-        ShareIntake.add(sharedAudioFrom(intent))
+        // استخراج الملفّات يستعلم `contentResolver` (اسم وحجم) — كان على الخيط
+        // الرئيسي. تُنسخ النيّة قبل مسح `EXTRA_STREAM` أدناه ثم تُقرأ على IO.
+        intent?.let { Intent(it) }?.let { snapshot ->
+            lifecycleScope.launch { ShareIntake.add(sharedAudioFromIo(snapshot)) }
+        }
         // ⚠️ النيّة تُحفظ مع النشاط: بلا مسح `EXTRA_STREAM` كان كلّ تدوير للشاشة
         // يعيد إدراج الملفّات نفسها (تعود ورقة الوجهات بعد إغلاقها أو استهلاكها).
         runCatching { intent?.removeExtra(Intent.EXTRA_STREAM) }

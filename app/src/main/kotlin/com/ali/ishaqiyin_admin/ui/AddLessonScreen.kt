@@ -72,6 +72,7 @@ import com.ali.ishaqiyin_admin.data.Category
 import com.ali.ishaqiyin_admin.data.LessonUploadWorker
 import com.ali.ishaqiyin_admin.data.NetworkMonitor
 import com.ali.ishaqiyin_admin.data.PendingUpload
+import com.ali.ishaqiyin_admin.data.arabicReason
 import com.ali.ishaqiyin_admin.data.Subcategory
 import com.ali.ishaqiyin_admin.data.UploadQueue
 import com.ali.ishaqiyin_admin.util.AudioMerger
@@ -214,6 +215,18 @@ private val transcriptImagesSaver = listSaver<SnapshotStateList<Uri>, String>(
         }
     },
 )
+
+/**
+ * سبب فشل التجهيز بالعربية: كان نصّ الاستثناء الإنجليزي الخام يُعرض للمشرف.
+ * الحالة الغالبة انتهاءُ إذن الوصول إلى ملفٍّ اختير قبل إعادة إنشاء النشاط.
+ */
+private fun Throwable.prepareFailureReason(): String {
+    val chain = generateSequence(this) { it.cause }.take(8)
+    val deniedAccess = chain.any {
+        it is SecurityException || it.message.orEmpty().contains("Permission Denial", ignoreCase = true)
+    }
+    return if (deniedAccess) "انتهى إذن الوصول إلى الملف — أعد اختياره." else arabicReason()
+}
 
 /**
  * اقتراح العنوان التالي في سلسلة مرقّمة: عنوان منتهٍ برقم (عربيّ أو
@@ -359,6 +372,9 @@ fun AddLessonScreen(onBack: () -> Unit) {
     // 🛡️ سباق الاستعادة/الحفظ: أثر الحفظ قد ينتهي (delay 600ms) قبل انتهاء
     // قراءة المسودة فيكتب null فوقها ويمحوها. لا كتابة قبل انتهاء المحاولة.
     var draftChecked by rememberSaveable { mutableStateOf(false) }
+    // العنوان الذي وضعه النموذج بنفسه بعد نجاح الإدراج (null = لا إدراج بعد):
+    // عنوانٌ مقترح + قسمٌ باقٍ ليسا عملاً يخشى ضياعه فلا يُحفظان مسودةً.
+    var autoTitle by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         try {
             val raw = withContext(Dispatchers.IO) { AppPrefs.addLessonDraft }
@@ -399,7 +415,12 @@ fun AddLessonScreen(onBack: () -> Unit) {
         val empty = title.isBlank() && categoryId == null && subcategoryId == null &&
             transcriptText.isBlank() && transcriptBookTitle.isBlank() &&
             transcriptSourceRef.isBlank()
-        val payload = if (empty) {
+        // ⛔ بعد نجاح الإدراج كان هذا الأثر يعيد كتابة (العنوان المقترح + القسم)
+        // فيظهر «استُعيدت مسودة غير مكتملة» عند كلّ فتح للشاشة.
+        val autoOnly = autoTitle != null && title == autoTitle && files.isEmpty() &&
+            transcriptText.isBlank() && transcriptBookTitle.isBlank() &&
+            transcriptSourceRef.isBlank()
+        val payload = if (empty || autoOnly) {
             null
         } else {
             JSONObject()
@@ -521,7 +542,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
             // سواه) — وهو نفسه ما يَعِد به نصّ الزرّ، فلا يُقصّ ما لم يُعلَن قصّه.
             val cap = if (multiMode == MODE_MERGE) AudioMerger.maxFiles else BATCH_MAX_FILES
             if (combined.size > cap) {
-                message = "الحدّ الأقصى $cap ملفّاً في الدفعة — أُبقي أوّلها."
+                message = "الحدّ الأقصى ${filesCountLabel(cap)} في الدفعة — أُبقي أوّلها."
                 isError = true
             } else {
                 message = ""
@@ -745,6 +766,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 // التالي بزيادة رقمه، وهو الشكل الغالب لدروس المنبر.
                 val suggestion = nextTitleSuggestion(snapshotTitle)
                 title = suggestion
+                autoTitle = suggestion
                 files.clear()
                 // ⛔ النيّة تُنسى مع الملفّات: بقاؤها على «الدمج» كانت تجعل
                 // **كلّ** اختيار لاحق يمضي بلا سؤال — فأوّل رفع مدموج كان
@@ -795,7 +817,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                         e.message ?: "تعذّر فكّ أحد الملفات الصوتية."
                     is Mp3FormatException ->
                         "تعذّر دمج الملفات — أحدها ليس ملفاً صوتياً سليماً."
-                    else -> "تعذّر تجهيز الدرس: ${e.message ?: e}"
+                    else -> "تعذّر تجهيز الدرس: ${e.prepareFailureReason()}"
                 }
                 isError = true
             }
@@ -969,6 +991,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 batchTitles.clear()
                 multiMode = ""
                 title = ""
+                autoTitle = ""
                 featured = false
                 featuredUntil = null
                 featuredLabel = ""
@@ -1018,7 +1041,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 throw cancel
             } catch (e: Exception) {
                 queuing = false
-                message = "تعذّر تجهيز الدروس: ${e.message ?: e}"
+                message = "تعذّر تجهيز الدروس: ${e.prepareFailureReason()}"
                 isError = true
             } finally {
                 // 🔓 فكّ الحجز في كلّ المخارج — ومنها إلغاء الكوروتين بمغادرة
@@ -1109,7 +1132,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                 // التسجيل (m4a) صار يقبل الدمج كأي صيغة أخرى: يُلحق بالقائمة
                 // بدل أن يمحوها — سجّل مقاطع متتابعة أو اخلطها بملفات مختارة.
                 if (files.size >= addLimit) {
-                    message = "الحد الأقصى $addLimit ملفات — لم يُضف التسجيل."
+                    message = "الحد الأقصى ${filesCountLabel(addLimit)} — لم يُضف التسجيل."
                     isError = true
                 } else {
                     files.add(
@@ -1231,7 +1254,7 @@ fun AddLessonScreen(onBack: () -> Unit) {
                                     "بالترتيب أدناه (وهو ترتيب ظهورها في " +
                                     "التطبيق) — والعناوين من أسماء الملفّات."
                             } else {
-                                "ستُدمج ${filesCountLabel(files.size)} بالترتيب أدناه في درس واحد " +
+                                "سيُدمج ${filesCountLabel(files.size)} بالترتيب أدناه في درس واحد " +
                                     "متصل — استعمل الأسهم لإعادة الترتيب."
                             },
                             fontSize = 13.sp,

@@ -36,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -96,7 +97,8 @@ fun ManageAllScreen(onBack: () -> Unit) {
     var allLessons by remember { mutableStateOf<List<Lesson>?>(null) }
     var loading by remember { mutableStateOf(true) }
     var treeError by remember { mutableStateOf("") }
-    var query by remember { mutableStateOf("") }
+    // rememberSaveable: نصّ البحث كان يضيع بتدوير الشاشة.
+    var query by rememberSaveable { mutableStateOf("") }
     var reload by remember { mutableIntStateOf(0) }
     var pending by remember { mutableStateOf<PendingAction?>(null) }
     // ⛔ فشل الجلب كان يترك القوائم فارغة، فيحسب حوار الحذف التعاقبيّ «0 قسماً
@@ -105,8 +107,16 @@ fun ManageAllScreen(onBack: () -> Unit) {
     var scopeKnown by remember { mutableStateOf(false) }
 
     // التصفّح: لا شيء مفتوح = عرض الأقسام الرئيسيّة.
-    var openCategory by remember { mutableStateOf<Category?>(null) }
-    var openSub by remember { mutableStateOf<Subcategory?>(null) }
+    // يُحفظ المعرّف النصّي (ينجو من التدوير) ويُشتقّ الكائن من القوائم —
+    // كان الكائن في remember فيعود المشرف إلى الجذر مع كلّ تدوير.
+    var openCategoryId by rememberSaveable { mutableStateOf<String?>(null) }
+    var openSubId by rememberSaveable { mutableStateOf<String?>(null) }
+    val openCategory = remember(categories, openCategoryId) {
+        categories.firstOrNull { it.id == openCategoryId }
+    }
+    val openSub = remember(subcategories, openSubId) {
+        subcategories.firstOrNull { it.id == openSubId }
+    }
     var browseLessons by remember { mutableStateOf<List<Lesson>>(emptyList()) }
     var browseLoading by remember { mutableStateOf(false) }
     var browseError by remember { mutableStateOf("") }
@@ -209,9 +219,9 @@ fun ManageAllScreen(onBack: () -> Unit) {
 
     // القسم المفتوح آخر مرّة يُحفظ ليُقترح عند الفتح التالي: المشرف يعمل على
     // قسم واحد أيّاماً، فإعادة البحث عنه في كلّ مرّة عبء بلا فائدة.
-    LaunchedEffect(openCategory, openSub) {
-        AppPrefs.lastManageCategoryId = openCategory?.id
-        AppPrefs.lastManageSubcategoryId = openSub?.id
+    LaunchedEffect(openCategoryId, openSubId) {
+        AppPrefs.lastManageCategoryId = openCategoryId
+        AppPrefs.lastManageSubcategoryId = openSubId
     }
 
     // قسم محفوظ حُذف بعد آخر جلسة: الاقتراح لا يُعرض بلا وجود.
@@ -401,8 +411,8 @@ fun ManageAllScreen(onBack: () -> Unit) {
                         .onSuccess { snack("حُذف القسم بعد نقل دروسه.") }
                         .onFailure { snack("تعذّر حذف القسم: ${it.arabicReason()}") }
                     // القسم المفتوح قد يكون هو المحذوف — نعود إلى الجذر.
-                    openSub = null
-                    openCategory = null
+                    openSubId = null
+                    openCategoryId = null
                     allLessons = null
                     scopeKnown = false
                     reload++
@@ -482,8 +492,8 @@ fun ManageAllScreen(onBack: () -> Unit) {
                         // نفس صدق الحوار: نقلٌ إلى السلة لا محوٌ نهائيّ.
                         .onSuccess { snack("نُقل القسم ومحتوياته إلى سلة المحذوفات.") }
                         .onFailure { snack("تعذّر الحذف: ${it.arabicReason()}") }
-                    openSub = null
-                    openCategory = null
+                    openSubId = null
+                    openCategoryId = null
                     allLessons = null
                     scopeKnown = false
                     reload++
@@ -502,8 +512,8 @@ fun ManageAllScreen(onBack: () -> Unit) {
 
     if (reorderOpen && openSub != null) {
         ReorderLessonsDialog(
-            subcategoryId = openSub!!.id,
-            subcategoryName = openSub!!.name,
+            subcategoryId = openSub.id,
+            subcategoryName = openSub.name,
             onDismiss = { reorderOpen = false },
             onSaved = { browseReload++ },
         )
@@ -719,8 +729,8 @@ fun ManageAllScreen(onBack: () -> Unit) {
                 // ─── التصفّح: دروس القسم الفرعيّ المفتوح ───
                 openSub != null -> Column(Modifier.fillMaxSize()) {
                     BrowseBreadcrumb(
-                        path = "${openCategory?.name.orEmpty()} ← ${openSub!!.name}",
-                        onBack = { openSub = null },
+                        path = "${openCategory?.name.orEmpty()} ← ${openSub.name}",
+                        onBack = { openSubId = null },
                     )
                     OutlinedButton(
                         onClick = { reorderOpen = true },
@@ -773,11 +783,11 @@ fun ManageAllScreen(onBack: () -> Unit) {
 
                 // ─── التصفّح: الأقسام الفرعيّة داخل قسم رئيسيّ ───
                 openCategory != null -> {
-                    val children = subcategories.filter { it.categoryId == openCategory!!.id }
+                    val children = subcategories.filter { it.categoryId == openCategory.id }
                     Column(Modifier.fillMaxSize()) {
                         BrowseBreadcrumb(
-                            path = openCategory!!.name,
-                            onBack = { openCategory = null },
+                            path = openCategory.name,
+                            onBack = { openCategoryId = null },
                         )
                         if (children.isEmpty()) {
                             EmptyHint("لا يوجد قسم فرعيّ هنا بعد.")
@@ -795,7 +805,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                                     BrowseSectionCard(
                                         title = s.name,
                                         subtitle = "",
-                                        onOpen = { openSub = s },
+                                        onOpen = { openSubId = s.id },
                                         onEdit = { pending = PendingAction.EditSubcategory(s) },
                                         onDelete = {
                                             scope.launch {
@@ -834,7 +844,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                             BrowseSectionCard(
                                 title = "تابع في: ${savedSub.name}",
                                 subtitle = savedCategory.name,
-                                onOpen = { openCategory = savedCategory; openSub = savedSub },
+                                onOpen = { openCategoryId = savedCategory.id; openSubId = savedSub.id },
                                 onEdit = { pending = PendingAction.EditSubcategory(savedSub) },
                                 onDelete = {
                                     scope.launch {
@@ -858,7 +868,7 @@ fun ManageAllScreen(onBack: () -> Unit) {
                                 "أقسام فرعيّة",
                                 "قسماً فرعيّاً",
                             ),
-                            onOpen = { openCategory = c },
+                            onOpen = { openCategoryId = c.id },
                             onEdit = { pending = PendingAction.EditCategory(c) },
                             onDelete = {
                                 scope.launch {

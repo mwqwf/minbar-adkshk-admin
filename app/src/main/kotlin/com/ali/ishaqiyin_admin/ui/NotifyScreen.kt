@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -48,8 +49,9 @@ import kotlinx.coroutines.launch
 @Composable
 fun NotifyScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var title by remember { mutableStateOf("") }
-    var body by remember { mutableStateOf("") }
+    // rememberSaveable: تدوير الشاشة كان يمسح العنوان والنصّ المكتوبين.
+    var title by rememberSaveable { mutableStateOf("") }
+    var body by rememberSaveable { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }

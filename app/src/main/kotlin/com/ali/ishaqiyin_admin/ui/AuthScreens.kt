@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -60,8 +61,9 @@ fun LoginScreen() {
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     // 🔗 «لديّ رمز دخول»: حقل ثماني خانات يفتح عند الطلب — بلا Google.
-    var codeMode by remember { mutableStateOf(false) }
-    var code by remember { mutableStateOf("") }
+    // rememberSaveable: التدوير كان يغلق حقل الرمز ويمسح ما كُتب فيه.
+    var codeMode by rememberSaveable { mutableStateOf(false) }
+    var code by rememberSaveable { mutableStateOf("") }
 
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         Box(
