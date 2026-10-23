@@ -56,8 +56,12 @@ class AdminAlertsPollWorker(context: Context, params: WorkerParameters) : Corout
         val lastChange = pulse?.let {
             maxOf(it.optLong("contentMs"), it.optLong("notifMs"), it.optLong("alertsMs"))
         } ?: 0L
-        scheduleNext(applicationContext, delayFor(lastChange))
-        return if (ok) Result.success() else Result.retry()
+        // ⛔ `scheduleNext` تستبدل (REPLACE) العمل الوحيد — وهو هذا العامل نفسه —
+        // فتُلغيه ويضيع ما يعيده، وكان `Result.retry()` بلا أثر: فشلُ الجلب
+        // (ونبضٌ ساقط ⇒ `delayFor(0)` = 12 ساعة) يؤجّل المحاولة نصف يوم.
+        // فالمحاولة القصيرة تُجدوَل هنا صراحةً ويُعاد `success`.
+        scheduleNext(applicationContext, if (ok) delayFor(lastChange) else RETRY_DELAY_MS)
+        return Result.success()
     }
 
     /** يقرأ النبض من الـCDN، ثم من الـWorker احتياطاً؛ `null` عند فشلهما. */
@@ -116,6 +120,8 @@ class AdminAlertsPollWorker(context: Context, params: WorkerParameters) : Corout
         private const val LOOP = "admin_alerts_pulse"
         private const val GUARD = "admin_alerts_guard"
         private const val MAX_PER_RUN = 5
+        /** مهلة المحاولة التالية بعد فشل الجلب. */
+        private const val RETRY_DELAY_MS = 15L * 60 * 1000
         private const val FOREGROUND_GAP_MS = 15L * 60 * 1000
 
         private val connected = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()

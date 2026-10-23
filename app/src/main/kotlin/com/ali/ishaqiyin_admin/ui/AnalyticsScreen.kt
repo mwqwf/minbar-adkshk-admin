@@ -45,6 +45,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.ishaqiyin_admin.data.AnalyticsRepository
 import com.ali.ishaqiyin_admin.data.AnalyticsSnapshot
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * «التحليلات والأثر» — بكاش محلّي: تفتح فوراً من آخر لقطة محفوظة (حتى بلا
@@ -68,7 +70,8 @@ fun AnalyticsScreen(
     LaunchedEffect(reload) {
         error = null
         offline = false
-        val cached = stats ?: AnalyticsRepository.loadCache(context)
+        // قراءة SharedPreferences وفكّ JSON خارج الخيط الرئيسي.
+        val cached = stats ?: withContext(Dispatchers.IO) { AnalyticsRepository.loadCache(context) }
         if (cached != null && stats == null) {
             // الكاش يظهر فوراً — لا شاشة انتظار لمجرّد فتح الإحصائيات.
             stats = cached

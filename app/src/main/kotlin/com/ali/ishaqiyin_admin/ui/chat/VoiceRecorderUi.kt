@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.ali.ishaqiyin_admin.data.arabicReason
 import com.ali.ishaqiyin_admin.util.AudioRecorderController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -216,7 +217,19 @@ class VoiceRecorderState internal constructor(
             dragY = 0f
             phase = VoicePhase.Holding
             true
-        }.onFailure { onNotice("تعذّر بدء التسجيل: ${it.message ?: it}") }.getOrDefault(false)
+        }.onFailure { onNotice("تعذّر بدء التسجيل: ${it.recordFailureReason()}") }.getOrDefault(false)
+    }
+
+    /** سبب الفشل بالعربية — كان نصّ MediaRecorder الإنجليزي الخام يُعرض للمشرف. */
+    private fun Throwable.recordFailureReason(): String {
+        val text = this.message.orEmpty()
+        return when {
+            text.contains("prepare failed", ignoreCase = true) ||
+                text.contains("start failed", ignoreCase = true) ->
+                "الميكروفون مشغول بتطبيق آخر."
+            this is SecurityException -> "لم يُمنح إذن الميكروفون."
+            else -> arabicReason()
+        }
     }
 
     internal fun onDrag(x: Float, y: Float) {

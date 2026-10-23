@@ -36,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -101,7 +102,8 @@ fun SupportThreadScreen(
     }
 
     var sending by remember { mutableStateOf(false) }
-    var text by remember { mutableStateOf("") }
+    // rememberSaveable: الردّ المكتوب كان يضيع بتدوير الشاشة.
+    var text by rememberSaveable { mutableStateOf("") }
     var confirmClose by remember { mutableStateOf(false) }
     var confirmBlock by remember { mutableStateOf(false) }
 

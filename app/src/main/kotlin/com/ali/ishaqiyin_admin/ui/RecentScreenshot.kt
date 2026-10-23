@@ -119,6 +119,25 @@ private fun mediaPermissions(): Array<String> = when {
     else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
 }
 
+/**
+ * هل أُعلن أحد أذونات الوسائط في البيان؟ طلبُ إذنٍ غير معلَن يُرفض فوراً
+ * بلا حوار — وكان يُطلق هنا ويُسجَّل «سُئل» فلا يُسأل ثانيةً أبداً.
+ */
+private fun manifestDeclares(context: Context, permissions: Array<String>): Boolean = runCatching {
+    val pm = context.packageManager
+    val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        pm.getPackageInfo(
+            context.packageName,
+            PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS.toLong()),
+        )
+    } else {
+        @Suppress("DEPRECATION")
+        pm.getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
+    }
+    val declared = info.requestedPermissions.orEmpty()
+    permissions.any { it in declared }
+}.getOrDefault(false)
+
 /** كامل أو جزئي — أيّهما يكفي للاستعلام (الجزئي يرى الصور المسموحة فقط). */
 private fun hasMediaAccess(context: Context): Boolean =
     mediaPermissions().any { permission ->
@@ -166,8 +185,10 @@ fun RecentScreenshotChip(
     // الرفض يبقى محفوظاً فلا سؤال ثانياً أبداً (لا إلحاح).
     LaunchedEffect(enabled, granted) {
         if (enabled && !granted && !AppPrefs.mediaPermissionAsked) {
+            val wanted = mediaPermissions()
+            if (!manifestDeclares(context, wanted)) return@LaunchedEffect
             AppPrefs.mediaPermissionAsked = true
-            permissionLauncher.launch(mediaPermissions())
+            permissionLauncher.launch(wanted)
         }
     }
 

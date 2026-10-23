@@ -55,6 +55,8 @@ fun MushafakInboxScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
 
     var tickets by remember { mutableStateOf<List<MushafakSupport.Ticket>?>(null) }
+    // «لم يُحمَّل بعد» غير «فشل»: كانت رسالة الخطأ تظهر أثناء التحميل الأوّل.
+    var loading by remember { mutableStateOf(true) }
     var filter by remember { mutableIntStateOf(0) } // 0 مفتوحة · 1 الكلّ
     var notice by remember { mutableStateOf<String?>(null) }
     var replyTo by remember { mutableStateOf<String?>(null) }
@@ -62,7 +64,11 @@ fun MushafakInboxScreen(onBack: () -> Unit) {
     var reload by remember { mutableIntStateOf(0) }
 
     // ⛔ **بلا رمزٍ ولا سؤال**: هويّةُ حسابك هي الإذن (تصحيحُ المالك 2026-09-10).
-    LaunchedEffect(reload) { tickets = MushafakSupport.tickets(ctx) }
+    LaunchedEffect(reload) {
+        loading = true
+        tickets = MushafakSupport.tickets(ctx)
+        loading = false
+    }
 
     AdminScaffold(title = "رسائل مصحفك", onBack = onBack) { padding ->
         Column(
@@ -77,6 +83,11 @@ fun MushafakInboxScreen(onBack: () -> Unit) {
                 }
                 val list = tickets
                 when {
+                    list == null && loading -> Text(
+                        "جارٍ التحميل…",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     list == null -> Text(
                         if (MushafakSupport.hasIdentity()) {
                             "تعذّر الجلب — تحقّق من الشبكة."
