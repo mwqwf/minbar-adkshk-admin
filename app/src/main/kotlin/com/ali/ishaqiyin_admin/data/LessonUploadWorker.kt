@@ -626,6 +626,9 @@ class LessonUploadWorker(
         val already = item.uploadedPath
         if (already != null && item.uploadedSha.isNotEmpty()) {
             Log.i(TAG, "reuse uploaded original for ${item.id}: $already")
+            // ⛔ يُعلَّم نشطاً هنا أيضاً: بلا ذلك يعدّه `cancelNow` مركوناً
+            // فيحذف أصله من R2 بينما `addLesson` يُنشئه — درس حيّ برابط ميت.
+            UploadQueue.markActive(item.id)
             lastUploadSha = item.uploadedSha
             lastPercent = 100
             UploadQueue.setProgress(UploadProgress(item.id, item.title, 100))

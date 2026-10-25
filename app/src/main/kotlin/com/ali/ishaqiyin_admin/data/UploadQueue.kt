@@ -1046,6 +1046,14 @@ object UploadQueue {
         activeTask = ActiveTask(id, pause, cancel)
     }
 
+    /**
+     * عنصر نشط بلا نقلٍ جارٍ (أصله مرفوع من محاولة سابقة): يحمي أصله من حذف
+     * [cancelNow] أثناء إنشاء الوثيقة، ولا يرفع [transferring] لأنّه لا PUT فيه.
+     */
+    fun markActive(id: String) {
+        activeTask = ActiveTask(id, pause = {}, cancel = {})
+    }
+
     fun clearActiveTask(id: String) {
         if (activeTask?.id == id) activeTask = null
     }
@@ -1086,12 +1094,14 @@ object UploadQueue {
         }
         // ⛔ هنا وحده يصحّ هدم الجلسة على الخادم: إلغاء صريح من المشرف.
         // وتُمسح من القرص في المعاملة نفسها فلا تبقى جلسة ميّتة توهم بالاستئناف.
+        // ⛔ الإزالة **قبل** إلغاء المهمّة: كان العكس يدع العامل يلتقط العنصر
+        // نفسه من `peek()` بين الإلغاء والإزالة فيُعاد رفعه كاملاً ثمّ يُحذف.
         if (running) {
             Log.i(LOG_TAG, "session wiped: admin cancel id=$id")
             saveSession(id, null)
-            activeTask?.let { runCatching { it.cancel() } }
         }
         remove(id)
+        if (running) activeTask?.let { runCatching { it.cancel() } }
         if (_progress.value?.id == id) _progress.value = null
         if (orphanPath != null) {
             cleanupScope.launch { runCatching { StorageService.deleteFileOrThrow(orphanPath) } }

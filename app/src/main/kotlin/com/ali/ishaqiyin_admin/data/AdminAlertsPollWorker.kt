@@ -40,7 +40,12 @@ import java.util.concurrent.TimeUnit
  */
 class AdminAlertsPollWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
-        if (!AuthService.isLoggedIn) return Result.success()
+        // بلا جلسة لا يُستطلع — لكنّ الحلقة تبقى: الانسحاب بلا `scheduleNext`
+        // كان يقطعها فلا استطلاع بعد الدخول حتى عودة المقدّمة أو حارس الـ12 ساعة.
+        if (!AuthService.isLoggedIn) {
+            scheduleNext(applicationContext, RETRY_DELAY_MS)
+            return Result.success()
+        }
         AppPrefs.lastPulseRunMs = System.currentTimeMillis()
 
         val pulse = readPulse()
