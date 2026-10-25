@@ -219,9 +219,12 @@ fun ManageAllScreen(onBack: () -> Unit) {
 
     // القسم المفتوح آخر مرّة يُحفظ ليُقترح عند الفتح التالي: المشرف يعمل على
     // قسم واحد أيّاماً، فإعادة البحث عنه في كلّ مرّة عبء بلا فائدة.
+    // ⛔ لا يُكتب `null`: أوّل تركيب (القيمتان `null`) كان يمحو التفضيل المحفوظ
+    // (`writeId` تحذف المفتاح عند `null`) قبل وصول الأقسام، فلا تظهر بطاقة
+    // «تابع في» أبداً. والرجوع إلى الجذر يُبقي آخر قسم فُتح.
     LaunchedEffect(openCategoryId, openSubId) {
-        AppPrefs.lastManageCategoryId = openCategoryId
-        AppPrefs.lastManageSubcategoryId = openSubId
+        openCategoryId?.let { AppPrefs.lastManageCategoryId = it }
+        openSubId?.let { AppPrefs.lastManageSubcategoryId = it }
     }
 
     // قسم محفوظ حُذف بعد آخر جلسة: الاقتراح لا يُعرض بلا وجود.

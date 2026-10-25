@@ -281,6 +281,14 @@ object ChatMediaStore {
             // جزئيّ أكبر من حجم المرفق المعلَن = بقايا فاسدة (استُبدل الملفّ
             // أو تشوّهت كتابة سابقة) — استئنافه يُنتج ملفاً تالفاً، فيُهمل.
             if (att.size > 0L && partial.length() > att.size) partial.delete()
+            // جزء مكتمل بحجم الملفّ كاملاً (مات التطبيق بعد `sync` وقبل إعادة
+            // التسمية): طلبه بـ`Range: bytes=<size>-` يردّه الخادم 416 فيُحذف
+            // ويُعلَن الفشل — يُثبَّت مباشرةً بلا طلب.
+            if (att.size > 0L && partial.length() == att.size) {
+                if (target.exists()) target.delete()
+                check(partial.renameTo(target)) { "تعذّر تثبيت الملفّ المُنزَّل." }
+                return target
+            }
             val resumeFrom = partial.length().takeIf { it > 0L } ?: 0L
             connection = (URL(att.url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 20_000
