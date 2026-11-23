@@ -1,0 +1,38 @@
+# 🗂️ فهرس المشروع الحيّ — يجدّد docs/PROJECT_INDEX.md آلياً عند الدفع إلى الفرع الرئيسيّ.
+# خفيف: ≈20 ثانية، محصور بالمسارات، يلغي القديم، لا أسرار، ولا يُطلق غيره (إيداع GITHUB_TOKEN لا يُشغّل سير عمل).
+# المصدر: mwqwf/agent-skills/tools/project-template — لا تعدّله هنا.
+name: project-index
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/build.gradle.kts"
+      - "settings.gradle.kts"
+      - ".github/workflows/**"
+      - ".agents/skills/**"
+      - "docs/*.md"
+      - "package.json"
+      - "wrangler.toml"
+      - "tools/agents/gen_project_index.py"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: project-index
+  cancel-in-progress: true
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: توليد الفهرس
+        run: python3 tools/agents/gen_project_index.py
+      - name: إيداع إن تغيّر
+        run: |
+          [ -z "$(git status --porcelain -- docs/PROJECT_INDEX.md)" ] && { echo "لا تغيير"; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/PROJECT_INDEX.md
+          git commit -m "فهرس: تحديث آليّ لـPROJECT_INDEX [skip ci]"
+          git push

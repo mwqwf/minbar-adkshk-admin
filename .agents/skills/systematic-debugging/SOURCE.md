@@ -1,0 +1,3 @@
+- source: https://github.com/obra/superpowers
+- license: MIT
+- vendored: 2026-11-23 (upstream commit 22f0b46)

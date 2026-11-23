@@ -119,7 +119,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/skills-drift.cjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/skills-links.cjs\""
           },
           {
             "type": "command",
