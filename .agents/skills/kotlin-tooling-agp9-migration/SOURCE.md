@@ -1,0 +1,3 @@
+- source: https://github.com/Kotlin/kotlin-agent-skills
+- license: Apache-2.0
+- vendored: 2026-11-23 (upstream commit 087f568)

@@ -1,0 +1,37 @@
+---
+name: arabic-rtl-and-islamic-typography
+description: Arabic-first UI and text integrity — RTL layout in Jetpack Compose/Android Views and web (LayoutDirection, start/end, mirrored icons, bidi isolation of numbers/Latin), Arabic fonts and diacritics clipping (lineHeight, includeFontPadding), Arabic-Indic vs Western digits, plural/gender strings, and STRICT integrity of Quran and hadith text (no normalization, no auto-diacritics, no tatweel, exact codepoint comparison, rasm/riwaya awareness, sourcing). Use when building or reviewing any Arabic screen, string, font, or layout, and whenever touching Quran/hadith/fiqh source text, translations, tafsir, or audio-text alignment data. واجهات عربية RTL وسلامة النص القرآنيّ والحديثيّ.
+license: Proprietary (mwqwf) — internal
+---
+
+# العربية أوّلاً: الاتجاه والخطّ وسلامة النصّ الشرعيّ
+
+## ١. الاتجاه (RTL)
+- **Compose:** لا تفرض `LayoutDirection.Ltr` إلا لعنصرٍ لاتينيّ بطبيعته (مشغّل وسائط بأسهم زمنية، رمز تحقّق). استعمل `start/end` لا `left/right`، و`Modifier.padding(start=…)`. الأيقونات الاتجاهية (رجوع، التالي) تُعكس بـ`Icons.AutoMirrored.*` أو `Modifier.scale(scaleX=-1f)` حسب `LocalLayoutDirection`؛ وأيقونات غير اتجاهية (تشغيل، بحث) لا تُعكس.
+- **Views/Manifest:** `android:supportsRtl="true"`، و`textDirection="locale"`/`anyRtl` للحقول المختلطة.
+- **الويب:** `<html lang="ar" dir="rtl">`، وخصائص منطقية (`margin-inline-start`، `inset-inline-end`).
+- **العزل الثنائيّ (bidi):** الأرقام والروابط وأسماء الحزم والمصطلحات اللاتينية داخل جملة عربية تُعزل (`\u2068…\u2069` FSI/PDI أو `BidiFormatter.unicodeWrap` أو `<bdi>`) حتى لا تنقلب علامات الترقيم. لا تدرج علامات اتجاه في بيانات مخزّنة — في العرض فقط.
+- اختبر كل شاشة جديدة بلقطة RTL على المحاكي (وبخط كبير `fontScale=1.3`).
+
+## ٢. الخطّ والتشكيل والأرقام
+- التشكيل لا يُقصّ: لا `maxLines=1` مع `lineHeight` ضيّق على نصّ مشكول؛ ارفع `lineHeight` (≥ 1.6em للنصّ المشكول، أعلى لرسم المصحف)، واضبط `PlatformTextStyle(includeFontPadding = true)` للنصوص المشكولة، و`LineHeightStyle(trim = None)`.
+- خطوط المصحف (مثل خطوط KFGQPC/مجمّع الملك فهد أو خطوط الصفحات المرسومة) تُستعمل بترخيصها وبنصّها المطابق لها؛ لا تخلط نصّ رسم عثمانيّ بخطٍّ مصمّم للإملائيّ.
+- الأرقام: اتبع إعداد التطبيق/اللغة؛ أرقام الآيات بأرقام عربية-هندية (٠١٢٣) داخل زخرفة الآية إن كان ذلك تصميم المشروع، والإحصاءات بأرقام متّسقة في الشاشة كلها. لا تخلط النوعين في سطرٍ واحد.
+- الجمع والتأنيث: `plurals` في `strings.xml` بفئات العربية الست (zero/one/two/few/many/other)، لا «3 دقيقة».
+- علامات الترقيم العربية: `،` `؛` `؟` و«» للاقتباس.
+
+## ٣. سلامة النصّ القرآنيّ والحديثيّ (قواعد مطلقة)
+1. **لا تُولِّد ولا تُعِد كتابة نصّ قرآنيّ من ذاكرة النموذج قطّ.** النصّ يُنسخ برمجياً من المصدر المعتمد في المشروع (ملف البيانات/الحزمة المرخّصة) ويُذكر مصدره ونسخته.
+2. **لا تطبيع:** لا NFC/NFKC، لا حذف تشكيل، لا استبدال أشكال الهمزة/الألف الخنجرية/علامات الوقف/الإشمام إلا في **فهرس بحث منفصل** مشتقّ آلياً، والعرض من الأصل دائماً.
+3. **لا تطويل (ـ U+0640) ولا أشكال عرض (Presentation Forms U+FB50–U+FDFF, U+FE70–U+FEFF)** في البيانات.
+4. **المقارنة بنقاط الترميز (codepoints)** لا بالمظهر؛ أي تعديل لبيانات قرآنية يمرّ بمقارنة differential مع المرجع وعدّ الفروق = 0 إلا ما قُصد وسُجّل.
+5. **الرواية والرسم:** احترم الرواية (حفص، ورش، قالون…) وعدّ الآي الخاص بها؛ لا تنقل ترقيم رواية إلى أخرى.
+6. **الحديث:** يُنقل بإسناده/عزوه ودرجته كما في المصدر، ولا يُنسب قولٌ للنبي ﷺ بلا مصدر مسمّى؛ وما ليس حديثاً لا يُسمّى حديثاً.
+7. **التفسير والترجمة** يُنسبان لمؤلّفهما ونسختهما (مثل QuranEnc)، ولا تخلط ترجمة معاني بالنصّ.
+8. في محتوى الفيديو/الصور: لا نصّ قرآنيّ مولَّد بالصور، ولا آيات في الصور المولّدة (يُضاف نصاً من المصدر إن لزم).
+
+## ٤. الفحص الآليّ
+```
+python3 scripts/check_arabic_text.py <ملف أو مجلد> [--reference مرجع.txt]
+```
+يكشف: التطويل، أشكال العرض، علامات الاتجاه المخزّنة، المسافات الغريبة، اختلاف التطبيع، ومع `--reference` يقارن نقطةً بنقطة ويطبع أول الفروق. يخرج برمز ≠ 0 عند أي مخالفة — اجعله في CI لملفات البيانات القرآنية.
