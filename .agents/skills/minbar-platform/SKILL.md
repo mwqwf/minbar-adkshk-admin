@@ -1,7 +1,7 @@
 ---
 name: minbar-platform
-description: Minbar Adkshk (منبر ادكصهك) platform knowledge across its three active repos — the listeners app mwqwf/minbar-adkshk (com.ali.menbaradkshk, Kotlin/Compose, Media3, Play Asset Packs), the Kotlin admin dashboard mwqwf/minbar-adkshk-admin (com.ali.ishaqiyin_admin), and the backend mwqwf/minbar-cloud (Cloudflare Worker minbar-api + D1 + R2) plus the live mirror site dependency menbar-site. Covers invariants, build/publish commands, merge-publishes rule, guards, D1/R2 lessons, and done criteria. Use for any Minbar feature, bug, release, catalog/audio/transcript, admin, or backend task. منصّة منبر: التطبيق ولوحته Kotlin وخادمه.
-license: Proprietary (mwqwf) — internal; Minbar code license requires attribution and forbids commercial use without written permission
+description: "Minbar/منبر app (minbar-adkshk), Kotlin admin dashboard (minbar-adkshk-admin), minbar-cloud backend: features, bugs, build, release. تطبيق منبر ادكصهك، لوحة الإدارة، الخادم، الصوتيات"
+license: Proprietary (mwqwf) — internal
 ---
 
 # منصّة منبر ادكصهك
@@ -29,7 +29,7 @@ gh run list -R <repo> -L 1 && gh run view <id> -R <repo> --log
 - **الدمج ينشر:** دفعةٌ إلى `main` تمسّ `app/build.gradle.kts` ويتغيّر فيها `versionCode` ⇒ `bundle-with-assets` يبني وينشر للإنتاج. فلا ترفع الرقم إلا وأنت تريد النشر، ومعه «حول» (`ui/AboutScreen.kt`) وملاحظات الإصدار (`data/ReleaseNotes.kt`) وREADME (يحرسها `check_release_notes.py` و`sync_readme_version.py`).
 - **اللوحة:** رفع الرقم + سطر في سجلّ التغييرات داخل `app/build.gradle.kts` (لا About/ReleaseNotes)؛ متغيّرات التوقيع `MINBAR_ADMIN_SIGNING_*` لا `MINBAR_SIGNING_*`. الترقية من alpha قرار المالك وحده.
 - كل طلب سحب يمرّ بـ`pr-check` (حارس التوثيق، ملاحظات الإصدار، الاختبارات، `lint` كبوّابة، بناء debug) — لا يُضعَّف ولا `continue-on-error`. تُدمج الطلبات متى اخضرّ.
-- الأسرار في GitHub تُكتب ولا تُقرأ؛ لا توقيع محلياً ولا طلب مفتاح من المالك. ثوابت النشر في `docs/agents/PLAY_APP.md` (مهارة `google-play-publish`).
+- الأسرار في GitHub تُكتب ولا تُقرأ؛ لا توقيع محلياً ولا طلب مفتاح من المالك. ثوابت النشر في `docs/agents/PLAY_APP.md` (مهارة `google-play`).
 
 ## محرّمات وقعت فعلاً
 - لا `ndk { abiFilters }` في حزمة متجر · لا `pull_request_target`/`issue_comment` · لا حذف ملفات حزم Play (`LocalStore.isBundledDownload`) · لا استعلام عن تطبيق في Play أثناء نشره · لا `git add <مجلد>` ولا إيداع سرّ · الهاتف ممنوع للاختبار (المحاكي في CI).
@@ -45,4 +45,4 @@ gh run list -R <repo> -L 1 && gh run view <id> -R <repo> --log
 ## «أُنجز»
 - التطبيق/اللوحة: `pr-check` أخضر + برهان المحاكي + سجلّ النشر (`jar verified` ووصول النسخة للمسار).
 - الخادم: نشر ثم قراءة الأثر من الخادم نفسه (`/v1/probe` أو `/v1/pulse`).
-- قبل الإصدار: `play-policy-insights` و`android-security-hardening` عند مسّ الأذونات، و`android-performance` عند مسّ الأداء.
+- قبل الإصدار: `google-play` و`android-engineering` عند مسّ الأذونات، و`android-engineering` عند مسّ الأداء.
